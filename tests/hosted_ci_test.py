@@ -22,6 +22,18 @@ spec.loader.exec_module(bootstrap)
 
 
 class HostedCITests(unittest.TestCase):
+    def test_failed_check_names_are_reported_without_values(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(ci, 'ROOT', Path(directory)):
+            group = Path(directory) / 'stand/results/openconnect'; group.mkdir(parents=True)
+            (group / 'results.json').write_text(json.dumps([
+                {'name': 'auth-ok', 'passed': True, 'actual': 'secret-value'},
+                {'name': 'tunnel-payload', 'passed': False, 'actual': 'secret-value'},
+                {'name': 'leak 10.0.0.1 <script>', 'passed': False}]))
+            failed, last = ci.failed_checks('openconnect')
+            self.assertEqual(failed, ['tunnel-payload', '<unnamed>'])
+            self.assertEqual(last, '<unnamed>')
+            self.assertEqual(ci.failed_checks('missing'), ([], None))
+
     def test_client_downloader_exhaustion_is_not_retried_again(self):
         error = subprocess.CalledProcessError(22, ['sh', 'download-file.sh'])
         with tempfile.TemporaryDirectory() as directory, \

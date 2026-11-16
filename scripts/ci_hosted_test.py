@@ -86,6 +86,20 @@ def evidence(bundle, checks, suite, warnings=None, allow_test_failures=False):
     return result
 
 
+def failed_checks(group, limit=10):
+    """Names (only) of failed checks in a failed group, and the last check run."""
+    try:
+        rows = json.loads((ROOT / 'stand/results' / group / 'results.json').read_text())
+    except (OSError, ValueError):
+        return [], None
+    if not isinstance(rows, list):
+        return [], None
+    names = [r.get('name') for r in rows if isinstance(r, dict)]
+    safe = [n if isinstance(n, str) and re.fullmatch(r'[A-Za-z0-9 ._:/-]{1,80}', n) else '<unnamed>' for n in names]
+    failed = [n for n, r in zip(safe, rows) if isinstance(r, dict) and r.get('passed') is False]
+    return failed[:limit], (safe[-1] if safe else None)
+
+
 def failed_protocols(checkout):
     """Only reviewed test names may enter the public failure log."""
     results = ROOT / 'tests/published-main/results.json'
@@ -306,6 +320,10 @@ if __name__ == '__main__':
         failed = failed_protocols(Path(__file__).resolve().parents[1])
         if failed:
             print('Failed protocol groups: ' + ', '.join(failed), file=sys.stderr)
+            for group in failed:
+                checks, last = failed_checks(group)
+                print('  ' + group + ': failed checks: ' + (', '.join(checks) or 'none recorded')
+                      + '; last check: ' + (last or 'none'), file=sys.stderr)
         log = ROOT / 'private.log'
         if log.is_file():
             stages = re.findall(r'^START ([a-z][a-z0-9-]{0,70})$', log.read_text(errors='replace'), re.M)
