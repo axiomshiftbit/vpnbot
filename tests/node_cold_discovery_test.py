@@ -38,4 +38,62 @@ class NodeColdDiscoveryTest(unittest.TestCase):
         self.assertEqual(dict(zip(args[::2],args[1::2])),{'--source':str(ROOT),'--php-image':'candidate-php','--xray-image':'candidate-xr','--ng-image':'candidate-ng'})
         self.assertIn("name!='backup-node-cold' or result.get('cleanup') is True",source)
 
+
+def oci_archive(path, manifests, corrupt=False):
+    """Minimal docker-save/OCI layout: index.json, manifest blobs; no layers needed."""
+    import hashlib, io, json, tarfile
+    with tarfile.open(path, 'w') as archive:
+        entries = []
+        for config in manifests:
+            body = json.dumps({'schemaVersion': 2, 'config': {'digest': config}} if config else
+                              {'schemaVersion': 2, 'manifests': []}).encode()
+            digest = 'sha256:' + hashlib.sha256(body).hexdigest()
+            entries.append(digest)
+            stored = body + (b' ' if corrupt else b'')
+            info = tarfile.TarInfo('blobs/sha256/' + digest.split(':', 1)[1]); info.size = len(stored)
+            archive.addfile(info, io.BytesIO(stored))
+        index = json.dumps({'manifests': [{'digest': d} for d in entries]}).encode()
+        info = tarfile.TarInfo('index.json'); info.size = len(index)
+        archive.addfile(info, io.BytesIO(index))
+    return entries
+
+
+class NodeColdImageIdentityTest(unittest.TestCase):
+    """docker save on the host, docker load in the classic nested daemon."""
+    CONFIG = ['sha256:' + '1' * 64, 'sha256:' + '2' * 64]
+
+    def archive(self, **kwargs):
+        import tempfile
+        directory = tempfile.TemporaryDirectory(); self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / 'images.tar'
+        return path, oci_archive(path, kwargs.pop('manifests', self.CONFIG), **kwargs)
+
+    def test_containerd_manifest_ids_map_to_nested_config_ids(self):
+        path, manifests = self.archive()
+        self.assertEqual(module.archive_ids(path, set(manifests)), dict(zip(manifests, self.CONFIG)))
+
+    def test_classic_config_ids_stay_unchanged(self):
+        path, _ = self.archive()
+        self.assertEqual(module.archive_ids(path, set(self.CONFIG)), {c: c for c in self.CONFIG})
+
+    def test_tampered_manifest_or_missing_image_is_rejected(self):
+        path, manifests = self.archive(corrupt=True)
+        with self.assertRaisesRegex(RuntimeError, 'digest mismatch'): module.archive_ids(path, set(manifests))
+        path, manifests = self.archive()
+        with self.assertRaisesRegex(RuntimeError, 'every candidate'): module.archive_ids(path, {manifests[0], 'sha256:' + '9' * 64})
+
+    def test_multi_platform_index_is_not_trusted_as_one_image(self):
+        path, manifests = self.archive(manifests=[None])
+        with self.assertRaisesRegex(RuntimeError, 'single-platform'): module.archive_ids(path, set(manifests))
+
+    def test_offline_name_map_precedes_docker_in_node_runtime_path(self):
+        # node_runtime.command() replaces PATH; an alias outside it is bypassed
+        # and the nested daemon then fails on the registry digest name.
+        runtime = (ROOT / 'scripts/node_runtime.py').read_text()
+        path = ast.literal_eval(runtime.split("env={'PATH': ", 1)[1].split(',', 1)[0]).split(':')
+        source = SCRIPT.read_text()
+        link = source.split("'/lab/docker-offline',", 1)[1].split("'", 2)[1]
+        self.assertIn(str(Path(link).parent), path)
+        self.assertLess(path.index(str(Path(link).parent)), path.index('/usr/bin'))
+
 if __name__=='__main__':unittest.main()

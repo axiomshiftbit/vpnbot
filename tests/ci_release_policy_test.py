@@ -167,6 +167,20 @@ class PolicyTest(unittest.TestCase):
             with patch.object(unit.subprocess, 'run', side_effect=timeout):
                 self.assertEqual(unit.run(root, root/'logs', True)['blocked'], ['version_parse_test.php'])
 
+    def test_unit_runner_rejects_a_skipped_test_in_ci(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); (root/'tests').mkdir()
+            for i in range(100): (root/'tests'/('required_'+str(i)+'_test.php')).touch()
+            (root/'tests'/'xdrive_core_test.php').touch()
+            def execute(args, **kwargs):
+                skipped = Path(args[-1]).name == 'xdrive_core_test.php'
+                return subprocess.CompletedProcess(args, 0, b'xdrive_core_test SKIP: core missing\n' if skipped else b'', b'')
+            with patch.object(unit.subprocess, 'run', side_effect=execute), patch('sys.stdout', io.StringIO()):
+                with patch.dict(os.environ, {'GITHUB_ACTIONS': 'true'}):
+                    self.assertEqual(unit.run(root, root/'logs', True)['blocked'], ['xdrive_core_test.php'])
+                with patch.dict(os.environ, {'GITHUB_ACTIONS': ''}):
+                    self.assertEqual(unit.run(root, root/'logs', False)['blocked'], [])
+
     def test_promotion_policy_failure_never_moves_channel(self):
         proof = dict(schema=1, source=SOURCE, bundle=bundles.fingerprint(bundle()),
                      policy=STRICT|{'allow_vulnerabilities': True},

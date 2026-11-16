@@ -14,6 +14,7 @@ spec = importlib.util.spec_from_file_location('hosted_ci', ROOT / 'scripts/ci_ho
 ci = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ci)
 from image_bundle import IMAGES, REGISTRY
+import ci_release_policy  # noqa: F401 -- ci.evidence() imports it lazily
 sys.path.pop(0)
 spec = importlib.util.spec_from_file_location('hosted_bootstrap', ROOT / 'tests/integration/bootstrap.py')
 bootstrap = importlib.util.module_from_spec(spec)

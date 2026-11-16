@@ -26,6 +26,10 @@ def run(root, directory, allow=False):
             continue
         output = result.stdout+result.stderr
         bad = result.returncode != 0 or bool(re.search(rb'(?:PHP )?(?:Warning|Deprecated|Fatal error):', output))
+        # CI provides every core, extension and tool these tests ask for: a test
+        # that reports SKIP there did not run and cannot count as passed.
+        if os.environ.get('GITHUB_ACTIONS') == 'true' and re.search(rb'(?m)^[\w.-]+:? SKIP\b', output):
+            bad = True
         if bad:
             log = directory/(path.stem+'.log')
             log.write_bytes(output); log.chmod(0o600)
