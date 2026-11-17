@@ -15,6 +15,12 @@ ARG APK_REFRESH=2026-10-05
 
 COPY dockerfile/sources.sha256 /sources.sha256
 COPY dockerfile/download-file.sh /build-tools/download-file.sh
+# Бэкпорт апстримного 996bc83e (ещё не в выпуске 1.6.0): стек сигналов не меньше
+# 64 КиБ. С постоянным SIGSTKSZ musl ядро на CPU с большим кадром сигнала (AMX)
+# отвечает ENOMEM, worker завершается, и клиент видит обрыв TLS. Убрать патч,
+# когда исправление войдёт в выпуск; на другой версии он не применится — сборка
+# остановится, а не соберёт ocserv без исправления.
+COPY dockerfile/ocserv-sigaltstack.patch /build-tools/ocserv-sigaltstack.patch
 
 RUN set -eux; \
     echo "apk refresh token: $APK_REFRESH"; \
@@ -44,17 +50,19 @@ RUN set -eux; \
         curl \
         tar \
         protobuf-c-compiler \
-        gperf; \
+        gperf \
+        patch; \
     sh /build-tools/download-file.sh "https://gitlab.com/openconnect/ocserv/-/archive/${OCSERV_VERSION}/ocserv-${OCSERV_VERSION}.tar.gz" /tmp/ocserv.tar.gz; \
     awk -v key="ocserv/${OCSERV_VERSION}" '$2 == key {print $1 "  /tmp/ocserv.tar.gz"}' /sources.sha256 | sha256sum -c -; \
     tar xzf /tmp/ocserv.tar.gz -C /tmp; \
     rm /tmp/ocserv.tar.gz; \
     cd /tmp/ocserv-${OCSERV_VERSION}; \
+    patch -p1 < /build-tools/ocserv-sigaltstack.patch; \
     meson setup build -Dbuildtype=release -Dstrip=true -Dfirewall-script=iptables; \
     ninja -C build; \
     meson install -C build; \
     cd /; \
-    rm -rf /tmp/ocserv-* /sources.sha256 /build-tools/download-file.sh; \
+    rm -rf /tmp/ocserv-* /sources.sha256 /build-tools/download-file.sh /build-tools/ocserv-sigaltstack.patch; \
     apk del .build-deps; \
     mkdir -p /root/.ssh; \
     # sanity: все нужные боту бинарники на месте, и ocserv запускается

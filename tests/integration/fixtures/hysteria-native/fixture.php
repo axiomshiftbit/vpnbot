@@ -13,7 +13,16 @@ class HysteriaNativeBot extends Bot {
     public function getDomain($cdn = false) { return 'hy.example.test'; }
     public function protocolModuleEnabled(string $key): bool { return true; }
     public function withLock(string $name, callable $fn, int $timeout = 0, $busy = null) { return $fn(); }
-    public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null') { return str_contains($cmd, 'printf managed') ? 'managed' : "Version:\t" . getenv('HYSTERIA_CORE'); }
+    public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null') {
+        if (!str_contains($cmd, 'printf managed')) return "Version:\t" . getenv('HYSTERIA_CORE');
+        // Управляемая служба подтверждает применение SHA-256 записанного YAML
+        // (MAN-01); настоящее ядро проверяет эти YAML далее в run.py.
+        $sha = hash_file('sha256', $this->hysteriaConf);
+        @mkdir($this->hysteriaUsersRoot . '/runtime', 0700, true);
+        file_put_contents($this->hysteriaUsersRoot . '/runtime/status.json', json_encode(['time' => time(), 'running' => true,
+            'error' => '', 'config_sha256' => $sha, 'checked_sha256' => $sha]));
+        return 'managed';
+    }
     public function flagName(string $name, string|array $hosts, bool $cacheOnly = true): string { return $name; }
     public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML') {}
 }
