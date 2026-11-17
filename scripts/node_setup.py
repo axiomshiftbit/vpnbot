@@ -213,9 +213,38 @@ def disable_forwarding(proc=Path('/proc/sys')):
         raise ValueError('IP forwarding remains enabled')
 
 
+LOCK_NFT = Path('/run/lock/nft-docker-watch.lock')
+
+
+def docker_rules_loaded(live):
+    """dockerd names its iptables-nft chains DOCKER/DOCKER-* and its nftables
+    backend tables docker-*; hand-written names such as "dockernat" are not Docker's."""
+    return any(re.match(r'DOCKER(?:-|$)', x['name']) for x in nft_host_setup.objects(live, 'chain')) \
+        or any(x['name'].startswith('docker-') for x in nft_host_setup.objects(live, 'table'))
+
+
+def drop_stale_docker_rules(path=Path('/etc/nftables.conf')):
+    """Docker's first start on a clean server (before the profile disabled its
+    firewall management) creates iptables-nft chains; restarting dockerd with
+    iptables=false keeps them. Load the persistent profile, which starts with
+    flush ruleset and includes the node guard, exactly as the next boot does."""
+    fd = os.open(LOCK_NFT, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        live = json.loads(command(['nft', '-j', 'list', 'ruleset']).stdout)
+        if not docker_rules_loaded(live) or not path.exists():
+            return False
+        docker_firewall_disabled()
+        command(['nft', '-c', '-f', path])
+        command(['nft', '-f', path])
+        return True
+    finally:
+        os.close(fd)
+
+
 def verify_firewall(backend, path=Path('/etc/nftables.conf')):
     """Read back service, persistent configuration and live rules; never reload."""
-    fd = os.open('/run/lock/nft-docker-watch.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    fd = os.open(LOCK_NFT, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         expected = []
@@ -233,11 +262,8 @@ def verify_firewall(backend, path=Path('/etc/nftables.conf')):
         state.trusted(backend.guard)
         expected.append(nft_host_setup.compile_rules(backend.guard.read_text()))
         live = json.loads(command(['nft', '-j', 'list', 'ruleset']).stdout)
-        # Anywhere in the ruleset, not only in profile tables. dockerd names its
-        # iptables-nft chains DOCKER/DOCKER-* and its nftables backend tables
-        # docker-*; hand-written names such as "dockernat" are not Docker's.
-        if any(re.match(r'DOCKER(?:-|$)', x['name']) for x in nft_host_setup.objects(live, 'chain')) \
-                or any(x['name'].startswith('docker-') for x in nft_host_setup.objects(live, 'table')):
+        # Anywhere in the ruleset, not only in profile tables.
+        if docker_rules_loaded(live):
             raise ValueError('Docker firewall rules are loaded')
         for document in expected:
             tables = {(x['family'], x['name']) for x in nft_host_setup.objects(document, 'table')}
@@ -457,6 +483,7 @@ def setup(value, source, channel='latest', bundle=None):
             command(['systemctl', 'start', 'vpnbot-node.service', 'vpnbot-node-watch.timer', 'vpnbot-node-renew.timer'])
             fcntl.flock(descriptor, fcntl.LOCK_EX)
             progress('verify')
+            drop_stale_docker_rules()
             verify_firewall(backend)
         except Exception as error:
             failed_stage = CURRENT_STAGE

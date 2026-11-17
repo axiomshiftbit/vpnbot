@@ -336,6 +336,7 @@ class NodeSetup(unittest.TestCase):
                     patch.object(setup.image_bundle, 'read', return_value={'images': {'xr': 'fixture'}}), \
                     patch.object(setup, 'command', side_effect=command), patch.object(setup.nft_host_setup, 'configure'), \
                     patch.object(setup, 'Runtime') as runtime, patch.object(setup.state, 'Store') as store, \
+                    patch.object(setup, 'drop_stale_docker_rules'), \
                     patch.object(setup, 'verify_firewall', side_effect=ValueError('nftables service is not active and enabled')):
                 store.return_value.current.return_value = None
                 store.return_value.root = root
