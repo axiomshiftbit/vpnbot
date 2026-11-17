@@ -142,7 +142,9 @@ try {
     connectionCheck($_GET === $beforeGet && $bot->subToken === $beforeToken, 'Контекст восстановлен после отказа'); $bot->templates = $original; $bot->subToken = [];
     foreach ([['tag' => 'a', 'detour' => 'a'], ['tag' => 'a', 'detour' => 'missing']] as $bad) connectionDenied(fn() => Bot::connectionNodes(['outbounds' => [$bad]], 'si'), 'Нет циклических или отсутствующих зависимостей');
     $screen = connectionClick($bot, $prefix);
-    connectionCheck(connectionBack($screen) === '/userXr 0', 'Корень экспорта возвращает в своего пользователя');
+    // Back carries the user's identity token; an untokened one was refused as stale.
+    connectionCheck((bool) preg_match('~^/userXr 0 ![A-Za-z0-9_-]{22}$~D', connectionBack($screen)), 'Корень экспорта возвращает в своего пользователя');
+    connectionCheck(connectionClick($bot, connectionBack($screen))['text'] === 'User 0', 'Назад из экспорта открывает того же пользователя');
     foreach (['vless' => 'VLESS'] + ManagedProtocol::NAMES as $p => $_) {
         $screen = connectionClick($bot, "$prefix $p");
         connectionCheck(connectionBack($screen) === $prefix && !str_contains($screen['text'], '❌'), 'Карточка возвращается в выбор протокола');
@@ -183,7 +185,8 @@ try {
     connectionDenied(fn() => $bot->connectionExport($source, 'tuic', 'cl'), 'Не применённый порт не выдаётся');
     array_unshift($bot->xr['inbounds'][0]['settings']['clients'], array_replace($client, ['id' => Bot::xrayUuid(), 'subtoken' => bin2hex(random_bytes(16))]));
     $screen = connectionClick($bot, $prefix);
-    connectionCheck(connectionBack($screen) === '/userXr 1', 'Старый callback следует за пользователем после изменения индекса');
+    connectionCheck((bool) preg_match('~^/userXr 1 ![A-Za-z0-9_-]{22}$~D', connectionBack($screen)), 'Старый callback следует за пользователем после изменения индекса');
+    connectionCheck(connectionClick($bot, connectionBack($screen))['text'] === 'User 1', 'Назад после сдвига открывает того же пользователя');
     $bot->permit = false; $before = $bot->transport->messages;
     connectionClick($bot, "$prefix anytls uri"); connectionCheck($before === $bot->transport->messages, 'Чужой пользователь не получает секреты'); $bot->permit = true;
     $bot->xr['inbounds'][0]['settings']['clients'] = [];

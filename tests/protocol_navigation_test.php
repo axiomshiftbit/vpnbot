@@ -270,11 +270,12 @@ try {
             $screen = chatClick($bot, "/xp $source $protocol");
             chatCheck(count($bot->transport->messages) === 1, 'Переключатель общей подписки не создаёт сообщение');
             chatCheck($bot->xr['inbounds'][0]['settings']['clients'][0]['managed_protocols'][$protocol] === $enabled, 'Личный переключатель сохранён');
-            chatCheck(chatBack($screen) === '/userXr 0', 'Назад открывает карточку общего пользователя');
+            // Back carries the user's identity token (an untokened one was refused as stale).
+            chatCheck(chatBack($screen) === '/userXr 0 !' . rtrim(strtr(base64_encode(hex2bin($source)), '+/', '-_'), '='), 'Назад открывает карточку общего пользователя');
         }
     }
     array_unshift($bot->xr['inbounds'][0]['settings']['clients'], ['id'=>Bot::xrayUuid(),'email'=>'Другой']);
-    chatCheck(chatBack(chatClick($bot, "/xp $source")) === '/userXr 1', 'Стабильный callback находит пользователя после переиндексации');
+    chatCheck(chatBack(chatClick($bot, "/xp $source")) === '/userXr 1 !' . rtrim(strtr(base64_encode(hex2bin($source)), '+/', '-_'), '='), 'Стабильный callback находит пользователя после переиндексации');
     $bot->xr['inbounds'][0]['settings']['clients'] = [];
     $screen=chatClick($bot, "/xp $source anytls");
     chatCheck(str_contains($screen['text'], 'удалён') && chatBack($screen) === '/xray', 'Старая кнопка удалённого пользователя не меняет чужой доступ');

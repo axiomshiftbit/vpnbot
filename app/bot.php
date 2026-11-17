@@ -667,7 +667,7 @@ class Bot
     private static function xrayCallbackIndex(string $command): ?int
     {
         $command = preg_replace('~^wg[01]:~', '', $command);
-        if (preg_match('~^/(?:userXr|switchXr|delxr|renameXrUser|changeXrPwd|genXrPwd|resetXrUser|setTrafficXr|timerXr|regenIdXr|rotateSub|hwidUser|hwidUserToggle|hwidUserDefault|setHwidUserLimit|hwidUserDel|extUser|extAdd|extRename|extToggle|extDel|setVlessLink) ([0-9]+)(?:[ _]|$)~D', $command, $m)) return (int) $m[1];
+        if (preg_match('~^/(?:userXr|switchXr|delxr|renameXrUser|changeXrPwd|genXrPwd|resetXrUser|setTrafficXr|timerXr|regenIdXr|rotateSub|hwidUser|hwidUserToggle|hwidUserDefault|setHwidUserLimit|hwidUserDel|extUser|extAdd|extRename|extToggle|extDel|setVlessLink|clientLogClear) ([0-9]+)(?:[ _]|$)~D', $command, $m)) return (int) $m[1];
         if (preg_match('~^/templateUser \w+ ([0-9]+)$~D', $command, $m)) return (int) $m[1];
         if (preg_match('~^/choiceTemplate [a-z]+_([0-9]+)(?:_|$)~D', $command, $m)) return (int) $m[1];
         return null;
@@ -679,19 +679,42 @@ class Bot
     {
         foreach ($buttons as &$row) foreach ($row as &$button) {
             $command = $button['callback_data'] ?? '';
+            if (!is_string($command) || self::xrayIdentityTokened($command)) continue;
             $index = self::xrayCallbackIndex($command);
             $client = $index === null ? null : ($xray['inbounds'][0]['settings']['clients'][$index] ?? null);
             if ($client === null) continue;
             $source = ManagedProtocol::xraySource($client);
             if (preg_match('~^/choiceTemplate ([a-z]+)_[0-9]+(?:_(.*))?$~D', $command, $m)) {
                 $token = rtrim(strtr(base64_encode(hex2bin(substr($source, 0, 16))), '+/', '-_'), '=');
-                $button['callback_data'] = '/ct ' . $token . ' ' . $m[1] . ' ' . (($m[2] ?? '') ?: '-');
+                $tokened = '/ct ' . $token . ' ' . $m[1] . ' ' . (($m[2] ?? '') ?: '-');
             } else {
                 $token = rtrim(strtr(base64_encode(hex2bin($source)), '+/', '-_'), '=');
-                $button['callback_data'] = $command . ' !' . $token;
+                $tokened = $command . ' !' . $token;
             }
+            // Telegram rejects the whole keyboard when one callback exceeds 64 bytes.
+            if (strlen($tokened) <= 64) $button['callback_data'] = $tokened;
         }
         unset($row, $button);
+        return $buttons;
+    }
+
+    private static function xrayIdentityTokened(string $command): bool
+    {
+        return str_starts_with($command, '/ct ') || (bool) preg_match('~ ![A-Za-z0-9_-]{22}\z~', $command);
+    }
+
+    // Every keyboard leaves through send()/update(): a button that addresses an
+    // Xray user by number gets that user's token here, so a screen that built
+    // it without one (connection log, help, ...) does not turn its Back into
+    // "The user list has changed". Already tokened buttons keep their token.
+    public function xrayIdentityKeyboard($buttons)
+    {
+        if (!is_array($buttons)) return $buttons;
+        foreach ($buttons as $row) foreach ((array) $row as $button) {
+            $command = is_array($button) ? ($button['callback_data'] ?? null) : null;
+            if (is_string($command) && !self::xrayIdentityTokened($command) && self::xrayCallbackIndex($command) !== null)
+                return $this->xrayIdentityButtons($buttons, $this->getXray() ?: []);
+        }
         return $buttons;
     }
 
@@ -13895,22 +13918,26 @@ NFT;
         }
         $out[] = 'Restart Adguard Home';
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-        $out[] = $this->stopAd();
-        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-        $c['users'][0]['password'] = self::adguardPasswordHash($pass);
-        // Сначала конфиг AdGuard, потом pac.json: при отказе записи бот
-        // продолжает показывать пароль, с которым панель действительно пускает.
-        if ($this->adguardWrite($c)) {
-            $this->pacConfUpdate(function (&$p) use ($pass) {
-                $p['adpswd'] = $pass;
-            });
-        } else {
-            $this->send($this->input['from'], $this->t('Не удалось записать AdGuardHome.yaml — пароль не изменён.', 'Could not write AdGuardHome.yaml; the password is unchanged.'));
+        try {
+            $out[] = $this->stopAd();
+            $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
+            $c['users'][0]['password'] = self::adguardPasswordHash($pass);
+            // Сначала конфиг AdGuard, потом pac.json: при отказе записи бот
+            // продолжает показывать пароль, с которым панель действительно пускает.
+            if ($this->adguardWrite($c)) {
+                $this->pacConfUpdate(function (&$p) use ($pass) {
+                    $p['adpswd'] = $pass;
+                });
+            } else {
+                $this->send($this->input['from'], $this->t('Не удалось записать AdGuardHome.yaml — пароль не изменён.', 'Could not write AdGuardHome.yaml; the password is unchanged.'));
+            }
+            $out[] = $this->startAd();
+            $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
+            sleep(3);
+        } finally {
+            // A failed restart must not leave the buttonless "Restart Adguard Home" screen.
+            $this->menu('adguard');
         }
-        $out[] = $this->startAd();
-        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-        sleep(3);
-        $this->menu('adguard');
     }
 
     public function adguardreset(bool $confirmed = false)
@@ -14427,14 +14454,18 @@ DNS-over-HTTPS with IP:
         }
         $out[] = 'Restart Adguard Home';
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-        $out[] = $this->stopAd();
-        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-        $c['dns']['upstream_dns'][] = $url;
-        $this->adguardWrite($c);
-        $out[] = $this->startAd();
-        $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-        sleep(3);
-        $this->menu('adguard');
+        try {
+            $out[] = $this->stopAd();
+            $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
+            $c['dns']['upstream_dns'][] = $url;
+            $this->adguardWrite($c);
+            $out[] = $this->startAd();
+            $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
+            sleep(3);
+        } finally {
+            // A failed restart must not leave the buttonless "Restart Adguard Home" screen.
+            $this->menu('adguard');
+        }
     }
 
     public function delupstream($k)
@@ -14446,12 +14477,16 @@ DNS-over-HTTPS with IP:
         }
         $out[] = 'Restart Adguard Home';
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-        $this->stopAd();
-        unset($c['dns']['upstream_dns'][(int) $k]);
-        $c['dns']['upstream_dns'] = array_values($c['dns']['upstream_dns']);
-        $this->adguardWrite($c);
-        $this->startAd();
-        $this->menu('adguard');
+        try {
+            $this->stopAd();
+            unset($c['dns']['upstream_dns'][(int) $k]);
+            $c['dns']['upstream_dns'] = array_values($c['dns']['upstream_dns']);
+            $this->adguardWrite($c);
+            $this->startAd();
+        } finally {
+            // A failed restart must not leave the buttonless "Restart Adguard Home" screen.
+            $this->menu('adguard');
+        }
     }
 
     public function startAd()
@@ -23786,9 +23821,19 @@ DNS-over-HTTPS with IP:
     // воркер вебхука висит молча). Флок НЕ реентерабелен: второй fopen+flock
     // того же файла в том же процессе блокируется, поэтому вкладывать withLock
     // с одним и тем же $name нельзя.
+    protected string $lockDir = '/logs/';
+    // Locks this instance holds: a second flock of the same file in the same
+    // process would wait for itself forever and stall every later action.
+    private array $heldLocks = [];
+
     public function withLock(string $name, callable $fn, int $timeout = 0, $busy = null)
     {
-        $lock = @fopen("/logs/.lock.$name", 'c');
+        if (isset($this->heldLocks[$name])) {
+            // A bounded wait used to time out with $busy; an unbounded one hung forever.
+            if ($timeout > 0) return $busy;
+            throw new LogicException("Nested lock: $name");
+        }
+        $lock = @fopen("{$this->lockDir}.lock.$name", 'c');
         // Ошибка хранилища не разрешает конкурентную запись без блокировки.
         if ($lock === false) return $busy;
         if ($lock !== false) {
@@ -23805,9 +23850,11 @@ DNS-over-HTTPS with IP:
                 if (!flock($lock, LOCK_EX)) { fclose($lock); return $busy; }
             }
         }
+        $this->heldLocks[$name] = true;
         try {
             return $fn();
         } finally {
+            unset($this->heldLocks[$name]);
             if ($lock !== false) {
                 flock($lock, LOCK_UN);
                 fclose($lock);
@@ -25374,6 +25421,8 @@ DNS-over-HTTPS with IP:
     // Drop just this client's entry from the vless connection log, then re-render.
     public function clientLogClear(int $i)
     {
+        // One click, no confirmation: never clear the log of whoever now has this row.
+        if (!$this->xrayClientMatches($i)) return $this->staleXrayAction();
         $cl    = $this->getXray()['inbounds'][0]['settings']['clients'][$i] ?? null;
         $email = $cl['email'] ?? '';
         if ($email !== '') {
@@ -28323,17 +28372,21 @@ DNS-over-HTTPS with IP:
         $emails = [];
         foreach ($c['inbounds'][0]['settings']['clients'] as $k => $v) {
             $uuids[]  = $v['id'];
-            $emails[] = $v['email'];
+            // Xray compares emails case-insensitively ("User Alice already exists").
+            $emails[] = mb_strtolower((string) ($v['email'] ?? ''));
         }
         foreach ($users as $user) {
             // Формат ввода — «email» или «email:uuid»: без второй части ключа
             // $user[1] попросту нет, и на каждом обычном добавлении шло
             // «Undefined array key 1».
             $uuid = ($user[1] ?? '') ?: self::xrayUuid();
-            if (in_array($uuid, $uuids) || in_array($user[0], $emails)) {
-                $this->send($this->input['chat'], "user {$user[0]} already exists");
+            if (in_array($uuid, $uuids) || in_array(mb_strtolower($user[0]), $emails, true)) {
+                $this->send($this->input['chat'], 'user ' . self::esc($user[0]) . ' already exists');
                 return $this->xray();
             }
+            // Also a name repeated within this input.
+            $uuids[] = $uuid;
+            $emails[] = mb_strtolower($user[0]);
             // subtoken addresses the subscription independently of the id (which
             // is the VLESS credential), so a leaked/shared sub URL never exposes
             // the credential and can be rotated without regenerating the id.
@@ -28752,6 +28805,13 @@ DNS-over-HTTPS with IP:
     {
         if (!$this->xrayClientMatches((int) $i)) return $this->staleXrayAction();
         $c = $this->getXray();
+        foreach ($c['inbounds'][0]['settings']['clients'] as $k => $other) {
+            // Xray refuses a second client with the same email, case-insensitively.
+            if ($k !== (int) $i && mb_strtolower((string) ($other['email'] ?? '')) === mb_strtolower((string) $name)) {
+                $this->send($this->input['chat'], 'user ' . self::esc((string) $name) . ' already exists');
+                return $this->userXrLocked($i);
+            }
+        }
         $c['inbounds'][0]['settings']['clients'][$i]['email'] = $name;
         if ($this->restartXray($c) === false) throw new RuntimeException($this->t('Не удалось применить настройки Xray', 'Could not apply Xray settings'));
         $this->adguardXrayClients();
@@ -35792,6 +35852,12 @@ DNS-over-HTTPS with IP:
         $key = "{$subdomain}_domain";
         $p = $this->getPacConf();
         if (isset($p[$key])) return self::isSubdomainLabel($p[$key]) ? $p[$key] : '';
+        // Called inside a pac transaction (TeleMT WEB checks): the deterministic
+        // label is returned now and persisted by the next call outside the lock.
+        if (isset($this->heldLocks['pac'])) {
+            $label = substr(hash('sha256', "$subdomain{$this->key}"), 0, 8);
+            return self::isSubdomainLabel($label) ? $label : '';
+        }
         return $this->pacConfUpdate(function (&$p) use ($subdomain, $key) {
             if (!isset($p[$key])) $p[$key] = substr(hash('sha256', "$subdomain{$this->key}"), 0, 8);
             return self::isSubdomainLabel($p[$key]) ? $p[$key] : '';
@@ -36299,49 +36365,53 @@ DNS-over-HTTPS with IP:
         }
         $out[] = 'Restart Adguard Home';
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-        $this->stopAd();
-        if (!empty($delete)) {
-            unset($c['dns']['allowed_clients']);
-        } else {
-            $previous = array_fill_keys(array_map('strval',
-                (array) ($c['dns']['allowed_clients'] ?? [])), true);
-            $keepLegacy = $this->dohLegacyAllowed();
-            $c['dns']['allowed_clients'] = [];
-            $c['dns']['allowed_clients'][] = '10.10.0.0/24';
-            // Только корректный ClientID: на любой другой записи AdGuardHome
-            // не запускается (ключ мог сохраниться до появления проверки).
-            if (!empty($pac['adguardkey']) && self::adguardClientIdValid((string) $pac['adguardkey'])) {
-                $c['dns']['allowed_clients'][] = $pac['adguardkey'];
-            }
-            $c['dns']['allowed_clients'][] = getenv('WGADDRESS');
-            $c['dns']['allowed_clients'][] = getenv('WG1ADDRESS');
-            $c['dns']['allowed_clients'][] = '10.0.2.0/24'; // openconnect
-            if (!empty($xr = $this->getXray())) {
-                foreach ($xr['inbounds'][0]['settings']['clients'] as $v) {
-                    // Производный id, а не сам uuid: он же стоит в DoH-URL,
-                    // который клиент дёргает на каждый запрос. См. dohClientId().
-                    $uid = (string) ($v['id'] ?? '');
-                    $c['dns']['allowed_clients'][] = $this->dohClientId($uid);
-                    // Уже выданный конфиг со старым безопасным HMAC должен
-                    // продолжить работать. На свежей установке лишний alias не
-                    // добавляем: сохраняем его только если он был разрешён до
-                    // ручной пересборки списка — и только пока идёт переходный
-                    // период (см. dohLegacyAllowed). Кладём обе формы: AdGuard
-                    // мог переписать сырые 16 hex в EUI-64 у себя.
-                    $legacy    = $this->legacyDohClientId($uid);
-                    $legacyMac = implode(':', str_split($legacy, 2));
-                    if ((isset($previous[$legacy]) || isset($previous[$legacyMac])) && $keepLegacy) {
-                        $c['dns']['allowed_clients'][] = $legacy;
-                        $c['dns']['allowed_clients'][] = $legacyMac;
+        try {
+            $this->stopAd();
+            if (!empty($delete)) {
+                unset($c['dns']['allowed_clients']);
+            } else {
+                $previous = array_fill_keys(array_map('strval',
+                    (array) ($c['dns']['allowed_clients'] ?? [])), true);
+                $keepLegacy = $this->dohLegacyAllowed();
+                $c['dns']['allowed_clients'] = [];
+                $c['dns']['allowed_clients'][] = '10.10.0.0/24';
+                // Только корректный ClientID: на любой другой записи AdGuardHome
+                // не запускается (ключ мог сохраниться до появления проверки).
+                if (!empty($pac['adguardkey']) && self::adguardClientIdValid((string) $pac['adguardkey'])) {
+                    $c['dns']['allowed_clients'][] = $pac['adguardkey'];
+                }
+                $c['dns']['allowed_clients'][] = getenv('WGADDRESS');
+                $c['dns']['allowed_clients'][] = getenv('WG1ADDRESS');
+                $c['dns']['allowed_clients'][] = '10.0.2.0/24'; // openconnect
+                if (!empty($xr = $this->getXray())) {
+                    foreach ($xr['inbounds'][0]['settings']['clients'] as $v) {
+                        // Производный id, а не сам uuid: он же стоит в DoH-URL,
+                        // который клиент дёргает на каждый запрос. См. dohClientId().
+                        $uid = (string) ($v['id'] ?? '');
+                        $c['dns']['allowed_clients'][] = $this->dohClientId($uid);
+                        // Уже выданный конфиг со старым безопасным HMAC должен
+                        // продолжить работать. На свежей установке лишний alias не
+                        // добавляем: сохраняем его только если он был разрешён до
+                        // ручной пересборки списка — и только пока идёт переходный
+                        // период (см. dohLegacyAllowed). Кладём обе формы: AdGuard
+                        // мог переписать сырые 16 hex в EUI-64 у себя.
+                        $legacy    = $this->legacyDohClientId($uid);
+                        $legacyMac = implode(':', str_split($legacy, 2));
+                        if ((isset($previous[$legacy]) || isset($previous[$legacyMac])) && $keepLegacy) {
+                            $c['dns']['allowed_clients'][] = $legacy;
+                            $c['dns']['allowed_clients'][] = $legacyMac;
+                        }
                     }
                 }
+                $c['dns']['allowed_clients'] = array_values(array_unique(array_filter(
+                    $c['dns']['allowed_clients'], static fn($v) => (string) $v !== '')));
             }
-            $c['dns']['allowed_clients'] = array_values(array_unique(array_filter(
-                $c['dns']['allowed_clients'], static fn($v) => (string) $v !== '')));
+            $this->adguardWrite($c);
+            $this->startAd();
+        } finally {
+            // A failed restart must not leave the buttonless "Restart Adguard Home" screen.
+            $this->menu('adguard');
         }
-        $this->adguardWrite($c);
-        $this->startAd();
-        $this->menu('adguard');
     }
 
     public function menuLang()
@@ -38789,6 +38859,9 @@ DNS-over-HTTPS with IP:
         return $r;
     }
 
+    // php healthcheck marker (scripts/check_file.sh); the whole stack waits for it.
+    protected string $startMarker = '/start';
+
     public function polling()
     {
         $offset = -1;
@@ -38799,6 +38872,10 @@ DNS-over-HTTPS with IP:
                 'timeout' => 5,
             ]);
             if (!empty($r['description'])) {
+                // Telegram ответил ошибкой (401 — токен отозван, 409 — тот же
+                // токен опрашивает другой экземпляр, 429): php и Unit живы.
+                // Без маркера после перезапуска не поднимался весь стек VPN.
+                file_put_contents($this->startMarker, 1);
                 // Как и request(): только код. description внешнего API может
                 // содержать отражённый URL запроса с токеном.
                 error_log('getUpdates error: code ' . (int) ($r['error_code'] ?? 0));
@@ -38815,11 +38892,11 @@ DNS-over-HTTPS with IP:
                 // старт nginx/warp/wg. Без этой строки недоступность Telegram
                 // (ровно тот случай, ради которого сделана панель) не давала бы
                 // подняться всему стеку.
-                file_put_contents('/start', 1);
+                file_put_contents($this->startMarker, 1);
                 sleep(5);
                 continue;
             }
-            file_put_contents('/start', 1);
+            file_put_contents($this->startMarker, 1);
             if (!empty($r['result'])) {
                 foreach ($r['result'] as $v) {
                     try {
@@ -38870,6 +38947,7 @@ DNS-over-HTTPS with IP:
         $button = $this->managedNodeNavigationButtons($button);
         $button = $this->protocolNavigationButtons($button);
         $button = $this->filterProtocolButtons($button);
+        $button = $this->xrayIdentityKeyboard($button);
         if (is_null($text)) {
             $text = '';
         }
@@ -39065,6 +39143,7 @@ DNS-over-HTTPS with IP:
         $button = $this->managedNodeNavigationButtons($button);
         $button = $this->protocolNavigationButtons($button);
         $button = $this->filterProtocolButtons($button);
+        $button = $this->xrayIdentityKeyboard($button);
         $text = (string) $text;
         if ($button) {
             $extra = ['inline_keyboard' => $button];
@@ -39882,7 +39961,9 @@ DNS-over-HTTPS with IP:
                 continue;
             }
             $rel = ltrim(substr($f->getPathname(), strlen($root)), '/');
-            if (self::isOvpnRuntimePath($rel)) {
+            // config/openvpn/.gitkeep only keeps the directory in the repository:
+            // it is no snapshot of a not yet initialised OpenVPN.
+            if (self::isOvpnRuntimePath($rel) || $rel === '.gitkeep') {
                 continue;
             }
             $files[$rel] = base64_encode($this->backupReadFile($f->getPathname()));
