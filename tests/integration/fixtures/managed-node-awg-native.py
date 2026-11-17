@@ -251,7 +251,16 @@ try:
                           and re.search(r'^Uid:\s+61000\s+61000\s+61000\s+61000$',status,re.M) is not None)
                     outbound=profile['outbound']
                     outbound['settings'].update(address='127.0.0.1',port=10920)
-                    wait_listening(10920)
+                    if not wait_listening(10920):
+                        process=carriers.active.get(0,(None,None))[1]
+                        code=None if process is None else process.poll()
+                        print('DIAGNOSTIC carrier helper exit code '+str(code),flush=True)
+                        if process is not None and code is None:
+                            state=re.search(r'^State:\s+(.+)$',Path(f'/proc/{process.pid}/status').read_text(),re.M)
+                            print('DIAGNOSTIC carrier helper state '+(state.group(1) if state else '?'),flush=True)
+                            print('DIAGNOSTIC carrier helper threads '+str(len(list(Path(f'/proc/{process.pid}/task').iterdir()))),flush=True)
+                        listeners=run(['ss','-Hltn','sport = :10920']).stdout.decode(errors='replace').strip()
+                        print('DIAGNOSTIC port 10920 listeners '+str(len(listeners.splitlines()) if listeners else 0),flush=True)
                     if transport!='reality':
                         outbound['streamSettings']['tlsSettings']['certificates']=[{'usage':'verify','certificateFile':str(root/'tls.pem')}]
                     client=start(cores/binary,name+'-client',dict(log={'loglevel':'none'},

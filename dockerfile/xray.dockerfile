@@ -14,6 +14,9 @@ RUN sh /build-tools/build-xray.sh XTLS/Xray-core "$XRAY_VERSION" /out/xray \
     && sh /build-tools/build-xray.sh Jolymmiles/Xray-core "$XRAY_FORK_VERSION" /out/xray-smux http2legacy \
         './testing/release/... ./transport/internet/reality/... ./infra/conf/... ./common/mux/... ./transport/internet/splithttp/... ./common/singmux/... ./proxy/vless/...'
 
+# Выход ноды остаётся на amneziawg-go v3.1.20260828: с v3.1.20261116 на раннерах
+# GitHub дважды не поднялся туннель ограниченного помощника (на home-build не
+# воспроизводится). Серверный образ wireguard уже на новой версии.
 FROM golang:${PROTOCOL_GO_VERSION}-alpine AS amnezia
 RUN apk add --no-cache ca-certificates curl git
 COPY dockerfile/go-*.sh dockerfile/download-file.sh dockerfile/go-sources.sha256 dockerfile/wireproxy-node.patch /build-tools/
@@ -21,7 +24,7 @@ RUN sh /build-tools/go-source.sh artem-russkikh/wireproxy-awg node-84f4795 /sour
 WORKDIR /source
 RUN git apply --check /build-tools/wireproxy-node.patch \
     && git apply /build-tools/wireproxy-node.patch \
-    && sh /build-tools/go-retry.sh go get github.com/amnezia-vpn/amneziawg-go/v3@v3.1.20261116 \
+    && sh /build-tools/go-retry.sh go get github.com/amnezia-vpn/amneziawg-go/v3@v3.1.20260828 \
     && sh /build-tools/go-security.sh \
     && CGO_ENABLED=0 sh /build-tools/go-retry.sh go test ./... \
     && CGO_ENABLED=0 sh /build-tools/go-retry.sh go build -trimpath -ldflags '-s -w' -o /out/wireproxy-node ./cmd/wireproxy
