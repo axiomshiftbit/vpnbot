@@ -99,6 +99,19 @@ def tcp(address):
         print('DIAGNOSTIC TCP curl code '+str(r.returncode),flush=True)
     return r.returncode == 0 and r.stdout == b'wg-pass'
 
+def wait_listening(port, limit=10):
+    # The supervisor has started the restricted helper; on a slow runner its
+    # TCP tunnel may not listen yet when the first request arrives (refused).
+    deadline = time.monotonic()+limit
+    while time.monotonic() < deadline:
+        try:
+            socket.create_connection(('127.0.0.1', port), timeout=.5).close()
+            return True
+        except OSError:
+            time.sleep(.1)
+    print('DIAGNOSTIC carrier tunnel not listening after '+str(limit)+' s', flush=True)
+    return False
+
 def udp(address):
     with socket.create_connection(('127.0.0.1', 10875), timeout=2) as control:
         control.settimeout(2);control.sendall(b'\x05\x01\x00')
@@ -238,6 +251,7 @@ try:
                           and re.search(r'^Uid:\s+61000\s+61000\s+61000\s+61000$',status,re.M) is not None)
                     outbound=profile['outbound']
                     outbound['settings'].update(address='127.0.0.1',port=10920)
+                    wait_listening(10920)
                     if transport!='reality':
                         outbound['streamSettings']['tlsSettings']['certificates']=[{'usage':'verify','certificateFile':str(root/'tls.pem')}]
                     client=start(cores/binary,name+'-client',dict(log={'loglevel':'none'},
