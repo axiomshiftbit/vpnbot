@@ -38,6 +38,7 @@ EXCLUDED_NAME = re.compile(r'(key|secret|passw|token|credential|cookie|\.pem$|\.
 # results/unit is a disposable checkout with generated (synthetic) configs.
 EXCLUDED_DIR = re.compile(r'(^|/)(ssh|certs?|pki|keys?|secrets?|backups?|bot|state|config|\.git)(/|$)|^results/unit/', re.I)
 MAX_FILE, MAX_TOTAL = 4 * 1024 * 1024, 48 * 1024 * 1024
+SECRET_WORD = rb'(?:password|passwd|passphrase|secret|psk|private_?key|preshared_?key)'
 # Credential formats that must never be packed, even encrypted.
 PATTERNS = [
     ('github-token', re.compile(rb'\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})')),
@@ -48,6 +49,15 @@ PATTERNS = [
     ('telegram-bot-token', re.compile(rb'\b\d{6,12}:[A-Za-z0-9_-]{30,}\b')),
     ('signed-url-query', re.compile(rb'(?i)([?&](?:sig|signature|x-amz-signature|x-amz-credential|token|access_token|se|sv|skoid)=)[^&\s"\']+')),
     ('aws-key', re.compile(rb'\b(?:AKIA|ASIA)[A-Z0-9]{16}\b')),
+    # Generic credentials of the disposable stand (one-time, synthetic, but
+    # still never packed): the key name stays readable, the value does not.
+    ('json-secret', re.compile(rb'(?i)(?P<p>"[A-Za-z0-9_.-]*' + SECRET_WORD + rb'[A-Za-z0-9_.-]*"\s*:\s*")'
+                               rb'(?!\[REDACTED)(?:[^"\\]|\\.)*(?P<s>")')),
+    ('wireguard-key', re.compile(rb'(?im)(?P<p>^[ \t]*(?:PrivateKey|PresharedKey)[ \t]*=[ \t]*)(?!\[REDACTED)\S+')),
+    ('key-value-secret', re.compile(rb'(?i)(?P<p>(?<![A-Za-z0-9_-])[A-Za-z0-9_]*' + SECRET_WORD + rb'[A-Za-z0-9_]*'
+                                    rb'[ \t]*[=:][ \t]*"?)(?!\[REDACTED)[^\s"\'&;,]+')),
+    ('cli-secret', re.compile(rb'(?i)(?P<p>(?:^|\s)--?[a-z0-9-]*(?:password|passwd|pass|secret|psk|private-key|preshared-key|token)'
+                              rb'(?:=|[ \t]+))(?!\[REDACTED)\S+')),
 ]
 
 
@@ -65,10 +75,14 @@ def forbidden_values():
 
 def redact(data, counts, values):
     for name, pattern in PATTERNS:
-        def replace(match, name=name):
+        def replace(match, name=name, pattern=pattern):
             counts[name] = counts.get(name, 0) + 1
-            prefix = match.group(1) if name in ('authorization', 'basic-auth-url', 'signed-url-query') else b''
-            return prefix + b'[REDACTED:' + name.encode() + b']'
+            if 'p' in pattern.groupindex:
+                prefix = match.group('p')
+            else:
+                prefix = match.group(1) if name in ('authorization', 'basic-auth-url', 'signed-url-query') else b''
+            suffix = match.group('s') if 's' in pattern.groupindex else b''
+            return prefix + b'[REDACTED:' + name.encode() + b']' + suffix
         data = pattern.sub(replace, data)
     for value in values:
         if value in data:
