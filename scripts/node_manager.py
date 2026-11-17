@@ -359,6 +359,19 @@ class Manager:
         state.atomic(self.store.root/'job.json', state.encode(job))
         (self.store.root/'request.json').unlink(missing_ok=True)
 
+    def watch(self):
+        """15-second pass: dead worker, expired confirmation, stopped containers, lost guard."""
+        self.recover_job()
+        pending = self.store.pending()
+        if pending and time.time() >= pending['deadline']:
+            self.recover()
+        elif not self.runtime.running():
+            self.runtime.apply(self.store.current())
+        # A failed `systemctl restart nftables` flushes the ruleset and loads
+        # nothing; the running node would stay unfiltered until the next apply.
+        if not self.runtime.firewall_loaded():
+            self.runtime.load_firewall()
+
     def rpc(self, request):
         if not isinstance(request, dict) or not isinstance(request.get('action'), str):
             raise ValueError('invalid RPC request')
@@ -452,12 +465,7 @@ def main():
                 job.update(state='failed', error='interrupted_by_restart')
                 state.atomic(ROOT/'job.json', state.encode(job))
         elif mode == 'watch':
-            manager.recover_job()
-            pending = store.pending()
-            if pending and time.time() >= pending['deadline']:
-                manager.recover()
-            elif not manager.runtime.running():
-                manager.runtime.apply(store.current())
+            manager.watch()
         elif mode == 'stop':
             manager.runtime.stop()
         elif mode == 'renew':

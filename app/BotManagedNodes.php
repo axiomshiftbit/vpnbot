@@ -612,13 +612,33 @@ trait BotManagedNodes
         $this->managedNodeWrite($id, static function (&$node) { $node['status_attempt']=time(); });
         try {
             $status=$this->managedNodeRpc($id, ['action'=>'status']);
-            $this->managedNodeWrite($id, static function (&$node) use ($status) {
+            // The node renews 30 days ahead on its own; 14 days left means its
+            // daily attempts have failed for about two weeks.
+            $expires = $status['certificate']['expires'] ?? null;
+            $expiring = is_int($expires) && $expires > 0 && $expires - time() < 14*86400;
+            $alert = null;
+            $this->managedNodeWrite($id, static function (&$node) use ($status, $expiring, &$alert) {
                 $node['status']=$status; $node['checked']=time(); unset($node['status_error']);
+                if (!$expiring) unset($node['cert_alert']);
+                elseif (time() - (int) ($node['cert_alert'] ?? 0) >= 86400) { $node['cert_alert'] = time(); $alert = (string) $node['name']; }
             });
+            if ($alert !== null) $this->notifyAdmins($this->managedNodeCertificateAlert($alert, $expires));
         } catch (Throwable $error) {
             $this->managedNodeWrite($id, static function (&$node) { $node['status_error']=true; });
             throw $error;
         }
+    }
+
+    private function managedNodeCertificateAlert(string $name, int $expires): string
+    {
+        $date = date('Y-m-d H:i', $expires);
+        if ($expires <= time()) return '❌ ' . self::esc($name) . $this->t(
+            ": сертификат ноды истёк $date. Клиенты с проверкой TLS не подключатся. Проверьте, что домен указывает на ноду и TCP/80 доступен снаружи, затем Ноды → нода → Сертификат → Обновить сертификат.",
+            ": the node certificate expired on $date. Clients that verify TLS cannot connect. Check that the domain points to the node and TCP/80 is reachable, then Nodes → node → Certificate → Renew certificate.");
+        $days = max(0, (int) floor(($expires - time()) / 86400));
+        return '⚠️ ' . self::esc($name) . $this->t(
+            ": сертификат ноды истекает через $days дн. ($date), автоматическое продление на ноде не удалось. Проверьте, что домен указывает на ноду и TCP/80 доступен снаружи, затем Ноды → нода → Сертификат → Обновить сертификат.",
+            ": the node certificate expires in $days days ($date); the node could not renew it automatically. Check that the domain points to the node and TCP/80 is reachable, then Nodes → node → Certificate → Renew certificate.");
     }
 
     public function managedNodeRefresh(string $id): void

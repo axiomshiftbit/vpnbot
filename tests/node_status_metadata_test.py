@@ -90,7 +90,7 @@ class MetadataTest(unittest.TestCase):
                     patch.object(node_runtime.config.node_awg, 'settings', return_value={}):
                 self.assertEqual(running, runtime.status()['running'], (cover, awg, states))
         source = (Path(__file__).resolve().parents[1]/'scripts/node_manager.py').read_text()
-        self.assertIn('elif not manager.runtime.running():', source)
+        self.assertIn('elif not self.runtime.running():', source)
         self.assertNotIn("runtime.status()['running']", source)
 
     def test_core_versions_are_reused_only_for_the_same_container_start(self):

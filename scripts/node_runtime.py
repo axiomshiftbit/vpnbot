@@ -385,6 +385,11 @@ class Runtime:
         exists = command(['nft', 'list', 'table', 'inet', 'vpnbot_node'], required=False).returncode == 0
         return ('delete table inet vpnbot_node\n' if exists else '') + rules
 
+    @staticmethod
+    def firewall_loaded():
+        tables = command(['nft', 'list', 'tables', 'inet']).stdout.decode().splitlines()
+        return 'table inet vpnbot_node' in (line.strip() for line in tables)
+
     def load_firewall(self, generation=None):
         """Build the guard from a generation with the installed code; check, persist, load atomically."""
         rules = config.firewall(self.store.load(generation)['options'], self.routed_host())
