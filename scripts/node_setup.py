@@ -30,6 +30,10 @@ DOCKER_DAEMON = Path('/etc/docker/daemon.json')
 
 
 DOCKER_SETTINGS = ('iptables', 'ip6tables', 'ip-forward')
+# Written on installation: the required settings plus no userland proxy (node
+# containers use the host network and publish no ports). Existing nodes are
+# checked against DOCKER_SETTINGS only, so an upgrade never fails on it.
+DOCKER_INSTALL = {name: False for name in DOCKER_SETTINGS} | {'userland-proxy': False}
 FORWARDING = Path('/etc/sysctl.d/98-vpnbot-node-forwarding.conf')
 LOG_PATH = Path('/var/log/vpnbot-node/setup.log')
 STAGES = {
@@ -158,8 +162,10 @@ def prepare_docker(daemon=DOCKER_DAEMON):
     preflight() has already refused foreign running containers."""
     try:
         docker_firewall_disabled(daemon)
-        return False
-    except ValueError:
+        current = state.decode(daemon.read_bytes(), 1024*1024) if daemon.is_file() else {}
+        if isinstance(current, dict) and all(current.get(k) is v for k, v in DOCKER_INSTALL.items()):
+            return False
+    except (ValueError, OSError):
         pass
     state.trusted(daemon)
     if daemon.exists():
@@ -179,7 +185,7 @@ def prepare_docker(daemon=DOCKER_DAEMON):
     else:
         daemon.parent.mkdir(mode=0o755, exist_ok=True)
         value = {}
-    value.update({name: False for name in DOCKER_SETTINGS})
+    value.update(DOCKER_INSTALL)
     state.atomic(daemon, json.dumps(value, indent=2, sort_keys=True).encode()+b'\n', 0o644)
     command(['systemctl', 'restart', 'docker.service'], timeout=120)
     docker_firewall_disabled(daemon)

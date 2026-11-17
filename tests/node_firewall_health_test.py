@@ -143,7 +143,8 @@ class FirewallHealth(unittest.TestCase):
             with patch.object(setup, 'command', side_effect=lambda args, **kw: calls.append(args)):
                 self.assertTrue(setup.prepare_docker(daemon))
                 value = json.loads(daemon.read_text())
-                self.assertEqual(value, {'log-driver': 'local', 'iptables': False, 'ip6tables': False, 'ip-forward': False})
+                self.assertEqual(value, {'log-driver': 'local', 'iptables': False, 'ip6tables': False, 'ip-forward': False,
+                                         'userland-proxy': False})
                 self.assertEqual(json.loads((root/'docker'/'daemon.json.before-vpnbot-node').read_text()), {'log-driver': 'local', 'iptables': False})
                 self.assertEqual(calls, [['systemctl', 'restart', 'docker.service']])
                 # Already prepared: no second restart, no rewrite.
