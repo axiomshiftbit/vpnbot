@@ -65,6 +65,7 @@ COPY --from=helpers /out/ /usr/bin/
 #   RandomPaddingAddition») — паддинг перестаёт выбиваться за размер, который
 #   этот путь уже доказал.
 ARG AWG_TOOLS_VERSION=v3.1.20260812
+ARG AWG_GO_VERSION=v3.1.20261116
 ARG WGCF_VERSION=v2.3.1
 ARG TUN2SOCKS_VERSION=v2.7.0
 
@@ -106,6 +107,9 @@ RUN set -eux; \
     # у wgcf нет `--version`/`version` — версию для меню бота (warpVersion)
     # фиксируем в файл на этапе сборки
     printf '%s\n' "${WGCF_VERSION#v}" > /etc/wgcf_version; \
+    # amneziawg-go печатает зашитое «0.0.20250522» в любой версии — для меню
+    # бота фиксируем тег, из которого собран бинарь
+    printf '%s\n' "$AWG_GO_VERSION" > /etc/amneziawg-go_version; \
     sed -i 's/sysctl -q net\.ipv4\.conf\.all\.src_valid_mark=1/echo "skip sysctl src_valid_mark"/' $(which wg-quick); \
     # sanity: все бинарники, которые зовут бот и start_wg.sh, на месте
     # (без пайпов — код возврата не маскируется, set -e уронит сборку)

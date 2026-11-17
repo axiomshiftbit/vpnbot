@@ -17082,8 +17082,9 @@ DNS-over-HTTPS with IP:
     {
         $v = $this->wgVersions();
         $parts = [];
-        if (!empty($v['awg'])) {
-            $parts[] = "AmneziaWG: {$v['awg']}";
+        if (!empty($v['awggo']) || !empty($v['awg'])) {
+            $parts[] = 'AmneziaWG: ' . implode(', ', array_filter([
+                !empty($v['awggo']) ? "go {$v['awggo']}" : '', !empty($v['awg']) ? "tools {$v['awg']}" : '']));
         }
         if (!empty($v['wg'])) {
             $parts[] = "WireGuard: {$v['wg']}";
@@ -17100,12 +17101,14 @@ DNS-over-HTTPS with IP:
             return $this->wgVerCache[$inst];
         }
         $out = (string) $this->ssh(
-            'sh -c \'printf "wg:"; wg --version 2>/dev/null | head -1; printf "awg:"; awg --version 2>/dev/null | head -1\'',
+            'sh -c \'printf "wg:"; wg --version 2>/dev/null | head -1; printf "awg:"; awg --version 2>/dev/null | head -1; '
+            . 'printf "\\nawggo:"; cat /etc/amneziawg-go_version 2>/dev/null\'',
             $inst
         );
         return $this->wgVerCache[$inst] = [
-            'wg'  => $this->pickVersion($out, 'wg'),
-            'awg' => $this->pickVersion($out, 'awg'),
+            'wg'    => $this->pickVersion($out, 'wg'),
+            'awg'   => $this->pickVersion($out, 'awg'),
+            'awggo' => $this->pickVersion($out, 'awggo'),
         ];
     }
 
@@ -21063,7 +21066,8 @@ DNS-over-HTTPS with IP:
     // эти два места не должны.
     public const MENU_VERSION_LABELS = [
         'wg'     => 'wg',
-        'awg'    => 'awg',
+        'awggo'  => 'awg-go',
+        'awg'    => 'awg-tools',
         'warp'   => 'wgcf',
         'xray'   => 'xray',
         'ad'     => 'adguard',
@@ -21101,9 +21105,12 @@ DNS-over-HTTPS with IP:
         $v = [];
 
         // wg и wg1 — один и тот же образ, поэтому опрашиваем только нулевой.
-        $out      = $ask('wg', 'printf "wg:"; wg --version 2>/dev/null | head -1; printf "awg:"; awg --version 2>/dev/null | head -1');
+        $out      = $ask('wg', 'printf "wg:"; wg --version 2>/dev/null | head -1; printf "awg:"; awg --version 2>/dev/null | head -1; '
+            . 'printf "\nawggo:"; cat /etc/amneziawg-go_version 2>/dev/null');
         $v['wg']  = $this->pickVersion($out, 'wg');
         $v['awg'] = $this->pickVersion($out, 'awg');
+        // Реализация протокола — amneziawg-go; его тег пишется в образ при сборке.
+        $v['awggo'] = $this->pickVersion($out, 'awggo');
 
         // wgcf вписывается в /etc/wgcf_version при сборке: версии 2.2.31+ не
         // знают ни `--version`, ни `version` (подробности в warpVersion()).
