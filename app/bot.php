@@ -21286,7 +21286,15 @@ DNS-over-HTTPS with IP:
         // Выгоды никакой: версия меняется только с образом, а этот путь и так
         // накрыт selfUpdate() на старте контейнера.
         $this->expireMenuVersionsCache();
+        // The menu compares HEAD with origin/<branch>; checkVersion() fetches it
+        // only hourly. "Status" is the explicit check: fetch now (bounded).
+        $this->fetchUpdates();
         $this->menu();
+    }
+
+    protected function fetchUpdates(): void
+    {
+        exec('timeout 10 git -C / fetch -q 2>/dev/null');
     }
 
     public function menu($type = false, $arg = false, $return = false)
