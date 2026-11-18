@@ -38,7 +38,9 @@ test: # прогон тестов (на ХОСТЕ, не внутри конте
 versions: # закреплённые версии: уязвимости и новые выпуски (перед полным прогоном; GH_TOKEN — от лимита API GitHub)
 	@python3 scripts/ci_check_components.py
 preup:
-	bash ./update/update.sh &
+	# Own session, no terminal: started from an SSH login, the loop died with
+	# it (SIGHUP) and module apply, restore and the update button stopped until reboot.
+	setsid bash ./update/update.sh >/dev/null 2>&1 </dev/null &
 pull: # обновление образов из ghcr.io/axiomshiftbit
 	touch ./override.env
 	# Проверенный комплект выбирается целиком. Ошибка допуска/сети не разрешает

@@ -9256,7 +9256,7 @@ NFT;
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 if ($this->importOvpnPki($json['ovpn'])) {
                     $this->restoreOvpnBackupSections($json);
-                    $this->restartOvpn();
+                    $this->restartOvpnIfEnabled();
                 } else {
                     $ok = false;
                     // Причина конкретная: «снимок отвергнут, PKI не тронут» и
@@ -9266,7 +9266,7 @@ NFT;
                     if ($this->ovpnRestorePartial) {
                         // Демон продолжает работать со смесью старого и нового
                         // PKI — рестарт заставит его перечитать то, что легло.
-                        $this->restartOvpn();
+                        $this->restartOvpnIfEnabled();
                     }
                     $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
                 }
@@ -40285,6 +40285,13 @@ DNS-over-HTTPS with IP:
     // поэтому любой tun* в контейнере — брошенный.
     private const OVPN_DROP_STALE_TUN = 'for d in /sys/class/net/tun*; do '
         . '[ -e "$d" ] && ip link del "${d##*/}" 2>/dev/null; done; ';
+
+    // Restore: a disabled module has no running container; restarting it only
+    // produced a false "OpenVPN was not started: client isolation ..." message.
+    public function restartOvpnIfEnabled()
+    {
+        return $this->protocolModuleEnabled('ovpn') ? $this->restartOvpn() : true;
+    }
 
     public function restartOvpn()
     {
