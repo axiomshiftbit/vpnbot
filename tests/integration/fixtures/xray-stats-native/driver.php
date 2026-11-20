@@ -58,7 +58,16 @@ function nativePayload(string $id): bool
     file_put_contents('/tmp/client.json', json_encode($profile));
     $p = nativeProcess(['/tmp/ledger-client', 'run', '-c', '/tmp/client.json']);
     try {
-        usleep(150000); $c = curl_init('http://127.0.0.1:18080/payload');
+        $ready = false; $deadline = microtime(true) + 3;
+        while (microtime(true) < $deadline) {
+            if (!proc_get_status($p)['running']) throw new RuntimeException('Synthetic client exited before readiness');
+            $socket = @fsockopen('127.0.0.1', 10801, $errno, $message, .05);
+            if ($socket) { fclose($socket); $ready = true; break; }
+            usleep(20000);
+        }
+        // A failed client startup must not count as successful access revocation.
+        if (!$ready) throw new RuntimeException('Synthetic client readiness timeout');
+        $c = curl_init('http://127.0.0.1:18080/payload');
         curl_setopt_array($c, [CURLOPT_RETURNTRANSFER => true, CURLOPT_PROXY => '127.0.0.1:10801', CURLOPT_PROXYTYPE => CURLPROXY_SOCKS5_HOSTNAME,
             CURLOPT_NOPROXY => '', CURLOPT_TIMEOUT => 2]);
         $data = curl_exec($c); curl_close($c); return $data === str_repeat('synthetic-ledger-payload', 256);
