@@ -132,6 +132,11 @@ try {
     file_put_contents($status, json_encode(['ok' => false, 'settings' => $fresh, 'errors' => ['oc' => 'operation_pending']]));
     $t = microtime(true);
     check(!$b->waitProtocolModulesApplied($before, 2) && microtime(true) - $t >= 1.5, 'не применено — ждёт до предела');
+    // Подтверждение поступило во время последнего интервала опроса.
+    $ready = json_encode(['ok' => true, 'settings' => ProtocolModules::DEFAULTS]);
+    $writer = proc_open([PHP_BINARY, '-r', 'usleep(250000); file_put_contents($argv[1], $argv[2]);', $status, $ready], [], $pipes);
+    $applied = $b->waitProtocolModulesApplied($before, 1);
+    check(proc_close($writer) === 0 && $applied, 'подтверждение в последнем интервале принято');
     file_put_contents($status, json_encode(['ok' => false, 'settings' => array_replace(ProtocolModules::DEFAULTS, ['ss' => false]), 'errors' => ['ss' => 'operation_failed']]));
     $b->sshWaited = [];
     check(!$b->waitProtocolModulesApplied($before, 5), 'отказ модуля завершает ожидание ошибкой');

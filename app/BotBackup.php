@@ -97,7 +97,7 @@ trait BotBackup
         $changed = array_keys(array_filter($after, static fn($key) => ($before[$key] ?? null) !== $after[$key], ARRAY_FILTER_USE_KEY));
         $status = dirname($this->protocolModulesFile) . '/protocol-services.status.json';
         if (!is_file($status)) { $this->backupModuleFailures = $changed; return false; }
-        $deadline = time() + $timeout;
+        $deadline = hrtime(true) + $timeout * 1_000_000_000;
         do {
             $applied = json_decode((string) @file_get_contents($status), true);
             $settled = is_array($applied) && is_array($applied['settings'] ?? null);
@@ -112,17 +112,19 @@ trait BotBackup
             if ($this->backupModuleFailures) return false;
             if ($settled && !$pending && ($applied['ok'] ?? false) === true) {
                 foreach (['oc', 'ovpn', 'tt', 'hy', 'ss', 'dnstt', 'ipsec', 'telemt'] as $service) {
-                    if (empty($before[$service]) && ($applied['settings'][$service] ?? false) === true && $this->protocolModuleEnabled($service)
-                        && !$this->waitForSshService($service, max(1, min(30, $deadline - time())))) {
+                    if (!empty($before[$service]) || ($applied['settings'][$service] ?? false) !== true || !$this->protocolModuleEnabled($service)) continue;
+                    $seconds = (int) ceil(($deadline - hrtime(true)) / 1_000_000_000);
+                    if (!$this->waitForSshService($service, max(1, min(30, $seconds)))) {
                         $this->backupModuleFailures[] = $service;
                         return false;
                     }
                 }
                 return true;
             }
-            if (time() >= $deadline) break;
-            sleep(1);
-        } while (time() < $deadline);
+            $remaining = $deadline - hrtime(true);
+            if ($remaining <= 0) break;
+            usleep((int) min(1_000_000, ceil($remaining / 1_000)));
+        } while (true);
         $this->backupModuleFailures = $pending ?: $changed;
         error_log('importFile: protocol modules were not applied in time');
         return false;
