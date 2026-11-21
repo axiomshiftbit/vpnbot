@@ -120,10 +120,7 @@ trait BotManagedNodeCard
     /** Main bot users routed through this node and online on the main bot now. */
     private function managedNodeUsersLine(string $id): string
     {
-        $assigned = [];
-        foreach (($this->getXray()['inbounds'][0]['settings']['clients'] ?? []) as $client) {
-            if (is_array($client) && empty($client['off']) && !empty($client['email']) && in_array($id, self::exitClientNodes($client), true)) $assigned[] = (string) $client['email'];
-        }
+        $assigned = $this->exitNodeEmails($this->getXray() ?: [], $id);
         if (!$assigned) return $this->t('Пользователи основного бота с маршрутом через ноду: нет.', 'Main bot users routed through the node: none.');
         $online = $this->managedNodeOnlineUsers();
         $text = $this->t('Пользователи основного бота с маршрутом через ноду: ', 'Main bot users routed through the node: ') . count($assigned);
@@ -134,7 +131,7 @@ trait BotManagedNodeCard
             $text .= ' — ' . implode(', ', array_map(static fn($email) => self::esc(mb_substr($email, 0, 32)), array_slice($now, 0, self::NODE_CARD_USERS)))
                 . (count($now) > self::NODE_CARD_USERS ? '…' : '');
         }
-        return $text . $this->t(' (онлайн на основном боте; через ноду идут только адреса её маршрутов)', ' (online on the main bot; only addresses of the node routes pass through it)');
+        return $text . $this->t(' (онлайн на основном боте)', ' (online on the main bot)');
     }
 
     /** Online emails of the main bot, or null when they cannot be read. */

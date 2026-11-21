@@ -86,6 +86,19 @@ $failed = new FailedGroupBot();
 $failed->groupPac = ['exits' => ['cccccccc' => ['kind' => 'group', 'fallback' => 'direct', 'choice' => 'bbbbbbbb']]];
 $failed->checkExitNodes();
 $check(count($failed->notified) === 1 && str_contains($failed->notified[0], 'блокируются'), 'Уведомление ручной группы не обещает прямой fallback');
+foreach (['auto', 'aaaaaaaa', 'direct', 'bbbbbbbb'] as $choice) {
+    $group = $pac;
+    $group['exits']['cccccccc']['fallback'] = 'direct';
+    $group['exits']['cccccccc']['choice'] = $choice;
+    $group['exits']['cccccccc']['members'] = ['aaaaaaaa'];
+    $fixture = $base;
+    $fixture['inbounds'][0]['settings']['clients'][0]['exit_full'] = 'cccccccc';
+    $bot->ensureExitNodes($fixture, $group);
+    $target = $rule($fixture, 'full');
+    $check(($target['balancerTag'] ?? $target['outboundTag']) === match ($choice) {
+        'auto' => 'vpnbot-exit-cccccccc-probe', 'aaaaaaaa' => 'vpnbot-exit-aaaaaaaa', default => 'block'
+    }, 'Full group route is strict for ' . $choice);
+}
 if ($binary = getenv('VLESS_TEST_XRAY')) {
     foreach ([$c, $m, $circular] as $fixture) {
         $directory = sys_get_temp_dir() . '/xray-group-' . bin2hex(random_bytes(8));

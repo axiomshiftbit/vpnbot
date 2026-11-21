@@ -129,6 +129,63 @@ $c = $withUsers; $q = $pac; $q['exits']['a1b2c3d4']['routes'] = ['keyword:' => 1
 $bot->ensureExitNodes($c, $q);
 $check(!isset($c['routing']['balancers']), 'пустые и битые записи не превращаются в правило «всё»');
 
+// Полное назначение действует даже при пустом списке и при сломанном наборе другого узла.
+$full = $withUsers;
+$id = 'a1b2c3d4';
+$other = 'beadbead';
+foreach ([0, 2, 3] as $i) $full['inbounds'][0]['settings']['clients'][$i]['exit_full'] = $id;
+$full['inbounds'][0]['settings']['clients'][0]['exit'][] = $other;
+$full['inbounds'][0]['settings']['clients'][1]['exit'] = [$id];
+$q = ['exits' => [$other => ['link' => $link, 'fallback' => 'block', 'routes' => ['ext:missing.dat:x' => 1]]] + $pac['exits']];
+$c = $full; $bot->ensureExitNodes($c, $q);
+$byTag = static fn(array $c) => array_column($c['routing']['rules'], null, 'ruleTag');
+$rules = $byTag($c);
+$check($rules["vpnbot:exit:$id:full"] === ['type' => 'field', 'ruleTag' => "vpnbot:exit:$id:full", 'user' => ['alice'], 'outboundTag' => "vpnbot-exit-$id"]
+    && $rules["vpnbot:exit:$id:domain"]['user'] === ['bob'], 'один узел для полного и выборочного выхода, без прямого fallback для полного');
+$check(!isset($rules[Bot::EXIT_UNAVAILABLE . $other]) && $rules["vpnbot:exit:$id:quic-full"]['user'] === ['alice'], 'чужой строгий набор и QUIC');
+$order = $ruleTags($c);
+$check(array_search('vpnbot:routes:block:domain', $order) < array_search("vpnbot:exit:$id:full", $order)
+    && array_search("vpnbot:exit:$id:full", $order) < array_search('vpnbot:routes:warp:domain', $order), 'приоритет блок-листа и WARP');
+$bot->ensureWgGuard($c);
+$check($byTag($c)['vpnbot:exit:full-guard']['user'] === ['alice'] && $c['routing']['rules'][0]['ip'] === [Bot::INTERNAL_DNS], 'штатный DNS и запрет прямого WARP-SOCKS');
+$again = $c; $bot->ensureExitNodes($again, $q); $bot->ensureWgGuard($again);
+$check($again === $c, 'повторная сборка полного маршрута с защитными правилами');
+foreach ([['enabled' => 0], ['link' => 'invalid']] as $patch) {
+    $c = $full; $down = $q; $down['exits'][$id] = $patch + $down['exits'][$id]; $bot->ensureExitNodes($c, $down);
+    $deny = $byTag($c)[Bot::EXIT_UNAVAILABLE . 'full'] ?? [];
+    $check(($deny['user'] ?? null) === ['alice'] && $deny['outboundTag'] === 'block', 'выключенный или повреждённый выход закрывается');
+}
+$c = $full; $bot->ensureExitNodes($c, []);
+$check($byTag($c)[Bot::EXIT_UNAVAILABLE . 'full']['user'] === ['alice'], 'утраченный при восстановлении узел закрывается');
+$c = $full; $q['exits'][$id]['routes'] = []; $q['exits'][$id]['quic'] = 'pass';
+$c['inbounds'][0]['settings']['clients'][0]['email'] = 'regexp:.*';
+$bot->ensureExitNodes($c, $q);
+$users = $byTag($c)["vpnbot:exit:$id:full"]['user'] ?? [];
+$check(Bot::exitUserMatches($users, 'regexp:.*') && !Bot::exitUserMatches($users, 'bob')
+    && !isset($byTag($c)["vpnbot:exit:$id:quic-full"]), 'без списков, имя с regexp: буквально, QUIC разрешён');
+
+$full['routing']['domainStrategy'] = 'IPIfNonMatch';
+$full['routing']['rules'][] = ['type' => 'field', 'ruleTag' => 'vpnbot:routes:block:ip', 'ip' => ['198.51.100.2'], 'outboundTag' => 'block'];
+$c = $full; $bot->ensureExitNodes($c, $q);
+$rules = $byTag($c);
+$hop = $rules["vpnbot:exit:$id:full"]['outboundTag'];
+$resolve = array_column($c['outbounds'], null, 'tag')[$hop];
+$check($resolve['protocol'] === 'loopback' && $resolve['targetStrategy'] === 'ForceIP'
+    && $rules["vpnbot:exit:$id:resolved"]['inboundTag'] === [$hop] && $rules["vpnbot:exit:$id:resolved"]['outboundTag'] === "vpnbot-exit-$id"
+    && $rules["vpnbot:exit:$id:unresolved"]['outboundTag'] === 'block', 'повторная проверка IP ограничена полным назначением');
+$check(in_array('198.51.100.2', $rules['vpnbot:exit:resolved-block']['ip'], true)
+    && array_search('vpnbot:exit:resolved-block', $ruleTags($c)) < array_search("vpnbot:exit:$id:resolved", $ruleTags($c)), 'запрет IP исполняется раньше выхода после DNS');
+
+// Ручное разрешение до блок-листа сохраняется только для обычного клиента.
+array_unshift($full['routing']['rules'], ['type' => 'field', 'ruleTag' => 'early-direct', 'outboundTag' => 'direct', 'network' => 'tcp,udp']);
+$c = $full; $bot->ensureExitNodes($c, $q); $bot->ensureWgGuard($c);
+$order = $ruleTags($c);
+$check(array_search("vpnbot:exit:$id:full", $order, true) < array_search('early-direct', $order, true)
+    && array_search('early-direct', $order, true) < array_search('vpnbot:routes:block:domain', $order, true)
+    && $byTag($c)['vpnbot:exit:full-policy:0']['user'] === ['alice'], 'ранний ручной direct не обходит полный выход или его блок-лист');
+$again = $c; $bot->ensureExitNodes($again, $q); $bot->ensureWgGuard($again);
+$check($c === $again, 'повторная сборка при нестандартном порядке');
+
 // --- Чужая observatory сохраняется ----------------------------------------
 $c = $withUsers; $c['observatory'] = ['subjectSelector' => ['proxy-'], 'probeURL' => 'https://custom.example/204'];
 $bot->ensureExitNodes($c, $pac);

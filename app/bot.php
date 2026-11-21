@@ -1131,6 +1131,9 @@ class Bot
             case preg_match('~^/exitU ([a-f0-9]{8}) ([a-f0-9]{10}) (\d{1,5})$~', $this->input['callback'], $m):
                 $this->exitUserToggle($m[1], $m[2], (int) $m[3]);
                 break;
+            case preg_match('~^/exitFull (-|[a-f0-9]{8}) ([a-f0-9]{20}) (-|invalid|[a-f0-9]{8}) ([nu]) (\d{1,6})$~D', $this->input['callback'], $m):
+                $this->exitFullSelect($m[1], $m[2], $m[3], $m[4], (int) $m[5]);
+                break;
             case preg_match('~^/exitAll ([a-f0-9]{8}) (on|off)$~', $this->input['callback'], $m):
                 $this->exitAllUsers($m[1], $m[2] === 'on');
                 break;
@@ -4152,7 +4155,7 @@ class Bot
         $rules = [];
         $unavailable = [];
         foreach (($c['routing']['rules'] ?? []) as $r) {
-            if (($r['ruleTag'] ?? '') === 'vpnbot:ipv6:relay-guard') continue;
+            if (in_array($r['ruleTag'] ?? '', ['vpnbot:ipv6:relay-guard', 'vpnbot:exit:full-guard'], true)) continue;
             if (str_starts_with($r['ruleTag'] ?? '', self::EXIT_UNAVAILABLE)) { $unavailable[] = $r; continue; }
             $in  = (array) ($r['inboundTag'] ?? []);
             $ip  = (array) ($r['ip'] ?? []);
@@ -4216,10 +4219,17 @@ class Bot
         ];
         // Строгому профилю узла не нужны исключения DNS/WARP во внутреннюю
         // Docker-сеть. Иначе ранний allow обходил бы его конечный IPv6-выход.
-        $strictRelay = [];
+        $strictRelay = $fullUsers = [];
         foreach ($c['inbounds'][0]['settings']['clients'] ?? [] as $client) {
+            if (!is_array($client)) continue;
+            if (self::exitFullId($client) !== '-' && empty($client['off']) && is_string($client['email'] ?? null) && $client['email'] !== '') {
+                $fullUsers[] = self::exitExactUser($client['email']);
+            }
             if (!empty($client['exit_relay']) && !empty($client['exit_ipv6']) && empty($client['off']) && !empty($client['email'])) $strictRelay[] = $client['email'];
         }
+        // Keep the internal DNS service, but prevent the client-side WARP SOCKS shortcut.
+        if ($fullUsers) array_splice($guards, 1, 0, [['type' => 'field', 'ruleTag' => 'vpnbot:exit:full-guard',
+            'user' => $fullUsers, 'ip' => [self::DOCKER_NET], 'outboundTag' => 'block']]);
         if ($strictRelay) array_unshift($guards, ['type' => 'field', 'ruleTag' => 'vpnbot:ipv6:relay-guard',
             'user' => array_values(array_unique($strictRelay)), 'ip' => [self::DOCKER_NET], 'outboundTag' => 'block']);
         $c['routing']['rules'] = array_merge($unavailable, $guards, $rules);

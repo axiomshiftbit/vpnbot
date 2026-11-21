@@ -24,6 +24,7 @@ require_once __DIR__ . '/ExitNodeLink.php';
 trait BotExitNodes
 {
     public const EXIT_TAG = 'vpnbot-exit-';
+    private const EXIT_RESOLVE_TAG = self::EXIT_TAG . 'resolve-';
     public const EXIT_PROBE_TAG = 'vpnbot-exit-probe-';
     public const EXIT_RULE = 'vpnbot:exit:';
     public const EXIT_UNAVAILABLE = 'vpnbot:exit:unavailable:';
@@ -315,15 +316,31 @@ trait BotExitNodes
     }
 
     /** email пользователей основного входа с этим узлом; отключённые (off) не попадают. */
-    public function exitNodeEmails(array $c, string $id): array
+    public function exitNodeEmails(array $c, string $id, bool $listsOnly = false): array
     {
         $emails = [];
         foreach ($c['inbounds'][0]['settings']['clients'] ?? [] as $client) {
             $email = $client['email'] ?? null;
-            if (!is_string($email) || $email === '' || !empty($client['off']) || !in_array($id, self::exitClientNodes($client), true)) continue;
-            $emails[] = $email;
+            if (!is_string($email) || $email === '' || !empty($client['off'])) continue;
+            $full = self::exitFullId($client);
+            if ($full !== '-') {
+                if (!$listsOnly && $full === $id) $emails[] = $email;
+            } elseif (in_array($id, self::exitClientNodes($client), true)) $emails[] = $email;
         }
         return array_values(array_unique($emails));
+    }
+
+    public static function exitFullId(array $client): string
+    {
+        $id = $client['exit_full'] ?? null;
+        if ($id === null || !empty($client['exit_relay'])) return '-';
+        return is_string($id) && preg_match('~^[a-f0-9]{8}$~D', $id) ? $id : 'invalid';
+    }
+
+    /** Xray treats names beginning with regexp: as expressions in routing rules. */
+    public static function exitExactUser(string $email): string
+    {
+        return str_starts_with($email, 'regexp:') ? 'regexp:^' . preg_quote($email) . '$' : $email;
     }
 
     /** Записи маршрута узла: свои + разложенные наборы правил .srs/.mrs. */
@@ -510,17 +527,29 @@ trait BotExitNodes
             $foreign ??= $block;
         }
 
-        $probe = $rules = $unavailable = [];
+        $probe = $rules = $fullRules = $unavailable = [];
         $balanced = [];
         $ipv6 = $this->exitIpv6Attached();
-        $relay = [];
+        $relay = $fullUsers = [];
         foreach ($c['inbounds'][0]['settings']['clients'] ?? [] as $client) {
+            if (!is_array($client)) continue;
+            $full = self::exitFullId($client);
+            if ($full !== '-' && empty($client['off']) && is_string($client['email'] ?? null) && $client['email'] !== '') {
+                $fullUsers[$full][] = $client['email'];
+            }
             if (!empty($client['exit_relay']) && !empty($client['exit_ipv6']) && empty($client['off']) && !empty($client['email'])) $relay[] = $client['email'];
         }
         if ($relay) {
             $ipv6 = true;
             $c['outbounds'][] = $this->exitIpv6Outbound() + ['tag' => self::EXIT_IPV6_TAG];
             $rules[] = ['type' => 'field', 'ruleTag' => self::EXIT_RULE . 'relay-ipv6', 'user' => array_values(array_unique($relay)), 'outboundTag' => self::EXIT_IPV6_TAG];
+        }
+        $fullEmails = array_merge([], ...array_values($fullUsers));
+        $blockedIps = [];
+        if ($fullEmails && strcasecmp($c['routing']['domainStrategy'] ?? '', 'IPIfNonMatch') === 0) {
+            foreach ($c['routing']['rules'] as $rule) {
+                if (($rule['ruleTag'] ?? '') === 'vpnbot:routes:block:ip') $blockedIps = array_merge($blockedIps, (array) ($rule['ip'] ?? []));
+            }
         }
         $index = 0;
         unset($c['_vpnbot_amnezia']);
@@ -573,15 +602,20 @@ trait BotExitNodes
             }
             $probe[] = ['type' => 'field', 'ruleTag' => self::EXIT_RULE . $id . ':probe',
                 'inboundTag' => [self::EXIT_PROBE_TAG . $id]] + ($groupProbe ?? ['outboundTag' => $tag]);
-            $emails = $this->exitNodeEmails($c, $id);
+            if (isset($fullUsers[$id])) {
+                $this->exitFullRules($c, $fullRules, $id, $node, $fullUsers[$id], $groupProbe ?? ['outboundTag' => $tag], (bool) $blockedIps);
+                unset($fullUsers[$id]);
+            }
+            $emails = array_map([self::class, 'exitExactUser'], $this->exitNodeEmails($c, $id, true));
+            if (!$emails) continue;
             $entries = $this->exitNodeEntries($node);
-            if ($emails && $node['fallback'] === 'block' && !$this->exitNodeRoutesReady($node, $entries)) {
+            if ($node['fallback'] === 'block' && !$this->exitNodeRoutesReady($node, $entries)) {
                 $unavailable[] = ['type' => 'field', 'ruleTag' => self::EXIT_UNAVAILABLE . $id,
                     'user' => $emails, 'outboundTag' => 'block'];
                 continue;
             }
             $x = $this->listToXrayRules($entries);
-            if (!$emails || (!$x['domain'] && !$x['ip'])) continue;
+            if (!$x['domain'] && !$x['ip']) continue;
             $target = $groupTarget ?? ['outboundTag' => $tag];
             if ($node['kind'] === 'remote' && $outbound['protocol'] !== 'blackhole') {
                 $c['routing']['balancers'][] = ['tag' => $tag, 'selector' => [$tag], 'strategy' => ['type' => 'random'], 'fallbackTag' => $node['fallback']];
@@ -597,8 +631,11 @@ trait BotExitNodes
             foreach (['domain', 'ip'] as $field) if ($x[$field]) $rules[] = ['type' => 'field', 'ruleTag' => self::EXIT_RULE . "$id:$field",
                 'user' => $emails, $field => $x[$field]] + $target;
         }
+        // A disabled, missing or unreadable full exit must never release a user to direct.
+        if ($fullUsers) $unavailable[] = ['type' => 'field', 'ruleTag' => self::EXIT_UNAVAILABLE . 'full',
+            'user' => array_map([self::class, 'exitExactUser'], array_merge(...array_values($fullUsers))), 'outboundTag' => 'block'];
         $rules = array_merge($unavailable, $rules);
-        if ($rules) {
+        if ($rules || $fullRules) {
             $this->ensureBlockOutbound($c);
             $this->ensureDirectOutbound($c);
             // Ниже блок-листа и правила торрентов (ensureTorrentBlock ставит его
@@ -609,6 +646,7 @@ trait BotExitNodes
                     || (($rule['outboundTag'] ?? '') === 'block' && (array) ($rule['protocol'] ?? []) === ['bittorrent'])) $position = $k + 1;
             }
             array_splice($c['routing']['rules'], $position, 0, $rules);
+            if ($fullRules) $this->insertFullExitRules($c, $position, $fullRules, $fullEmails, $blockedIps);
         }
         if ($probe) array_unshift($c['routing']['rules'], ...$probe);
         if ($ipv6) {
@@ -637,6 +675,58 @@ trait BotExitNodes
                 $c['burstObservatory'] = ['subjectSelector' => array_values(array_unique($balanced)), 'pingConfig' => self::EXIT_PING];
             }
         }
+    }
+
+    private function insertFullExitRules(array &$c, int $position, array $fullRules, array $fullEmails, array $blockedIps): void
+    {
+        // Preserve early custom routes for other users. A pinned user must
+        // reach the stock protections and the selected exit before such a route.
+        if ($blockedIps) {
+            $hops = array_values(array_filter(array_column($c['outbounds'], 'tag'), static fn($tag) => str_starts_with($tag, self::EXIT_RESOLVE_TAG)));
+            if ($hops) array_unshift($fullRules, ['type' => 'field', 'ruleTag' => self::EXIT_RULE . 'resolved-block',
+                'inboundTag' => $hops, 'ip' => [self::DOCKER_NET, ...$blockedIps], 'outboundTag' => 'block']);
+        }
+        $localServices = [[self::INTERNAL_DNS], [$this->warpSocksIp()]];
+        $prefix = array_slice($c['routing']['rules'], 0, $position);
+        $insert = $position;
+        $guards = [];
+        foreach ($prefix as $k => $rule) {
+            if (($rule['outboundTag'] ?? '') === 'block') {
+                if ($k < $insert) continue;
+                $emails = $fullEmails;
+                if (isset($rule['user'])) $emails = array_filter($emails, static fn($e) => self::exitUserMatches((array) $rule['user'], $e));
+                if ($emails) $guards[] = ['ruleTag' => self::EXIT_RULE . 'full-policy:' . count($guards),
+                    'user' => array_values(array_map([self::class, 'exitExactUser'], $emails))] + $rule;
+                continue;
+            }
+            if (($rule['inboundTag'] ?? []) === ['api']) continue;
+            // ensureWgGuard rebuilds its local-service exceptions at the head.
+            if (($rule['outboundTag'] ?? '') === 'direct' && isset($rule['inboundTag'])
+                && in_array($rule['ip'] ?? [], $localServices, true)) continue;
+            $insert = min($insert, $k);
+        }
+        array_splice($c['routing']['rules'], $insert, 0, array_merge($guards, $fullRules));
+    }
+
+    private function exitFullRules(array &$c, array &$rules, string $id, array $node, array $emails, array $fullTarget, bool $checkIp): void
+    {
+        // A full route never uses the regular node's direct fallback.
+        if (($fullTarget['outboundTag'] ?? '') === 'direct') $fullTarget = ['outboundTag' => 'block'];
+        $users = array_map([self::class, 'exitExactUser'], $emails);
+        if ($node['quic'] === 'block') $rules[] = ['type' => 'field', 'ruleTag' => self::EXIT_RULE . "$id:quic-full",
+            'user' => $users, 'network' => 'udp', 'port' => '443', 'outboundTag' => 'block'];
+        if ($checkIp && ($fullTarget['outboundTag'] ?? '') !== 'block') {
+            // A user-only rule wins before IPIfNonMatch resolves a domain.
+            // Resolve only this user's destination, then re-enter below the block list.
+            $hop = self::EXIT_RESOLVE_TAG . $id;
+            $c['outbounds'][] = ['tag' => $hop, 'protocol' => 'loopback', 'targetStrategy' => 'ForceIP',
+                'settings' => ['inboundTag' => $hop]];
+            $rules[] = ['type' => 'field', 'ruleTag' => self::EXIT_RULE . "$id:resolved", 'inboundTag' => [$hop],
+                'ip' => ['0.0.0.0/0', '::/0']] + $fullTarget;
+            $rules[] = ['type' => 'field', 'ruleTag' => self::EXIT_RULE . "$id:unresolved", 'inboundTag' => [$hop], 'outboundTag' => 'block'];
+            $fullTarget = ['outboundTag' => $hop];
+        }
+        $rules[] = ['type' => 'field', 'ruleTag' => self::EXIT_RULE . "$id:full", 'user' => $users] + $fullTarget;
     }
 
     /**
@@ -1112,7 +1202,7 @@ trait BotExitNodes
             if ($before && !empty($before['ok']) !== !empty($now['ok'])) {
                 $this->notifyAdmins((!empty($now['ok']) ? $this->t('🟢 Узел выхода снова работает: ', '🟢 Exit node is working again: ')
                     : (!self::exitDirectFallback($node) ? $this->t('🔴 Узел выхода не отвечает, его назначения блокируются (запасного выхода нет): ', '🔴 Exit node is not responding; its destinations are blocked (no fallback): ')
-                        : $this->t('🔴 Узел выхода не отвечает, трафик идёт напрямую: ', '🔴 Exit node is not responding, traffic goes direct: ')))
+                        : $this->t('🔴 Узел выхода не отвечает. Маршруты по спискам идут напрямую, полный выход блокируется: ', '🔴 Exit node is not responding. List-based routes go direct, full exits are blocked: ')))
                     . $name);
             }
             // Страна, которую видит YouTube, сменилась: видео и рекомендации
@@ -1297,12 +1387,12 @@ trait BotExitNodes
             $this->t("Маршрутов: $routes · наборов правил: $sets · пользователей: $users", "Routes: $routes · rule sets: $sets · users: $users"),
             $node['kind'] === 'group' ? $this->t('Трафик группы учитывается у её узлов.', 'Group traffic is counted at its member nodes.') : $this->exitTrafficLine($id),
             $this->t('QUIC к доменам узла: ', 'QUIC to node domains: ') . ($node['quic'] === 'block' ? $this->t('блокируется (браузер сразу идёт по TCP через узел)', 'blocked (the browser goes over TCP through the node right away)') : $this->t('пропускается', 'allowed')),
-            !self::exitDirectFallback($node) ? $this->t('При отказе: блокировать, без запасного выхода', 'On failure: block, no fallback') : $this->t('При отказе узла: напрямую с этого сервера', 'If the node fails: direct from this server'),
+            !self::exitDirectFallback($node) ? $this->t('При отказе: блокировать, без запасного выхода', 'On failure: block, no fallback') : $this->t('При отказе узла: маршруты по спискам идут напрямую с этого сервера', 'If the node fails: list-based routes go direct from this server'),
             $this->t('Новым пользователям: ', 'For new users: ') . ($node['auto'] ? $this->t('включается сразу', 'enabled at once') : $this->t('не включается', 'not enabled')));
         if ($node['kind'] === 'remote' && !isset($this->managedNodes()[$id])) $text[] = $this->exitSubLine($node);
         if ($node['kind'] === 'group') $text[] = $this->t('Выбор: ', 'Selection: ') . self::esc($this->exitChoiceLabel($node, $this->exitNodes()));
         if (!$users) $text[] = $this->t('ℹ️ Узел пока ни у кого не включён: «Пользователи» или карточка пользователя.', 'ℹ️ The node is not enabled for anyone yet: use Users or a user card.');
-        if (!$routes && !$sets) $text[] = $this->t('ℹ️ Маршрутов нет: «Маршруты» → например «YouTube».', 'ℹ️ No routes: Routes → for example YouTube.');
+        if (!$routes && !$sets && !in_array($id, array_column($x['inbounds'][0]['settings']['clients'] ?? [], 'exit_full'), true)) $text[] = $this->t('ℹ️ Маршрутов нет: «Маршруты» → например «YouTube».', 'ℹ️ No routes: Routes → for example YouTube.');
         array_push($text, ...$this->exitWarnings($node));
         if ($notice !== '') $text[] = "\n<b>" . self::esc($notice) . '</b>';
         $data = [];
@@ -1796,6 +1886,7 @@ trait BotExitNodes
             unset($p['exits'][$id]);
             if (empty($p['exits'])) unset($p['exits']);
             foreach ($x['inbounds'][0]['settings']['clients'] ?? [] as $k => $client) {
+                if (($client['exit_full'] ?? null) === $id) unset($x['inbounds'][0]['settings']['clients'][$k]['exit_full']);
                 if (!is_array($client['exit'] ?? null)) continue;
                 $left = array_values(array_diff($client['exit'], [$id]));
                 if ($left) $x['inbounds'][0]['settings']['clients'][$k]['exit'] = $left;
@@ -2401,13 +2492,13 @@ trait BotExitNodes
         $pages = max(1, (int) ceil(count($list) / self::EXIT_PAGE));
         $page = max(0, min($page, $pages - 1));
         $text = [$this->exitMenuBreadcrumb($id, $node) . $this->t(' -> Пользователи', ' -> Users'),
-            $this->t('Маршрут через узел работает только у отмеченных. Служебные учётки узлов здесь не показываются.', 'The route through the node works only for the checked users. Node service accounts are not shown here.')];
+            $this->exitFullHint()];
         if ($notice !== '') $text[] = "\n<b>" . self::esc($notice) . '</b>';
         $data = [];
         foreach (array_slice($list, $page * self::EXIT_PAGE, self::EXIT_PAGE, true) as $i => $client) {
             $on = in_array($id, self::exitClientNodes($client), true);
             $data[] = [['text' => ($on ? '✅ ' : '⬜ ') . mb_substr((string) ($client['email'] ?? '—'), 0, 40) . (!empty($client['off']) ? ' ⛔' : ''),
-                'callback_data' => "/exitU $id " . self::exitClientKey($client) . " $page"]];
+                'callback_data' => "/exitU $id " . self::exitClientKey($client) . " $page"], $this->exitFullButton($client, $id, 'n', $page)];
         }
         if ($pages > 1) {
             $nav = [];
@@ -2439,11 +2530,57 @@ trait BotExitNodes
                 $nodes = self::exitClientNodes($client);
                 $want = $on ?? !in_array($id, $nodes, true);
                 $nodes = $want ? array_values(array_unique([...$nodes, $id])) : array_values(array_diff($nodes, [$id]));
+                if (!$want && ($client['exit_full'] ?? null) === $id) unset($x['inbounds'][0]['settings']['clients'][$i]['exit_full']);
                 if ($nodes) $x['inbounds'][0]['settings']['clients'][$i]['exit'] = $nodes;
                 else unset($x['inbounds'][0]['settings']['clients'][$i]['exit']);
             }
             return '';
         });
+    }
+
+    private function exitFullHint(): string
+    {
+        return $this->t('Слева — назначение маршрутов узла. «Весь трафик» направляет все внешние соединения пользователя Xray через один выбранный выход. При отказе доступ блокируется. Снятие отметки справа возвращает маршруты по спискам.',
+            'The left button assigns node routes. “All traffic” sends all external connections of this Xray user through one selected exit. Connections are blocked on failure. Clearing the right checkbox restores list-based routes.');
+    }
+
+    public static function exitFullKey(array $client): string
+    {
+        // A deleted user's name can be reused while their old keyboard is still open.
+        return substr(hash('sha256', ManagedProtocol::xraySource($client) . ':' . ($client['email'] ?? '')), 0, 20);
+    }
+
+    private function exitFullButton(array $client, string $id, string $screen, int $index): array
+    {
+        $current = self::exitFullId($client);
+        return ['text' => ($current === $id ? '✅ ' : '⬜ ') . $this->t('Весь трафик', 'All traffic'),
+            'callback_data' => "/exitFull $id " . self::exitFullKey($client) . " $current $screen $index"];
+    }
+
+    public function exitFullSelect(string $id, string $key, string $expected, string $screen, int $index): void
+    {
+        $error = $this->applyExitNodes(function (array &$p, array &$x) use ($id, $key, $expected, $screen, $index) {
+            $nodes = $this->exitNodes($p);
+            if ($id === '-') {
+                if ($screen !== 'u' || $expected === '-' || isset($nodes[$expected])) return 'exit stale';
+            } elseif (!isset($nodes[$id])) return 'exit not found';
+            foreach ($x['inbounds'][0]['settings']['clients'] ?? [] as $i => $client) {
+                if (!is_array($client) || !empty($client['exit_relay']) || ($screen === 'u' && $index !== $i)
+                    || !is_string($client['email'] ?? null) || $client['email'] === '' || self::exitFullKey($client) !== $key) continue;
+                if (self::exitFullId($client) !== $expected) return 'exit stale';
+                $record = &$x['inbounds'][0]['settings']['clients'][$i];
+                if ($id === '-' || $expected === $id) unset($record['exit_full']);
+                else {
+                    $record['exit_full'] = $id;
+                    $record['exit'] = array_values(array_unique([...self::exitClientNodes($client), $id]));
+                }
+                return '';
+            }
+            return 'exit stale';
+        });
+        $notice = $error === '' ? '' : $this->exitError($error);
+        if ($screen === 'u') $this->exitUserMenu($index, $notice);
+        else $this->exitUsersMenu($id, $index, $notice);
     }
 
     public function exitUserToggle(string $id, string $key, int $page = 0): void
@@ -2475,14 +2612,21 @@ trait BotExitNodes
                 . $this->t('. Ссылка, подписка и режим выхода — в профиле.', '. The link, subscription and egress mode are in the profile.');
             $data[] = [['text' => $this->t('🪪 Открыть профиль для узла', '🪪 Open the node profile'), 'callback_data' => "/exitRelayLink $i"]];
         } else {
+            $text[] = $this->exitFullHint();
             $mine = self::exitClientNodes($client);
             $key = self::exitClientKey($client);
-            foreach ($this->exitNodes() as $id => $node) {
+            $nodes = $this->exitNodes();
+            $full = self::exitFullId($client);
+            if ($full !== '-' && !isset($nodes[$full])) {
+                $text[] = $this->t('Назначенный выход отсутствует. Внешние соединения заблокированы.', 'The assigned exit is missing. External connections are blocked.');
+                $data[] = [['text' => $this->t('Снять недоступный полный выход', 'Clear missing full exit'), 'callback_data' => "/exitFull - " . self::exitFullKey($client) . " $full u $i"]];
+            }
+            foreach ($nodes as $id => $node) {
                 $id = (string) $id;
                 $data[] = [['text' => (in_array($id, $mine, true) ? '✅ ' : '⬜ ') . mb_substr($node['name'] !== '' ? $node['name'] : $id, 0, 40)
-                    . ($node['enabled'] ? '' : $this->t(' (выключен)', ' (disabled)')), 'callback_data' => "/exitUT $i $id $key"]];
+                    . ($node['enabled'] ? '' : $this->t(' (выключен)', ' (disabled)')), 'callback_data' => "/exitUT $i $id $key"], $this->exitFullButton($client, $id, 'u', $i)];
             }
-            if (!$this->exitNodes()) $text[] = $this->t('Узлов нет: Xray → Узлы выхода.', 'No nodes: Xray → Exit nodes.');
+            if (!$nodes) $text[] = $this->t('Узлов нет: Xray → Узлы выхода.', 'No nodes: Xray → Exit nodes.');
         }
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/userXr $i"]];
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $text), $data);
@@ -2661,8 +2805,11 @@ trait BotExitNodes
         $cases = [['label' => $this->t('пользователь без узлов', 'a user without nodes'), 'email' => null, 'off' => false]];
         foreach ($this->exitNodes() as $id => $node) {
             if (empty($node['enabled']) || count($cases) >= self::EXIT_TRACE_MAX_CASES) continue;
-            $emails = $this->exitNodeEmails($x, (string) $id);
-            if ($emails) $cases[] = ['label' => $this->t('пользователи узла ', 'users of node ') . ($node['name'] !== '' ? $node['name'] : (string) $id) . " ({$emails[0]})", 'email' => $emails[0], 'off' => false];
+            $listed = $this->exitNodeEmails($x, (string) $id, true);
+            $full = array_values(array_diff($this->exitNodeEmails($x, (string) $id), $listed));
+            $name = $node['name'] !== '' ? $node['name'] : (string) $id;
+            if ($listed) $cases[] = ['label' => $this->t('пользователи узла ', 'users of node ') . $name . " ({$listed[0]})", 'email' => $listed[0], 'off' => false];
+            if ($full && count($cases) < self::EXIT_TRACE_MAX_CASES) $cases[] = ['label' => $this->t('весь трафик через ', 'all traffic through ') . $name . " ({$full[0]})", 'email' => $full[0], 'off' => false];
         }
         return $cases;
     }
@@ -2680,6 +2827,13 @@ trait BotExitNodes
         $r = $x['routing']['rules'][$rule] ?? [];
         $to = (string) ($r['balancerTag'] ?? $r['outboundTag'] ?? '');
         $tag = (string) ($r['ruleTag'] ?? '');
+        if (preg_match('~^vpnbot:exit:([a-f0-9]{8}):full$~D', $tag, $match)) {
+            $id = $match[1];
+            $node = $this->exitNodes($p)[$id] ?? null;
+            if ($node) return ($to === 'block' ? $this->t('🚫 Блокировка', '🚫 Blocked') : $this->t('🌍 Через выход ', '🌍 Through exit ') . $this->exitName($id, $node))
+                . ($to === self::EXIT_RESOLVE_TAG . $id ? $this->t(' (после проверки IP по блок-листу)', ' (subject to the IP block list)') : '')
+                . $this->t(' · весь трафик, при отказе блокируется', ' · all traffic, blocked on failure');
+        }
         $text = $this->exitTraceOutbound($to);
         $entries = null;
         if (preg_match('~^vpnbot:routes:(block|warp):~', $tag, $m)) {

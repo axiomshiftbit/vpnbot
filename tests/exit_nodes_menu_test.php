@@ -180,6 +180,47 @@ $check(($bot->confXray['inbounds'][0]['settings']['clients'][0]['exit'] ?? null)
 $bot->exitUserMenu(0);
 $check(isset($bot->callbacks()["/exitUT 0 $id $aliceKey"]) && isset($bot->callbacks()['/userXr 0']), 'карточка пользователя: узел и возврат');
 
+// --- Полный выход на одну учётную запись -----------------------------------
+$full = clone $bot;
+$fullKey = Bot::exitFullKey($full->confXray['inbounds'][0]['settings']['clients'][0]);
+$full->exitUsersMenu($id);
+$check(isset($full->callbacks()["/exitFull $id $fullKey - n 0"]), 'полный выход доступен из списка узла');
+$full->exitFullSelect($id, $fullKey, '-', 'n', 0);
+$check($full->confXray['inbounds'][0]['settings']['clients'][0]['exit_full'] === $id
+    && !isset($full->confXray['inbounds'][0]['settings']['clients'][1]['exit_full']), 'назначение изолировано');
+$full->exitUserMenu(0);
+$check(isset($full->callbacks()["/exitFull $id $fullKey $id u 0"]), 'из карточки можно вернуться к спискам');
+$other = 'dddddddd';
+$full->confPac['exits'][$other] = $full->confPac['exits'][$id];
+$full->exitFullSelect($other, $fullKey, $id, 'u', 0);
+$full->exitFullSelect($id, $fullKey, $id, 'u', 0);
+$full->exitFullSelect($id, $fullKey, $other, 'u', 1);
+$check($full->confXray['inbounds'][0]['settings']['clients'][0]['exit_full'] === $other
+    && !isset($full->confXray['inbounds'][0]['settings']['clients'][1]['exit_full']), 'смена выхода, повтор и сдвиг номера');
+$full->restartOk = false;
+$full->exitFullSelect($other, $fullKey, $other, 'u', 0);
+$check($full->confXray['inbounds'][0]['settings']['clients'][0]['exit_full'] === $other, 'отказ применения сохраняет назначение');
+$full->restartOk = true;
+$full->exitFullSelect($other, $fullKey, $other, 'u', 0);
+$client = $full->confXray['inbounds'][0]['settings']['clients'][0];
+$check(!isset($client['exit_full']) && $client['exit'] === [$id, $other], 'снятие полного выхода сохраняет списки');
+$full->exitFullSelect($id, $fullKey, '-', 'n', 0);
+$full->exitAllUsers($id, false);
+$check(!isset($full->confXray['inbounds'][0]['settings']['clients'][0]['exit_full']), 'отключение узла всем снимает полный режим');
+$full->exitFullSelect($other, $fullKey, '-', 'u', 0);
+$full->exitDelete($other, true);
+$check(!isset($full->confXray['inbounds'][0]['settings']['clients'][0]['exit_full']), 'удаление чистит полный выход');
+
+$full->confXray['inbounds'][0]['settings']['clients'][0]['exit_full'] = $other;
+$full->exitUserMenu(0);
+$check(isset($full->callbacks()["/exitFull - $fullKey $other u 0"]), 'утраченное при импорте назначение можно снять');
+$full->exitFullSelect('-', $fullKey, $other, 'u', 0);
+$check(!isset($full->confXray['inbounds'][0]['settings']['clients'][0]['exit_full']), 'снятие утраченного выхода');
+
+$full->confXray['inbounds'][0]['settings']['clients'][0]['subtoken'] = 'replacement-fixture';
+$full->exitFullSelect($id, $fullKey, '-', 'n', 0);
+$check(!isset($full->confXray['inbounds'][0]['settings']['clients'][0]['exit_full']), 'старая кнопка не назначает полный выход новому владельцу имени');
+
 // --- Предупреждения: WARP и sniffing ---------------------------------------
 $bot->exitNodeMenu($id);
 $check(str_contains($bot->last()[0], 'Есть и в списке WARP') && str_contains($bot->last()[0], 'domain:youtube.com'), 'пересечение с WARP показано');

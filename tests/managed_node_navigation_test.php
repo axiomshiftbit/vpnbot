@@ -40,6 +40,21 @@ class NodeNavigationFixture extends Bot {
 }
 $fail=[]; $count=0;
 $check=static function($ok,$name) use (&$fail,&$count) { $count++; if (!$ok) $fail[]=$name; };
+// Follow the managed card's callbacks through normal Telegram dispatch.
+$fullBot = new class extends NodeNavigationFixture {
+    public array $x = ['inbounds' => [['settings' => ['clients' => [['email' => 'alice', 'id' => 'fixture-alice']]]]]];
+    public function getXray() { return $this->x; }
+    public function restartXray($c, $norestart = false) { $this->x = $c; return true; }
+};
+$fullBot->click('/nuUsers aabbccdd 0');
+$buttons = array_values(preg_grep('~^/nuFull ~', $fullBot->callbacks()));
+$check(count($buttons) === 1 && strlen($buttons[0]) <= 64, 'managed full-route button fits Telegram');
+$fullBot->click($buttons[0]);
+$check(($fullBot->x['inbounds'][0]['settings']['clients'][0]['exit_full'] ?? null) === 'aabbccdd'
+    && in_array('/node aabbccdd', $fullBot->callbacks(), true), 'managed button assigns the exit and keeps the parent menu');
+$fullBot->click(array_values(preg_grep('~^/nuFull ~', $fullBot->callbacks()))[0]);
+$check(!isset($fullBot->x['inbounds'][0]['settings']['clients'][0]['exit_full']), 'managed button clears full routing');
+
 foreach (['ru','en'] as $lang) {
     $b=new NodeNavigationFixture(); $b->language=$lang; Lang::$en=$lang==='en';
     $b->managedNodeSettingsMenu('aabbccdd','crypto');
