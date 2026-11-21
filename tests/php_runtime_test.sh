@@ -4,7 +4,7 @@
 set -eu
 # PHP2Shell: образ со старым PHP не должен пройти общий прогон даже при
 # включённой защите nginx и php.ini.
-php -r 'if (PHP_VERSION_ID < 80512 || PHP_VERSION_ID >= 80600) { fwrite(STDERR, "Required PHP 8.5.12 or newer in the 8.5 branch\n"); exit(1); }'
+php -r 'if (PHP_VERSION_ID < 80513 || PHP_VERSION_ID >= 80600) { fwrite(STDERR, "Required PHP 8.5.13 or newer in the 8.5 branch\n"); exit(1); }'
 root=$(mktemp -d)
 pid=
 trap '[ -z "$pid" ] || kill "$pid" 2>/dev/null || true; rm -rf "$root"' EXIT

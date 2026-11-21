@@ -33,7 +33,7 @@ COPY --from=helpers /out/ /usr/bin/
 # sendPhoto уходил с несуществующим путём. Пакет лежит в репозитории community,
 # он включён в /etc/apk/repositories базового образа.
 RUN apk upgrade --no-cache \
-    && apk add --no-cache --update php85 \
+    && apk add --no-cache --update 'php85>=8.5.13' \
     php85-mbstring \
     php85-session \
     php85-phar \

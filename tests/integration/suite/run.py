@@ -369,7 +369,7 @@ print('killed-one-application-worker')'''
  check('update_rollback','rollback-keeps-new-clients',identities()==preserve)
  check('update_rollback','rollback-keeps-new-usage',int(php(traffic))>=used)
  deploy(env,'return-candidate');drivers();startworker(env)
- check('update_rollback','PHP85-actually-running',php('echo (PHP_VERSION_ID >= 80512 && PHP_VERSION_ID < 80600) ? 1 : 0;')=='1')
+ check('update_rollback','PHP85-actually-running',php('echo (PHP_VERSION_ID >= 80513 && PHP_VERSION_ID < 80600) ? 1 : 0;')=='1')
  check('update_rollback','forward-keeps-new-clients',identities()==preserve)
  check('update_rollback','forward-keeps-new-usage',int(php(traffic))>=used)
  verify_images({s:candidate['images'][im] for s,im in ib.SERVICES.items()},'update_rollback')
