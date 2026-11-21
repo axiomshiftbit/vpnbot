@@ -292,11 +292,9 @@ try {
     adgAssert(str_contains($bot->adguardMenu()['text'], 'не читается'), 'меню не сообщает о нечитаемом конфиге');
 
     // ── Образ: интерфейс официального выпуска ───────────────────────────────
-    // Сборка «как в Makefile» берёт client_v2 — интерфейс канала edge; выпуски
-    // release собираются с каталогом client.
     $dockerfile = (string) file_get_contents(__DIR__ . '/../dockerfile/adguard.dockerfile');
-    adgAssert(str_contains($dockerfile, 'npm --prefix client ci') && str_contains($dockerfile, 'npm --prefix client run build-prod')
-        && !preg_match('~--prefix\s+client_v2~', $dockerfile), 'образ AdGuard собирается не с интерфейсом официального выпуска');
+    adgAssert(str_contains($dockerfile, 'npm --prefix client_v2 ci') && str_contains($dockerfile, 'npm --prefix client_v2 run build-prod')
+        && !preg_match('~--prefix\s+client\s~', $dockerfile), 'образ AdGuard должен собирать интерфейс официального выпуска 1.0');
     adgAssert(str_contains($dockerfile, 'go-security.sh') && str_contains($dockerfile, 'version.channel=release'), 'из сборки AdGuard пропали исправления Go или канал release');
 
     // ── Справка: кнопки на экранах, возврат туда, откуда открыта ────────────

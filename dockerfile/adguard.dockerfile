@@ -1,4 +1,4 @@
-ARG ADGUARD_VERSION=v0.107.80
+ARG ADGUARD_VERSION=v1.0.0
 ARG PROTOCOL_GO_VERSION=1.27.4
 FROM golang:${PROTOCOL_GO_VERSION}-alpine AS source
 ARG ADGUARD_VERSION
@@ -11,26 +11,20 @@ ARG ADGUARD_VERSION
 COPY --from=source /source /source
 COPY dockerfile/sources.sha256 /sources.sha256
 WORKDIR /source
-# Интерфейс — каталог client, как в официальных выпусках каналов release и
-# beta (bamboo-specs/release.yaml: clientDir 'client'). Новый интерфейс
-# client_v2 AdGuard пока выпускает только в канале edge; Makefile в тегах
-# указывает на него по умолчанию, поэтому сборка «как в Makefile» давала
-# стабильную версию с интерфейсом edge — не таким, как у официального архива.
-#
-# Lock выпуска v0.107.80 держит js-yaml 3.14.2 (GHSA-52cp-r559-cp3m,
-# GHSA-2883-xcg3-v3hh, GHSA-5p4m-2wfm-xmqj, HIGH) — прямую зависимость
-# интерфейса. Ставим исправленную 3.15.2 той же ветки 3.x и сверяем весь
-# итоговый lock с суммой adguard-frontend-lock/. Список production-зависимостей
-# интерфейса пишется в CycloneDX SBOM: в образе Trivy читает его, а lock-файлы —
-# только при сканировании каталога.
-RUN npm --prefix client pkg set dependencies.js-yaml=3.15.2 \
-    && npm --prefix client install --package-lock-only --ignore-scripts --no-audit --no-fund --fetch-retries=5 \
-    && awk -v key="adguard-frontend-lock/${ADGUARD_VERSION}" '$2 == key {print $1 "  client/package-lock.json"}' /sources.sha256 | sha256sum -c - \
-    && sha256sum client/package-lock.json > /tmp/frontend-lock.sha256 \
-    && npm --prefix client ci --no-audit --no-fund --fetch-retries=5 \
-    && npm --prefix client run build-prod \
+# Сохраняем путь панели за обратным прокси при входе и восстановлении пароля.
+COPY dockerfile/adguard-panel-path.patch /tmp/adguard-panel-path.patch
+RUN apk add --no-cache patch && patch --fuzz=0 -p1 < /tmp/adguard-panel-path.patch
+# В выпуске 1.0 upstream собирает интерфейс client_v2. Сверяем его lock до и после сборки.
+# Исправленные версии nanoid обеих веток и valibot входят в проверенный lock.
+RUN npm --prefix client_v2 pkg set dependencies.nanoid=5.1.16 overrides.postcss.nanoid=3.3.16 overrides.valibot=1.4.2 \
+    && npm --prefix client_v2 install --package-lock-only --ignore-scripts --no-audit --no-fund --fetch-retries=5 \
+    && awk -v key="adguard-frontend-lock/${ADGUARD_VERSION}" '$2 == key {print $1 "  client_v2/package-lock.json"}' /sources.sha256 | sha256sum -c - \
+    && sha256sum client_v2/package-lock.json > /tmp/frontend-lock.sha256 \
+    && npm --prefix client_v2 ci --no-audit --no-fund --fetch-retries=5 \
+    && npm --prefix client_v2 test -- panel-subpath.test.tsx \
+    && npm --prefix client_v2 run build-prod \
     && sha256sum -c /tmp/frontend-lock.sha256 \
-    && npm --prefix client sbom --omit dev --package-lock-only --sbom-format cyclonedx > /adguard-frontend.cdx.json
+    && npm --prefix client_v2 sbom --omit dev --package-lock-only --sbom-format cyclonedx > /adguard-frontend.cdx.json
 
 FROM source AS core
 ARG ADGUARD_VERSION
@@ -43,7 +37,7 @@ RUN sh /build-tools/go-security.sh \
 FROM adguard/adguardhome:${ADGUARD_VERSION}
 COPY --from=core /AdGuardHome /opt/adguardhome/AdGuardHome
 # SBOM и lock, по которым собран встроенный интерфейс: Trivy проверяет его зависимости.
-COPY --from=frontend /adguard-frontend.cdx.json /source/client/package-lock.json /usr/local/share/vpnbot/adguard-frontend/
+COPY --from=frontend /adguard-frontend.cdx.json /source/client_v2/package-lock.json /usr/local/share/vpnbot/adguard-frontend/
 RUN apk upgrade --no-cache \
     && apk add --no-cache --update openssh \
     && mkdir /root/.ssh

@@ -1,0 +1,43 @@
+--- a/client_v2/src/helpers/constants.ts
++++ b/client_v2/src/helpers/constants.ts
+@@ -49 +49 @@
+-    FORGOT_PASSWORD: '/forgot_password.html',
++    FORGOT_PASSWORD: 'forgot_password.html',
+--- a/client_v2/src/forgot_password/ForgotPassword/index.tsx
++++ b/client_v2/src/forgot_password/ForgotPassword/index.tsx
+@@ -11 +11 @@
+-        window.location.assign('/login.html');
++        window.location.assign('login.html');
+--- a/client_v2/src/api/customFetch.ts
++++ b/client_v2/src/api/customFetch.ts
+@@ -52 +52 @@
+-            const shouldRedirect = pathname !== HTML_PAGES.LOGIN && pathname !== HTML_PAGES.INSTALL;
++            const shouldRedirect = !pathname.endsWith(HTML_PAGES.LOGIN) && !pathname.endsWith(HTML_PAGES.INSTALL);
+@@ -55 +55 @@
+-                const loginPageUrl = window.location.href.replace(
++                const loginPageUrl = pathname.replace(
+--- /dev/null
++++ b/client_v2/src/__tests__/panel-subpath.test.tsx
+@@ -0,0 +1,22 @@
++import { render } from '@solidjs/testing-library';
++import { afterEach, expect, it, vi } from 'vitest';
++import { customFetch } from 'panel/api/customFetch';
++import { Form } from 'panel/login/Login/Form';
++
++afterEach(() => {
++    vi.unstubAllGlobals();
++    history.replaceState(null, '', '/');
++});
++
++it.each(['/', '/panel-test/'])('keeps password recovery under %s', (prefix) => {
++    history.replaceState(null, '', prefix + 'login.html');
++    const { container } = render(() => <Form onSubmit={() => {}} />);
++    const link = container.querySelector<HTMLAnchorElement>('a[href*="forgot_password"]');
++    expect(link?.pathname).toBe(prefix + 'forgot_password.html');
++});
++
++it.each(['/', '/panel-test/'])('reports an invalid password under %s', async (prefix) => {
++    history.replaceState(null, '', prefix + 'login.html');
++    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('', { status: 403 })));
++    await expect(customFetch('control/login', { method: 'POST' })).rejects.toThrow('403');
++});
