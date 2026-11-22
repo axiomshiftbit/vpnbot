@@ -958,6 +958,14 @@ class Bot
             case preg_match('~^/nodeRefresh ([a-f0-9]{8})$~', $this->input['callback'], $m):
                 $this->managedNodeRefresh($m[1]);
                 break;
+            case preg_match('~^/nodeAd(Open|Close)? ([a-f0-9]{8})$~D', $this->input['callback'], $m):
+                match ($m[1] ?? '') {
+                    'Open' => $this->nodeAdguardOpen($m[2]), 'Close' => $this->nodeAdguardClose($m[2]), default => $this->nodeAdguardMenu($m[2]),
+                };
+                break;
+            case preg_match('~^/nodeAdClients ([a-f0-9]{8}) (fill|deny)$~D', $this->input['callback'], $m):
+                $this->nodeAdguardClients($m[1], $m[2] === 'fill');
+                break;
             case preg_match('~^/nodeSettings ([a-f0-9]{8})(?: ([a-z]+))?$~D', $this->input['callback'], $m):
                 $this->managedNodeSettingsMenu($m[1], $m[2] ?? 'root');
                 break;
@@ -1069,6 +1077,9 @@ class Bot
             case preg_match('~^/exitMember ([a-f0-9]{8}) ([a-f0-9]{8})$~', $this->input['callback'], $m):
                 $this->exitGroupMember($m[1], $m[2]);
                 break;
+            case preg_match('~^/exitGroupWarp ([0-9a-f]{8}) ([0-9a-f]{8}) (first|pause|resume)$~D', $this->input['callback'], $m):
+                $this->exitGroupWarpOrder($m[1], $m[2], $m[3]);
+                break;
             case preg_match('~^/exitChoice ([a-f0-9]{8}) (auto|direct|[a-f0-9]{8})$~', $this->input['callback'], $m):
                 $this->exitGroupChoice($m[1], $m[2]);
                 break;
@@ -1130,6 +1141,13 @@ class Bot
                 break;
             case preg_match('~^/exitU ([a-f0-9]{8}) ([a-f0-9]{10}) (\d{1,5})$~', $this->input['callback'], $m):
                 $this->exitUserToggle($m[1], $m[2], (int) $m[3]);
+                break;
+            case preg_match('~^/exitWarp ([a-f0-9]{8}) ([a-f0-9]{20}) ([01]) ([nu]) (\d{1,6})$~D', $this->input['callback'], $m):
+                $this->exitWarpSelect($m[1], $m[2], $m[3] === '1', $m[4], (int) $m[5]);
+                break;
+            case preg_match('~^/exitWarpCheck ([a-f0-9]{8})$~D', $this->input['callback'], $m):
+                $this->exitDiagnosticsMenu($m[1], $this->exitWarpProbe($m[1]) ? $this->t('Cloudflare подтвердил выход через WARP.', 'Cloudflare confirmed WARP egress.')
+                    : $this->t('Выход через WARP не подтверждён.', 'WARP egress was not confirmed.'));
                 break;
             case preg_match('~^/exitFull (-|[a-f0-9]{8}) ([a-f0-9]{20}) (-|invalid|[a-f0-9]{8}) ([nu]) (\d{1,6})$~D', $this->input['callback'], $m):
                 $this->exitFullSelect($m[1], $m[2], $m[3], $m[4], (int) $m[5]);
@@ -1460,6 +1478,10 @@ class Bot
                 break;
             case preg_match('~^/adguardLink$~', $this->input['callback'], $m):
                 $this->adguardBrowserLink();
+                break;
+            case preg_match('~^/adguardPanel (close|open)$~D', $this->input['callback'], $m):
+                $this->adguardSetPanelOpen($m[1] === 'open');
+                $this->menu('adguard');
                 break;
             case preg_match('~^/adguardChBr$~', $this->input['callback'], $m):
                 $this->adguardChBr();
@@ -4222,7 +4244,8 @@ class Bot
         $strictRelay = $fullUsers = [];
         foreach ($c['inbounds'][0]['settings']['clients'] ?? [] as $client) {
             if (!is_array($client)) continue;
-            if (self::exitFullId($client) !== '-' && empty($client['off']) && is_string($client['email'] ?? null) && $client['email'] !== '') {
+            $nodeWarp = array_intersect(self::exitClientNodes($client), (array) ($client['exit_warp'] ?? []));
+            if ((self::exitFullId($client) !== '-' || $nodeWarp) && empty($client['off']) && is_string($client['email'] ?? null) && $client['email'] !== '') {
                 $fullUsers[] = self::exitExactUser($client['email']);
             }
             if (!empty($client['exit_relay']) && !empty($client['exit_ipv6']) && empty($client['off']) && !empty($client['email'])) $strictRelay[] = $client['email'];
@@ -4614,6 +4637,9 @@ class Bot
         // Узлы выхода: session — абсолютный счётчик ядра, base — его значение
         // в момент сброса счётчика админом (до следующего рестарта ядра).
         foreach (($p['exits'] ?? []) as $id => $v) {
+            foreach (array_keys($v['modes']['raw'] ?? []) as $mode) {
+                $p['exits'][$id]['modes']['raw'][$mode] = ['up' => 0, 'down' => 0];
+            }
             foreach (['up', 'down'] as $dir) {
                 $p['exits'][$id]['global'][$dir] = ($v['global'][$dir] ?? 0) + max(0, ($v['session'][$dir] ?? 0) - ($v['base'][$dir] ?? 0));
                 $p['exits'][$id]['session'][$dir] = 0;
@@ -7811,8 +7837,28 @@ NFT;
         foreach (array_keys($this->exitNodes()) as $id) {
             $id = (string) $id;
             $name = 'outbound>>>' . self::EXIT_TAG . $id . '>>>traffic>>>';
-            $current = ['up' => (int) ($counters[$name . 'uplink'] ?? 0), 'down' => (int) ($counters[$name . 'downlink'] ?? 0)];
+            $warpName = 'outbound>>>' . self::EXIT_TAG . 'warp-' . $id . '>>>traffic>>>';
+            $current = ['up' => (int) ($counters[$name . 'uplink'] ?? 0) + (int) ($counters[$warpName . 'uplink'] ?? 0),
+                'down' => (int) ($counters[$name . 'downlink'] ?? 0) + (int) ($counters[$warpName . 'downlink'] ?? 0)];
             $previousExit = $p['exits'][$id] ?? [];
+            $modes = $previousExit['modes'] ?? [];
+            $zero = ['up' => 0, 'down' => 0];
+            $measured = [];
+            foreach (['node' => $name, 'warp' => $warpName] as $mode => $prefix) {
+                foreach (['up' => 'uplink', 'down' => 'downlink'] as $dir => $key) {
+                    $bytes = (int) ($counters[$prefix . $key] ?? 0);
+                    $last = $modes['raw'][$mode][$dir] ?? ($previousExit ? $bytes : 0);
+                    $measured[$mode][$dir] = $bytes;
+                    $delta = $bytes < $last ? $bytes : $bytes - $last;
+                    $modes[$mode][$dir] = ($modes[$mode][$dir] ?? 0) + $delta;
+                    if (isset($previousExit['modes'])) {
+                        if ($mode === 'node') $current[$dir] = $previousExit['session'][$dir] ?? 0;
+                        $current[$dir] += $delta;
+                    }
+                }
+            }
+            $modes['raw'] = $measured;
+            $modes['since'] ??= time();
             // Пробы узла идут и при нулевом трафике основного inbound.
             // Его нули не обнаружат внешний restart: проверяем также
             // сам выход. Если foldSession уже сработал, session = 0
@@ -7826,7 +7872,7 @@ NFT;
                 $previousExit['base'] = ['up' => 0, 'down' => 0];
             }
             $exits[$id] = ['session' => $current, 'global' => $previousExit['global'] ?? ['up' => 0, 'down' => 0],
-                'base' => $previousExit['base'] ?? ['up' => 0, 'down' => 0], 'since' => (int) ($previousExit['since'] ?? time())];
+                'base' => $previousExit['base'] ?? $zero, 'since' => (int) ($previousExit['since'] ?? time()), 'modes' => $modes];
         }
         if ($exits) $p['exits'] = $exits;
         else unset($p['exits']);
@@ -8531,7 +8577,7 @@ NFT;
             'ad'  => yaml_parse_file($this->adguard),
             // acme_requested — пометка запроса к службе acme-window ЭТОГО сервера:
             // в копию не идёт, на другом сервере она ничего не значит.
-            'pac' => array_diff_key($telemtBackup['pac'], ['acme_requested' => true]),
+            'pac' => $this->withoutPanelGrants(array_diff_key($telemtBackup['pac'], ['acme_requested' => true])),
             'hwid' => $this->getHwidStorage(),
             'ssl' => $ssl,
             'dnstt' => file_exists('/config/dnstt/server.key') ? [
@@ -8949,12 +8995,25 @@ NFT;
         return $incoming;
     }
 
+    private function withoutPanelGrants(array $pac): array
+    {
+        unset($pac['adg_panel_epoch'], $pac['adg_browser_epoch']);
+        foreach (array_keys((array) ($pac['managed_nodes'] ?? [])) as $id) {
+            if (is_array($pac['managed_nodes'][$id])) unset($pac['managed_nodes'][$id]['adguard_panel']);
+        }
+        return $pac;
+    }
+
     // OpenConnect восстанавливается отдельной согласованной парой ниже;
     // ранняя замена PAC не должна менять пароль раньше passwd-файла.
     // Режимы WG публикуются отдельно под lock нужного интерфейса.
     public function preserveBackupSettings(array $incoming, array $current): array
     {
         $incoming = $this->preservePanelPswd($incoming, $current);
+        // Restoring a backup never reinstates invitations or web sessions.
+        $incoming = $this->withoutPanelGrants($incoming);
+        $incoming['adg_panel_epoch'] = bin2hex(random_bytes(16));
+        if (!empty($current['adg_panel_closed'])) $incoming['adg_panel_closed'] = true;
         foreach ([self::OC_USERS, 'ocserv', 'amnezia', 'wg1_amnezia'] as $key) {
             if (array_key_exists($key, $current)) $incoming[$key] = $current[$key];
             else unset($incoming[$key]);
@@ -12475,7 +12534,9 @@ NFT;
             throw new RuntimeException($this->t('Настройки AdGuard недоступны; применение не выполнено', 'AdGuard settings are unavailable; changes were not applied'));
         }
         $this->stopAd();
-        $c['users'][0]['password'] = self::adguardPasswordHash((string) $pac['adpswd']);
+        if (!password_verify((string) $pac['adpswd'], (string) ($c['users'][0]['password'] ?? ''))) {
+            $c['users'][0]['password'] = self::adguardPasswordHash((string) $pac['adpswd']);
+        }
         if (!empty($ssl) && !empty($pac['domain']) && empty($c['tls']['enabled'])) {
             $c['tls']['enabled']     = true;
             $c['tls']['server_name'] = $pac['domain'];
@@ -13937,6 +13998,7 @@ NFT;
             if ($this->adguardWrite($c)) {
                 $this->pacConfUpdate(function (&$p) use ($pass) {
                     $p['adpswd'] = $pass;
+                    $p['adg_panel_epoch'] = bin2hex(random_bytes(16));
                 });
             } else {
                 $this->send($this->input['from'], $this->t('Не удалось записать AdGuardHome.yaml — пароль не изменён.', 'Could not write AdGuardHome.yaml; the password is unchanged.'));
@@ -33861,8 +33923,9 @@ DNS-over-HTTPS with IP:
             default => $_GET['t'],
         };
         $compatibilityError = $ruleSetReq ? '' : $this->subscriptionCompatibilityError($xr, $pac, $targetFormat);
+        $nodeWarp = $connectionOnly ? null : $this->exitWarpSubscriptionPolicy($client, $pac);
         $replacement = false;
-        if (!$connectionOnly && !$ruleSetReq && $targetFormat === 'si' && ($compatibilityError !== '' || ($pac['transport'] ?? '') === 'xhttp')
+        if ($nodeWarp === null && !$connectionOnly && !$ruleSetReq && $targetFormat === 'si' && ($compatibilityError !== '' || ($pac['transport'] ?? '') === 'xhttp')
             && (!$isDeepLink || in_array($_GET['r'], ['si', 'k', 'w'], true))) {
             $candidate = $tpl;
             foreach ($candidate['outbounds'] ?? [] as $n => $node) if (($node['tag'] ?? '') === '~outbound~' || ($node['tag'] ?? '') === ($pac['outbound'] ?: 'proxy')) {
@@ -34337,6 +34400,17 @@ DNS-over-HTTPS with IP:
         // удалось (сеть/лимит), теги останутся пустыми: пусть warp-прокси в
         // конфиге будет нерабочим, чем рабочим, но конфликтующим с сервером.
         $json = json_encode($c);
+        if ($nodeWarp !== null && $_GET['t'] === 'cl' && str_contains($json, '~warp_private_key~')) {
+            // Reference the primary by name so that relay changes also reach this group.
+            foreach ($c['proxies'] as $k => $proxy) {
+                if (($proxy['private-key'] ?? '') !== '~warp_private_key~') continue;
+                $c['proxy-groups'][] = ['name' => $proxy['name'], 'type' => 'select', 'proxies' => [$outbound]];
+                unset($c['proxies'][$k]);
+            }
+            $c['proxies'] = array_values($c['proxies']);
+            $index = array_search($outbound, array_column($c['proxies'], 'name'), true);
+            $json = json_encode($c);
+        }
         $warp = str_contains($json, '~warp_private_key~')
             ? ($this->warpClientProfile($client['email'] ?? '') ?: [])
             : [];
@@ -34470,7 +34544,10 @@ DNS-over-HTTPS with IP:
                 $this->applyAwgRelay($c, $pac['relays'][$_GET['relay']]);
             }
         }
-        if (!$ruleSetReq) $this->appendXrayProtocols($c, $client, (string) $_GET['t'], (int) $index, $relayCfg, !$replacement);
+        if (!$ruleSetReq && $nodeWarp !== null) {
+            $this->exitWarpSubscriptionRoutes($c, (string) $_GET['t'], $outbound, $nodeWarp);
+        }
+        if (!$ruleSetReq && $nodeWarp === null) $this->appendXrayProtocols($c, $client, (string) $_GET['t'], (int) $index, $relayCfg, !$replacement);
         if (!empty($return)) {
             if ($_GET['t'] == 'cl' && !$mihomoJson) {
                 return yaml_emit($c);
@@ -35926,18 +36003,44 @@ DNS-over-HTTPS with IP:
     // Токен «срок.случайное.подпись» с HMAC от ключа бота: подделать без ключа
     // нельзя, срок проверяется. cookie — пропуск браузера в /adguard<hash>/,
     // link — одноразовая ссылка администратору для стороннего браузера.
-    public const ADGUARD_GATE_TTL = 43200;     // cookie из Telegram: 12 ч
-    public const ADGUARD_LINK_TTL = 900;       // ссылка: 15 мин, один раз
-    public const ADGUARD_BROWSER_TTL = 604800; // cookie по ссылке: 7 дней
+    public const ADGUARD_LINK_TTL = 900;
+    public const ADGUARD_GATE_TTL = self::ADGUARD_LINK_TTL;
+    public const ADGUARD_BROWSER_TTL = self::ADGUARD_LINK_TTL;
+
+    protected function adguardGateNow(): int { return time(); }
+
+    public function adguardSetPanelOpen(bool $open): void
+    {
+        $this->pacConfUpdate(static function (&$conf) use ($open) {
+            if (empty($conf['adg_panel_closed']) !== $open) {
+                $conf['adg_panel_closed'] = !$open;
+                $conf['adg_panel_epoch'] = bin2hex(random_bytes(16));
+            }
+        });
+    }
+
+    private function adguardSignature(string $kind, int $exp, string $nonce, array $conf): string
+    {
+        $epoch = $conf['adg_panel_epoch'] ?? 'initial';
+        if (!empty($conf['adg_panel_closed']) || !is_string($epoch) || (string) $this->key === '') return '';
+        $browser = in_array($kind, ['link', 'browser'], true) ? ($conf['adg_browser_epoch'] ?? 'initial') : '';
+        if (!is_string($browser)) return '';
+        return substr(hash_hmac('sha256', "vpnbot-adguard-v2|$kind|$epoch|$browser|$exp|$nonce", (string) $this->key), 0, 40);
+    }
 
     public function adguardGateSign(string $kind, int $exp, string $nonce): string
     {
-        return substr(hash_hmac('sha256', "vpnbot-adguard-gate|$kind|$exp|$nonce", (string) $this->key), 0, 40);
+        return $this->adguardSignature($kind, $exp, $nonce, $this->getPacConf());
     }
 
     public function adguardGateToken(string $kind, int $ttl): string
     {
-        $exp = time() + $ttl;
+        return $this->adguardTokenUntil($kind, $this->adguardGateNow() + $ttl);
+    }
+
+    public function adguardTokenUntil(string $kind, int $deadline): string
+    {
+        $exp = min($this->adguardGateNow() + self::ADGUARD_GATE_TTL, $deadline);
         $nonce = bin2hex(random_bytes(8));
         return "$exp.$nonce." . $this->adguardGateSign($kind, $exp, $nonce);
     }
@@ -35945,8 +36048,11 @@ DNS-over-HTTPS with IP:
     public function adguardGateCheck(string $token, string $kind): bool
     {
         if ((string) $this->key === '' || !in_array($kind, ['cookie', 'link'], true)) return false;
-        if (!preg_match('~^(\d{10})\.([a-f0-9]{16})\.([a-f0-9]{40})$~D', $token, $m) || (int) $m[1] < time()) return false;
-        return hash_equals($this->adguardGateSign($kind, (int) $m[1], $m[2]), $m[3]);
+        $now = $this->adguardGateNow();
+        if (!preg_match('~^(\d{10})\.([a-f0-9]{16})\.([a-f0-9]{40})$~D', $token, $m) || (int) $m[1] <= $now || (int) $m[1] > $now + self::ADGUARD_GATE_TTL) return false;
+        $conf = $this->getPacConf();
+        if (hash_equals($this->adguardSignature($kind, (int) $m[1], $m[2], $conf), $m[3])) return true;
+        return $kind === 'cookie' && !empty($conf['adgbrowser']) && hash_equals($this->adguardSignature('browser', (int) $m[1], $m[2], $conf), $m[3]);
     }
 
     // Ссылка действует один раз: случайная часть запоминается до истечения
@@ -35970,12 +36076,13 @@ DNS-over-HTTPS with IP:
             // Повреждённое хранилище нельзя считать пустым: уже использованная
             // ссылка снова стала бы действующей. Запись атомарная; ENOSPC
             // сохраняет прежнюю историю, cookie до её записи не выдаётся.
-            if ((int) $exp < time()) return false;
+            if ((int) $exp <= $this->adguardGateNow()) return false;
             $raw = is_file($f) ? @file_get_contents($f) : '{}';
             $used = is_string($raw) ? json_decode($raw, true) : null;
             if (!is_array($used)) return false;
             foreach ($used as $value) if (!is_int($value)) return false;
-            $used = array_filter($used, static fn($e) => $e >= time());
+            $now = $this->adguardGateNow();
+            $used = array_filter($used, static fn($e) => $e > $now);
             if (isset($used[$nonce])) return false;
             $used[$nonce] = (int) $exp;
             $temporary = @tempnam(dirname($f), '.adguard-links-');
@@ -35992,13 +36099,26 @@ DNS-over-HTTPS with IP:
 
     protected function adguardLinksFile(): string { return '/logs/.adguard-links.json'; }
 
-    public function adguardSetGateCookie(string $hash, int $ttl): void
+    public function adguardExchangeLink(string $token): ?string
     {
+        $conf = $this->getPacConf();
+        if (empty($conf['adgbrowser']) || !$this->adguardLinkConsume($token)) return null;
+        [$exp, $linkNonce, $linkSig] = explode('.', $token);
+        // A concurrent close/reopen must never issue a cookie under a new epoch.
+        if (!hash_equals($this->adguardSignature('link', (int) $exp, $linkNonce, $conf), $linkSig)) return null;
+        $nonce = bin2hex(random_bytes(8));
+        return "$exp.$nonce." . $this->adguardSignature('browser', (int) $exp, $nonce, $conf);
+    }
+
+    public function adguardSetGateCookie(string $hash, string $token): bool
+    {
+        if (!$this->adguardGateCheck($token, 'cookie')) return false;
         $secure = !empty($_SERVER['HTTPS']) || ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https';
-        setcookie('adg', $this->adguardGateToken('cookie', $ttl), ['expires' => time() + $ttl, 'path' => "/adguard$hash/",
+        $set = setcookie('adg', $token, ['expires' => (int) explode('.', $token, 2)[0], 'path' => "/adguard$hash/",
             'httponly' => true, 'samesite' => 'Lax', 'secure' => $secure]);
         // Прежний пропуск (cookie c = публичный hash) больше ничего не открывает.
         setcookie('c', '', ['expires' => 1, 'path' => '/']);
+        return $set;
     }
 
     // Ссылка для стороннего браузера: только при включённом «сторонний
@@ -36006,24 +36126,23 @@ DNS-over-HTTPS with IP:
     public function adguardBrowserLink(): void
     {
         $conf = $this->getPacConf();
-        if (empty($conf['adgbrowser'])) { $this->menu('adguard'); return; }
+        if (empty($conf['adgbrowser']) || !empty($conf['adg_panel_closed']) || (int) ($this->input['from'] ?? 0) <= 0) { $this->menu('adguard'); return; }
         $hash = $this->getHashBot();
         $url = 'https://' . $this->getDomain() . "/webapp$hash/adg?t=" . $this->adguardGateToken('link', self::ADGUARD_LINK_TTL);
-        $this->send($this->input['chat'], $this->t('Ссылка на веб-панель AdGuard для любого браузера. Действует 15 минут и только один раз; браузер, открывший её, получит доступ на 7 дней. Не пересылайте её.',
-            'A link to the AdGuard web panel for any browser. It works for 15 minutes and only once; the browser that opens it gets access for 7 days. Do not forward it.')
-            . "\n<code>" . self::esc($url) . '</code>', $this->input['message_id']);
+        $this->send($this->input['from'], $this->t('Ссылка открывается один раз. Доступ в браузере истечёт через 15 минут с момента выдачи ссылки. Не пересылайте её.',
+            'This link opens once. Browser access expires 15 minutes after the link was issued. Keep it private.')
+            . "\n<code>" . self::esc($url) . '</code>');
     }
 
     public function adguardChBr()
     {
         $c = $this->pacConfUpdate(function (&$c) {
             $c['adgbrowser'] = !empty($c['adgbrowser']) ? 0 : 1;
+            $c['adg_browser_epoch'] = bin2hex(random_bytes(16));
             return $c;
         });
         $this->cloakNginx();
         $this->answer($this->input['callback_id'], $this->i18n($c['adgbrowser'] ? 'browser_notify_on' : 'browser_notify_off'), true);
-        // Прежние ссылки и пропуска браузеров не отзываются переключателем:
-        // они ограничены сроком. Немедленно отозвать всё — сменить ключ бота.
         $this->menu('adguard');
     }
 
@@ -36183,7 +36302,9 @@ DNS-over-HTTPS with IP:
                     'callback_data' => '/adguardChBr'
                 ],
             ],
-            ...(!empty($conf['adgbrowser']) ? [[[
+            [[ 'text' => empty($conf['adg_panel_closed']) ? $this->t('🔒 Закрыть доступ к панели', '🔒 Close panel access') : $this->t('🔓 Открыть доступ к панели', '🔓 Open panel access'),
+                'callback_data' => empty($conf['adg_panel_closed']) ? '/adguardPanel close' : '/adguardPanel open' ]],
+            ...(!empty($conf['adgbrowser']) && empty($conf['adg_panel_closed']) ? [[[
                 'text'          => $this->t('🔗 Ссылка для браузера (15 мин)', '🔗 Browser link (15 min)'),
                 'callback_data' => '/adguardLink',
             ]]] : []),

@@ -34,6 +34,7 @@ trait BotManagedNodeCard
             $lines[] = $this->t('Проверка трафика основным ботом: ', 'Main bot traffic check: ') . $this->exitStatusLine($id, $exit)
                 . (($history = $this->exitHistoryLine($this->exitStatus()[$id] ?? [])) !== '' ? "\n" . $history : '');
             $lines[] = $this->exitTrafficLine($id);
+            if (isset($exit['managed_profile']['warp_uuid'])) $lines[] = $this->exitWarpHealthLine($id);
             $lines[] = $this->managedNodeUsersLine($id);
         }
         return array_values(array_filter($lines, static fn($line) => $line !== ''));

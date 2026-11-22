@@ -1,0 +1,79 @@
+--- a/internal/aghuser/sessionstorage.go
++++ b/internal/aghuser/sessionstorage.go
+@@ -2,6 +2,8 @@
+ 
+ import (
+ 	"context"
++	"crypto/hmac"
++	"crypto/sha256"
+ 	"encoding/binary"
+ 	"fmt"
+ 	"log/slog"
+@@ -229,7 +231,13 @@
+ 	now := ds.clock.Now()
+ 
+ 	return func(k, v []byte) (err error) {
+-		s, err := bboltDecode(v)
++		// Legacy records have no credential binding and require a fresh login.
++		if len(k) != SessionTokenLength || len(v) < sha256.Size {
++			*invalidSessions = append(*invalidSessions, k)
++			return nil
++		}
++		record, proof := v[:len(v)-sha256.Size], v[len(v)-sha256.Size:]
++		s, err := bboltDecode(record)
+ 		if err != nil {
+ 			*invalidSessions = append(*invalidSessions, k)
+ 			ds.logger.DebugContext(ctx, "deserializing session", slogutil.KeyError, err)
+@@ -253,6 +261,11 @@
+ 			*invalidSessions = append(*invalidSessions, k)
+ 			ds.logger.DebugContext(ctx, "no saved user by name", "name", s.UserLogin)
+ 
++			return nil
++		}
++
++		if !hmac.Equal(proof, credentialProof(u, k, record)) {
++			*invalidSessions = append(*invalidSessions, k)
+ 			return nil
+ 		}
+ 
+@@ -330,7 +343,7 @@
+ 		Expire:    ds.clock.Now().Add(ds.sessionTTL),
+ 	}
+ 
+-	err = ds.store(s)
++	err = ds.store(s, u)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("storing session: %w", err)
+ 	}
+@@ -343,8 +356,20 @@
+ 	return s, nil
+ }
+ 
++// credentialProof binds the record to this login, token and password generation.
++func credentialProof(u *User, token, record []byte) []byte {
++	var key []byte
++	if u.Password != nil {
++		key = u.Password.Hash()
++	}
++	mac := hmac.New(sha256.New, key)
++	mac.Write(token)
++	mac.Write(record)
++	return mac.Sum(nil)
++}
++
+ // store saves a web user session in the bbolt database.
+-func (ds *DefaultSessionStorage) store(s *Session) (err error) {
++func (ds *DefaultSessionStorage) store(s *Session, u *User) (err error) {
+ 	tx, err := ds.db.Begin(true)
+ 	if err != nil {
+ 		return fmt.Errorf("starting transaction: %w", err)
+@@ -362,7 +387,8 @@
+ 		return fmt.Errorf("creating bucket: %w", err)
+ 	}
+ 
+-	err = bkt.Put(s.Token[:], bboltEncode(s))
++	record := bboltEncode(s)
++	err = bkt.Put(s.Token[:], append(record, credentialProof(u, s.Token[:], record)...))
+ 	if err != nil {
+ 		return fmt.Errorf("putting data: %w", err)
+ 	}

@@ -16,7 +16,7 @@ class NodeNavigationFixture extends Bot {
         $options = ['transport'=>'ws','core'=>'origin','family'=>6,'connect_family'=>4,'domain'=>'node.example.org',
             'domain_aliases'=>['alt.example.org'],'mask'=>'mask.example.org','cover'=>true];
         $this->p = ['xray_core'=>'origin','managed_nodes'=>['aabbccdd'=>['name'=>'Test node','connected'=>true,'job'=>null,
-            'status'=>['running'=>true,'generation'=>str_repeat('a',32),'options'=>$options,
+            'status'=>['running'=>true,'adguard_filter'=>true,'warp_egress'=>true,'generation'=>str_repeat('a',32),'options'=>$options,
                 'cores'=>['origin'=>'26.10.31','origin2'=>'26.10.29','origin3'=>'25.9.11','fork'=>'26.10.28-1202'],
                 'certificate'=>['domains'=>['node.example.org','alt.example.org'],'expires'=>1893456000]],]],
             'exits'=>['aabbccdd'=>['name'=>'Test node','link'=>$link,'routes'=>['domain:example.org'=>1]]]];
@@ -54,6 +54,21 @@ $check(($fullBot->x['inbounds'][0]['settings']['clients'][0]['exit_full'] ?? nul
     && in_array('/node aabbccdd', $fullBot->callbacks(), true), 'managed button assigns the exit and keeps the parent menu');
 $fullBot->click(array_values(preg_grep('~^/nuFull ~', $fullBot->callbacks()))[0]);
 $check(!isset($fullBot->x['inbounds'][0]['settings']['clients'][0]['exit_full']), 'managed button clears full routing');
+
+
+$fullBot->p['exits']['aabbccdd']['managed_profile']['warp_uuid'] = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+$fullBot->click('/nuUsers aabbccdd 0');
+$warpButtons = array_values(preg_grep('~^/nuWarp ~', $fullBot->callbacks()));
+$check(count($warpButtons) === 1 && strlen($warpButtons[0]) <= 64, 'managed WARP button for assigned user');
+$fullBot->click($warpButtons[0]);
+$check(($fullBot->x['inbounds'][0]['settings']['clients'][0]['exit_warp'] ?? []) === ['aabbccdd'], 'managed button selects WARP');
+$fullBot->click($warpButtons[0]);
+$check(($fullBot->x['inbounds'][0]['settings']['clients'][0]['exit_warp'] ?? []) === ['aabbccdd'], 'replayed button keeps selection');
+$fullBot->click(array_values(preg_grep('~^/nuWarp ~', $fullBot->callbacks()))[0]);
+$check(!isset($fullBot->x['inbounds'][0]['settings']['clients'][0]['exit_warp']), 'managed button clears WARP');
+$fullBot->click($warpButtons[0]);
+$fullBot->exitSetUsers('aabbccdd', null, false);
+$check(!isset($fullBot->x['inbounds'][0]['settings']['clients'][0]['exit_warp']), 'unassign clears associated WARP choice');
 
 foreach (['ru','en'] as $lang) {
     $b=new NodeNavigationFixture(); $b->language=$lang; Lang::$en=$lang==='en';

@@ -68,8 +68,9 @@ $cookie = substr($src0, strpos($src0, 'public function adguardSetGateCookie('), 
 pwAssert(str_contains($cookie, "'httponly' => true"), 'cookie пропуска недоступна скриптам страницы');
 pwAssert(str_contains($cookie, "'samesite' => 'Lax'"), 'cookie не уходит с межсайтовыми запросами');
 pwAssert(str_contains($cookie, "'secure' => \$secure") && str_contains($cookie, "!empty(\$_SERVER['HTTPS'])"), 'secure выставляется по факту HTTPS, а не всегда');
-$check = substr($idx, strpos($idx, '/webapp$hash/check'), 900);
-pwAssert(str_contains($check, 'adguardSetGateCookie($hash, Bot::ADGUARD_GATE_TTL)') && !str_contains($check, "setcookie('c', \$hash"), 'мини-приложение выдаёт подписанный пропуск, а не публичный hash');
+$start = strpos($idx, '/webapp$hash/check');
+$check = substr($idx, $start, strpos($idx, 'echo "/adguard$hash/";', $start) - $start);
+pwAssert(str_contains($check, 'adguardTokenUntil(') && str_contains($check, 'adguardSetGateCookie($hash, $cookie)') && !str_contains($check, "setcookie('c', \$hash"), 'мини-приложение выдаёт подписанный пропуск, а не публичный hash');
 
 // ── 4. Пустой пароль AdGuard ────────────────────────────────────────────────
 $src = (string) file_get_contents(__DIR__ . '/../app/bot.php');

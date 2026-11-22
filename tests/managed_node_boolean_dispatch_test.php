@@ -8,6 +8,7 @@ foreach (['ru','en'] as $language) {
         foreach ([false,true] as $initial) {
             $b=new NodeChoiceDispatchFixture(); $b->language=$language; $b->showSetting($path);
             $node=&$b->pacState['managed_nodes'][$id];
+            $node['status']['adguard_filter']=true;
             $node['status']['options']=ManagedNodeFields::change($node['status']['options'],$path,$initial);
             $original=$node['status']['options'];
             $b->click("/nodeField $id $path");

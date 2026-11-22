@@ -226,6 +226,22 @@ $bot->statsFake['session']['download'] = 100; $bot->statsFake['exits']['aaaaaaaa
 $bot->time_xray_stats = null; $bot->xrayStatsUser();
 t($bot->statsSaved['exits']['aaaaaaaa']['global'] === ['up' => 143, 'down' => 330], 'общий fold и отдельный выход не начисляют дважды');
 
+// One outbound can restart while the other grows enough to mask that reset.
+$bot->statsFake = ['exits' => ['aaaaaaaa' => ['session' => ['up' => 150, 'down' => 0], 'since' => 123]]];
+foreach ([[100, 50], [10, 200], [10, 200]] as [$normal, $warp]) {
+    $bot->time_xray_stats = null;
+    $bot->sshOut = json_encode(['stat' => [
+        ['name' => 'outbound>>>vpnbot-exit-aaaaaaaa>>>traffic>>>uplink', 'value' => $normal],
+        ['name' => 'outbound>>>vpnbot-exit-warp-aaaaaaaa>>>traffic>>>uplink', 'value' => $warp],
+    ]]);
+    $bot->xrayStatsUser();
+    $bot->statsFake = $bot->statsSaved;
+}
+$traffic = $bot->exitTraffic('aaaaaaaa', $bot->statsSaved);
+t($traffic['up'] === 310, 'отдельный сброс обычного выхода сохраняет общий итог');
+t(($traffic['modes']['node']['up'] ?? null) === 10 && ($traffic['modes']['warp']['up'] ?? null) === 150,
+    'раздельный учёт с момента обновления сохраняет историю общей');
+
 t($bot->dnsDomains(['domain' => 'a.com']) === ['a.com'], 'только главный домен');
 t(
     $bot->dnsDomains(['domain' => 'a.com', 'domain_aliases' => ['b.com', 'c.com']]) === ['a.com', 'b.com', 'c.com'],

@@ -21,8 +21,11 @@ require_once __DIR__ . '/ExitNodeLink.php';
 //    правила; блокировка всегда старше узла;
 //  - всё своё помечено префиксами и снимается перед каждой сборкой: удалённый
 //    или выключенный узел не оставляет в конфиге ничего.
+require_once __DIR__ . '/BotNodeWarpGroups.php';
+
 trait BotExitNodes
 {
+    use BotNodeWarpGroups;
     public const EXIT_TAG = 'vpnbot-exit-';
     private const EXIT_RESOLVE_TAG = self::EXIT_TAG . 'resolve-';
     public const EXIT_PROBE_TAG = 'vpnbot-exit-probe-';
@@ -315,6 +318,84 @@ trait BotExitNodes
         return array_values(array_unique(array_filter($client['exit'], static fn($id) => is_string($id) && preg_match('~^[a-f0-9]{8}$~D', $id))));
     }
 
+    public static function exitWarpSelected(array $client, string $id): bool
+    {
+        return in_array($id, (array) ($client['exit_warp'] ?? []), true);
+    }
+
+    private static function exitClearWarp(array &$client, string $id): void
+    {
+        $left = array_values(array_diff((array) ($client['exit_warp'] ?? []), [$id]));
+        if ($left) $client['exit_warp'] = $left;
+        else unset($client['exit_warp']);
+    }
+
+    /** A split client must send node destinations to its authenticated VPN connection. */
+    public function exitWarpSubscriptionPolicy(array $client, array $pac): ?array
+    {
+        if (empty($client['exit_warp']) || !empty($client['exit_relay'])) return null;
+        $full = self::exitFullId($client);
+        if ($full !== '-') return self::exitWarpSelected($client, $full) ? ['all' => true, 'entries' => []] : null;
+        $ids = array_intersect(self::exitClientNodes($client), (array) $client['exit_warp']);
+        if (!$ids) return null;
+        $nodes = $this->exitNodes($pac);
+        $entries = [];
+        foreach ($ids as $id) {
+            $node = $nodes[$id] ?? null;
+            if (!$node) return ['all' => true, 'entries' => []];
+            // Mutable remote sets and server geodata cannot safely be frozen into a client profile.
+            foreach ($node['rulesets'] as $set) if (!empty($set['on'])) return ['all' => true, 'entries' => []];
+            foreach (array_keys(array_filter($node['routes'])) as $entry) {
+                $kind = $this->classifyRouteEntry((string) $entry);
+                if (!$this->routeEntryUsable($kind) || in_array($kind['kind'], ['geoip', 'geosite', 'ext', 'extip'], true)) return ['all' => true, 'entries' => []];
+                $entries[$entry] = 1;
+            }
+        }
+        return ['all' => false, 'entries' => $entries];
+    }
+
+    /** Keep explicit DNS and blocking policy ahead of the VPN decision. */
+    public function exitWarpSubscriptionRoutes(array &$c, string $type, string $primary, array $policy): void
+    {
+        if (!$policy['all'] && !$policy['entries']) return;
+        $pins = [];
+        if ($type === 'cl') {
+            $rules = $c['rules'] ?? [];
+            $protected = static fn($r) => is_string($r) && preg_match('~,(?:\s*)(?:REJECT(?:-DROP)?|dns-out)(?:\s*,\s*no-resolve)?\s*$~iD', $r);
+            $fields = ['domain_regex'=>'DOMAIN-REGEX', 'domain_keyword'=>'DOMAIN-KEYWORD', 'domain'=>'DOMAIN', 'domain_suffix'=>'DOMAIN-SUFFIX', 'ip_cidr'=>'IP-CIDR'];
+            foreach ($this->srsBuckets(array_keys($policy['entries'])) as $field => $values) foreach ($values as $value) {
+                // Commas delimit Mihomo rule arguments. Delegate such regexes to the server.
+                if (str_contains($value, ',')) { $policy['all'] = true; break 2; }
+                $kind = $field === 'ip_cidr' && str_contains($value, ':') ? 'IP-CIDR6' : $fields[$field];
+                $pins[] = "$kind,$value,$primary";
+            }
+            if ($policy['all']) $pins = ["MATCH,$primary"];
+            $target =& $c['rules'];
+            $c['mode'] = 'rule';
+        } else {
+            $tags = [];
+            foreach ($c['outbounds'] as $o) if (in_array($o['protocol'] ?? $o['type'] ?? '', ['blackhole','block','dns'], true)) $tags[] = $o['tag'] ?? '';
+            if ($type === 'si') {
+                $target =& $c['route']['rules'];
+                $protected = static fn($r) => !in_array($r['action'] ?? 'route', ['route', 'bypass'], true) || in_array($r['outbound'] ?? null, $tags, true);
+                foreach ($this->srsBuckets(array_keys($policy['entries'])) as $field => $values) if ($values) $pins[] = [$field => $values, 'outbound' => $primary];
+                if ($policy['all']) $c['route']['final'] = $primary;
+            } else {
+                $target =& $c['routing']['rules'];
+                $protected = static fn($r) => in_array($r['outboundTag'] ?? null, $tags, true);
+                foreach ($this->listToXrayRules($policy['entries']) as $field => $values) if ($values) $pins[] = ['type' => 'field', $field => $values, 'outboundTag' => $primary];
+                if ($policy['all']) $pins = [['type' => 'field', 'network' => 'tcp,udp', 'outboundTag' => $primary]];
+            }
+            $rules = $target ?? [];
+        }
+        $first = $rest = [];
+        foreach ($rules as $rule) {
+            if ($protected($rule)) $first[] = $rule;
+            elseif (!$policy['all']) $rest[] = $rule;
+        }
+        $target = [...$first, ...$pins, ...$rest];
+    }
+
     /** email пользователей основного входа с этим узлом; отключённые (off) не попадают. */
     public function exitNodeEmails(array $c, string $id, bool $listsOnly = false): array
     {
@@ -530,12 +611,17 @@ trait BotExitNodes
         $probe = $rules = $fullRules = $unavailable = [];
         $balanced = [];
         $ipv6 = $this->exitIpv6Attached();
-        $relay = $fullUsers = [];
+        $relay = $fullUsers = $warpUsers = [];
         foreach ($c['inbounds'][0]['settings']['clients'] ?? [] as $client) {
             if (!is_array($client)) continue;
             $full = self::exitFullId($client);
             if ($full !== '-' && empty($client['off']) && is_string($client['email'] ?? null) && $client['email'] !== '') {
                 $fullUsers[$full][] = $client['email'];
+            }
+            if (empty($client['off']) && empty($client['exit_relay']) && is_string($client['email'] ?? null) && $client['email'] !== '') {
+                foreach ($full === '-' ? self::exitClientNodes($client) : [$full] as $id) {
+                    if (self::exitWarpSelected($client, $id)) $warpUsers[$id][] = $client['email'];
+                }
             }
             if (!empty($client['exit_relay']) && !empty($client['exit_ipv6']) && empty($client['off']) && !empty($client['email'])) $relay[] = $client['email'];
         }
@@ -557,8 +643,65 @@ trait BotExitNodes
         foreach ($nodes as $id => $node) {
             $id = (string) $id;
             $port = self::EXIT_PROBE_PORT + $index++;
+            $warpEmails = $warpUsers[$id] ?? [];
+            unset($warpUsers[$id]);
+            $warpFull = array_values(array_intersect($fullUsers[$id] ?? [], $warpEmails));
+            $warpList = array_values(array_diff($warpEmails, $warpFull));
+            $outbound = $node['enabled'] ? $this->exitNodeOutbound($node) : null;
+            $warpTag = 'block';
+            if ($outbound && $node['kind'] === 'remote' && isset($node['managed_profile']['warp_uuid'])) {
+                try {
+                    $warp = ManagedNodeProfile::warpOutbound($outbound, $node['managed_profile']['warp_uuid']);
+                    if (($node['managed_profile']['channel'] ?? '') === 'amnezia') {
+                        ManagedNodeProfile::setEndpoint($warp, '127.0.0.1', 10920 + $index - 1);
+                    }
+                    $probeTag = $warpTag = self::EXIT_TAG . 'warp-' . $id;
+                    if (isset($node['managed_profile']['warp_probe_uuid'])) {
+                        $diagnostic = ManagedNodeProfile::warpOutbound($warp, $node['managed_profile']['warp_probe_uuid']);
+                        $probeTag = self::EXIT_TAG . 'health-' . $id;
+                        $c['outbounds'][] = $diagnostic + ['tag' => $probeTag];
+                    }
+                    $c['outbounds'][] = $warp + ['tag' => $warpTag];
+                    $c['inbounds'][] = ['tag' => $warpTag, 'listen' => '127.0.0.1', 'port' => $port + self::EXIT_MAX,
+                        'protocol' => 'trojan', 'settings' => ['clients' => [[
+                            'password' => self::exitWarpProbePassword($id, $node['managed_profile']['warp_uuid']),
+                        ]]]];
+                    $source = ['type' => 'field', 'inboundTag' => [$warpTag]];
+                    $probe[] = $source + ['ruleTag' => self::EXIT_RULE . "$id:warp-trace", 'network' => 'tcp', 'port' => '443',
+                        'domain' => ['full:www.cloudflare.com'], 'outboundTag' => $probeTag];
+                    $probe[] = $source + ['ruleTag' => self::EXIT_RULE . "$id:warp-dns", 'network' => 'udp', 'port' => '53',
+                        'ip' => ['1.1.1.1/32'], 'outboundTag' => $probeTag];
+                    $probe[] = $source + ['ruleTag' => self::EXIT_RULE . "$id:warp-probe-deny", 'outboundTag' => 'block'];
+                    $this->ensureBlockOutbound($c);
+                } catch (InvalidArgumentException $e) {
+                    $warpTag = 'block';
+                    // Invalid restored credentials keep WARP assignments blocked.
+                }
+            }
+            if ($node['kind'] === 'group' && $node['enabled'] && $warpEmails) {
+                $warpTag = $this->exitWarpGroupTarget($node, $nodes, $this->exitStatus(), time());
+            }
+            if ($warpFull) {
+                $this->exitFullRules($c, $fullRules, 'warp-' . $id, $node, $warpFull, ['outboundTag' => $warpTag], (bool) $blockedIps);
+                $fullUsers[$id] = array_values(array_diff($fullUsers[$id], $warpFull));
+                if (!$fullUsers[$id]) unset($fullUsers[$id]);
+            }
+            if ($warpList) {
+                $users = array_map([self::class, 'exitExactUser'], $warpList);
+                $entries = $this->exitNodeEntries($node);
+                if (!$this->exitNodeRoutesReady($node, $entries)) {
+                    $unavailable[] = ['type' => 'field', 'ruleTag' => self::EXIT_UNAVAILABLE . "warp-$id", 'user' => $users, 'outboundTag' => 'block'];
+                } else {
+                    foreach ($this->listToXrayRules($entries) as $field => $values) {
+                        if (!$values || !in_array($field, ['ip', 'domain'], true)) continue;
+                        $rule = ['type' => 'field', 'user' => $users, $field => $values];
+                        if ($node['quic'] === 'block') $rules[] = $rule + ['ruleTag' => self::EXIT_RULE . "$id:warp-quic-$field",
+                            'network' => 'udp', 'port' => '443', 'outboundTag' => 'block'];
+                        $rules[] = $rule + ['ruleTag' => self::EXIT_RULE . "$id:warp-$field", 'outboundTag' => $warpTag];
+                    }
+                }
+            }
             if (empty($node['enabled'])) continue;
-            $outbound = $this->exitNodeOutbound($node);
             if ($outbound === null && $node['fallback'] !== 'block') continue;
             // Повреждённая ссылка строгой ноды не должна снимать её маршруты.
             $outbound ??= ['protocol' => 'blackhole'];
@@ -606,7 +749,7 @@ trait BotExitNodes
                 $this->exitFullRules($c, $fullRules, $id, $node, $fullUsers[$id], $groupProbe ?? ['outboundTag' => $tag], (bool) $blockedIps);
                 unset($fullUsers[$id]);
             }
-            $emails = array_map([self::class, 'exitExactUser'], $this->exitNodeEmails($c, $id, true));
+            $emails = array_map([self::class, 'exitExactUser'], array_values(array_diff($this->exitNodeEmails($c, $id, true), $warpEmails)));
             if (!$emails) continue;
             $entries = $this->exitNodeEntries($node);
             if ($node['fallback'] === 'block' && !$this->exitNodeRoutesReady($node, $entries)) {
@@ -631,6 +774,8 @@ trait BotExitNodes
             foreach (['domain', 'ip'] as $field) if ($x[$field]) $rules[] = ['type' => 'field', 'ruleTag' => self::EXIT_RULE . "$id:$field",
                 'user' => $emails, $field => $x[$field]] + $target;
         }
+        if ($warpUsers) $unavailable[] = ['type' => 'field', 'ruleTag' => self::EXIT_UNAVAILABLE . 'warp-missing',
+            'user' => array_values(array_unique(array_map([self::class, 'exitExactUser'], array_merge(...array_values($warpUsers))))), 'outboundTag' => 'block'];
         // A disabled, missing or unreadable full exit must never release a user to direct.
         if ($fullUsers) $unavailable[] = ['type' => 'field', 'ruleTag' => self::EXIT_UNAVAILABLE . 'full',
             'user' => array_map([self::class, 'exitExactUser'], array_merge(...array_values($fullUsers))), 'outboundTag' => 'block'];
@@ -774,7 +919,24 @@ trait BotExitNodes
     {
         $this->withLock('exit-status', function () use ($id, $status) {
             $all = $this->exitStatus();
-            $all[$id] = $status;
+            $prior = $all[$id] ?? [];
+            if (isset($status['warp_health'])) {
+                $health = $status['warp_health'];
+                $old = $prior['warp_health'] ?? [];
+                if ($health['time'] < ($old['time'] ?? 0)) return true;
+                $good = $health['https'] === 'ok' && $health['udp'] === 'ok';
+                $wasGood = ($old['profile'] ?? '') === $health['profile'] && ($old['https'] ?? '') === 'ok'
+                    && ($old['udp'] ?? '') === 'ok' && $health['time'] - ($old['time'] ?? 0) <= 2 * self::EXIT_CRON_PERIOD;
+                $health['recovered'] = !$good ? 0 : ($wasGood ? ($old['recovered'] ?? 0) : $health['time']);
+                foreach (['https', 'udp'] as $stage) {
+                    $health[$stage . '_ok_at'] = $health[$stage] === 'ok' ? $health['time'] : ($old[$stage . '_ok_at'] ?? 0);
+                }
+                $all[$id] = ['warp_health' => $health] + $prior;
+            } else {
+                if (isset($prior['warp_health'])) $status['warp_health'] = $prior['warp_health'];
+                $status['ok_at'] = !empty($status['ok']) ? $status['time'] : ($prior['ok_at'] ?? 0);
+                $all[$id] = $status;
+            }
             $all = array_intersect_key($all, $this->exitNodes() + [$id => 1]);
             $tmp = self::EXIT_STATUS_FILE . '.tmp';
             if (@file_put_contents($tmp, json_encode($all, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)) !== false) @rename($tmp, self::EXIT_STATUS_FILE);
@@ -796,6 +958,44 @@ trait BotExitNodes
         if (empty($node['enabled'])) return ['time' => time(), 'ok' => false, 'error' => 'disabled'];
         $out = (string) $this->ssh($this->exitProbeCommand($node, $port, $full), 'xr');
         return $this->exitProbeResult($id, $node, $full, $out, $this->sshFailed);
+    }
+
+    private static function exitWarpProbePassword(string $id, string $uuid): string
+    {
+        return hash_hmac('sha256', 'vpnbot:warp-probe:' . $id, $uuid);
+    }
+
+    public function exitWarpProbe(string $id): bool
+    {
+        $port = $this->exitProbePort($id);
+        $uuid = $this->exitNodes()[$id]['managed_profile']['warp_uuid'] ?? '';
+        if ($port === null || !$uuid) return false;
+        $port += self::EXIT_MAX;
+        $started = time();
+        $answer = $this->sshInputCommand("python3 /node_warp_probe.py $port --details",
+            self::exitWarpProbePassword($id, $uuid) . "\n", 'xr');
+        $code = '(ok|invalid|timeout|tls|failed)';
+        $measured = !$this->sshFailed && preg_match("~^https=$code udp=$code$~D", trim($answer), $m);
+        $health = ['time' => $started, 'profile' => hash('sha256', $uuid), 'https' => $measured ? $m[1] : 'unavailable', 'udp' => $measured ? $m[2] : 'unavailable'];
+        $this->exitStatusWrite($id, ['warp_health' => $health]);
+        return $health['https'] === 'ok' && $health['udp'] === 'ok';
+    }
+
+    private function exitWarpHealthLine(string $id): string
+    {
+        $status = $this->exitStatus()[$id]['warp_health'] ?? [];
+        if (empty($status['time'])) return $this->t('WARP ещё не проверялся', 'WARP has not been checked yet');
+        $reasons = ['ok' => '✓', 'invalid' => $this->t('ответ не подтверждён', 'unconfirmed reply'),
+            'timeout' => $this->t('тайм-аут', 'timeout'), 'tls' => $this->t('ошибка TLS', 'TLS error'),
+            'failed' => $this->t('ошибка обмена', 'exchange failed'), 'unavailable' => $this->t('нет результата', 'no result')];
+        $lines = ['WARP · ' . date('d.m H:i', $status['time']) . (time() - $status['time'] > 3 * self::EXIT_CRON_PERIOD
+            ? $this->t(' · проверка устарела', ' · stale check') : '')];
+        foreach (['https' => 'HTTPS', 'udp' => 'DNS (UDP)'] as $stage => $label) {
+            $last = (int) ($status[$stage . '_ok_at'] ?? 0);
+            $lines[] = $label . ' · ' . ($reasons[$status[$stage] ?? ''] ?? $reasons['unavailable'])
+                . ($last ? $this->t(' · успешно ', ' · last success ') . date('d.m H:i', $last) : '');
+        }
+        return implode("\n", $lines);
     }
 
     private function exitProbeCommand(array $node, int $port, bool $full): string
@@ -1192,6 +1392,7 @@ trait BotExitNodes
             // Раз в сутки — полная проверка со страной YouTube.
             $full = $requests[$id];
             $now = $probes[$id];
+            if (isset($node['managed_profile']['warp_uuid'])) $this->exitWarpProbe($id);
             $name = self::esc($node['name'] !== '' ? $node['name'] : $id);
             // Подписка узла: по расписанию и сразу после отказа — вдруг на узле
             // сменили ключи. Новая ссылка применяется сразу и проверяется.
@@ -1213,7 +1414,7 @@ trait BotExitNodes
             }
             $restart = $this->exitRefreshRulesets($id) || $restart;
         }
-        if ($restart) {
+        if ($restart || $this->exitGroupWarpChanged()) {
             $this->withLock('xray', fn() => $this->restartXray($this->getXray()), 20, false);
         }
     }
@@ -1440,11 +1641,13 @@ trait BotExitNodes
             $this->exitStatusLine($id, $node), $this->exitHistoryLine($this->exitStatus()[$id] ?? []),
             $node['kind'] === 'group' ? $this->t('Трафик группы учитывается у её узлов. Проверка не использует прямой запасной выход автоматической группы.', 'Group traffic is counted at its members. An automatic group check never uses direct fallback.') : $this->exitTrafficLine($id),
             $this->t('Проверить — доступность и страна выхода. Скорость — до 50 МБ через узел и до 50 МБ напрямую; это не скорость вашего устройства. Обновить наборы — скачать .srs/.mrs заново и проверить выход.', 'Check: availability and exit country. Speed: up to 50 MB through the node and up to 50 MB directly; this is not your device speed. Refresh sets: download .srs/.mrs again and check egress.')];
+        if (isset($node['managed_profile']['warp_uuid'])) $text[] = $this->exitWarpHealthLine($id);
         if ($notice !== '') $text[] = self::esc($notice);
         $data = [
             [['text' => $this->t('🔍 Проверить', '🔍 Check'), 'callback_data' => "/exitCheck $id"], ['text' => $this->t('⚡ Скорость', '⚡ Speed'), 'callback_data' => "/exitSpeed $id"]],
             [['text' => $this->t('🔄 Обновить наборы', '🔄 Refresh sets'), 'callback_data' => "/exitRefresh $id"]],
         ];
+        if (isset($node['managed_profile']['warp_uuid'])) $data[] = [['text' => $this->t('Проверить WARP ноды', 'Check node WARP'), 'callback_data' => "/exitWarpCheck $id"]];
         if ($node['kind'] !== 'group') $data[] = [['text' => $this->t('🧹 Сбросить счётчик трафика…', '🧹 Reset traffic counter…'), 'callback_data' => "/exitTraf $id"]];
         $data[] = $this->menuHelpButton('exitnodes', "diag_$id");
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/exit $id"]];
@@ -1458,7 +1661,7 @@ trait BotExitNodes
         $e = ($stats ?? $this->getXrayStats())['exits'][$id] ?? [];
         $sum = [];
         foreach (['up', 'down'] as $dir) $sum[$dir] = (int) ($e['global'][$dir] ?? 0) + max(0, (int) ($e['session'][$dir] ?? 0) - (int) ($e['base'][$dir] ?? 0));
-        return $sum + ['since' => (int) ($e['since'] ?? 0)];
+        return $sum + ['since' => (int) ($e['since'] ?? 0), 'modes' => $e['modes'] ?? []];
     }
 
     public function exitTrafficLine(string $id): string
@@ -1466,7 +1669,14 @@ trait BotExitNodes
         try { $t = $this->exitTraffic($id); }
         catch (XrayStatsUnavailable $error) { return $this->t('Трафик через узел: недоступен', 'Node traffic: unavailable'); }
         if (!$t['since']) return $this->t('Трафик через узел: ещё не подсчитан (обновляется раз в минуту)', 'Traffic through the node: not counted yet (updated once a minute)');
-        return $this->t('Трафик через узел с ', 'Traffic through the node since ') . date('d.m.Y H:i', $t['since']) . ': ↑' . $this->getBytes($t['up']) . ' ↓' . $this->getBytes($t['down']);
+        $line = $this->t('Трафик через узел с ', 'Traffic through the node since ') . date('d.m.Y H:i', $t['since']) . ': ↑' . $this->getBytes($t['up']) . ' ↓' . $this->getBytes($t['down']);
+        if (!empty($t['modes']['since'])) {
+            $line .= "\n" . $this->t('По выходам с ', 'By egress since ') . date('d.m.Y H:i', $t['modes']['since']);
+            foreach (['node' => $this->t('Обычный', 'Normal'), 'warp' => 'WARP'] as $mode => $label) {
+                $line .= "\n" . $label . ' ↑' . $this->getBytes($t['modes'][$mode]['up']) . ' ↓' . $this->getBytes($t['modes'][$mode]['down']);
+            }
+        }
+        return $line;
     }
 
     public function exitTrafficReset(string $id, bool $confirmed = false): void
@@ -1487,6 +1697,10 @@ trait BotExitNodes
             $e = $p['exits'][$id] ?? [];
             $p['exits'][$id] = ['session' => $e['session'] ?? ['up' => 0, 'down' => 0], 'global' => ['up' => 0, 'down' => 0],
                 'base' => $e['session'] ?? ['up' => 0, 'down' => 0], 'since' => time()];
+            if (isset($e['modes'])) {
+                $p['exits'][$id]['modes'] = ['since' => time(), 'raw' => $e['modes']['raw'],
+                    'node' => ['up' => 0, 'down' => 0], 'warp' => ['up' => 0, 'down' => 0]];
+            }
             if ($this->setXrayStats($p) === false) throw new RuntimeException('Could not reset node traffic');
         });
         $this->exitDiagnosticsMenu($id, $this->t('Счётчик трафика узла сброшен', 'The node traffic counter was reset'));
@@ -1619,6 +1833,13 @@ trait BotExitNodes
             $row = [['text' => ($selected ? '✅ ' : '☐ ') . ($node['enabled'] ? '' : '⏸ ') . ($node['name'] ?: $member), 'callback_data' => "/exitMember $id $member"]];
             if ($selected) $row[] = ['text' => ($group['choice'] === (string) $member ? '✅ ' : '') . $this->t('Выбрать', 'Select'), 'callback_data' => "/exitChoice $id $member"];
             $data[] = $row;
+            if ($selected && isset($node['managed_profile']['warp_uuid'])) {
+                $paused = !empty($group['warp_drained'][$member]);
+                $rank = array_search((string) $member, $group['members'], true) + 1;
+                $data[] = [['text' => "WARP #$rank · " . $this->t('первой', 'prefer'), 'callback_data' => "/exitGroupWarp $id $member first"],
+                    ['text' => $paused ? $this->t('Вернуть в WARP', 'Resume WARP') : $this->t('Приостановить WARP', 'Drain WARP'), 'callback_data' => "/exitGroupWarp $id $member " . ($paused ? 'resume' : 'pause')]];
+            }
+
         }
         if (!array_filter($nodes, static fn($n) => $n['kind'] === 'remote')) {
             $text[] = $this->t('Нет удалённых узлов. Вернитесь к списку → Добавить выход → Удалённый сервер.', 'No remote nodes. Return to the list → Add exit → Remote server.');
@@ -1886,6 +2107,7 @@ trait BotExitNodes
             unset($p['exits'][$id]);
             if (empty($p['exits'])) unset($p['exits']);
             foreach ($x['inbounds'][0]['settings']['clients'] ?? [] as $k => $client) {
+                self::exitClearWarp($x['inbounds'][0]['settings']['clients'][$k], $id);
                 if (($client['exit_full'] ?? null) === $id) unset($x['inbounds'][0]['settings']['clients'][$k]['exit_full']);
                 if (!is_array($client['exit'] ?? null)) continue;
                 $left = array_values(array_diff($client['exit'], [$id]));
@@ -2498,7 +2720,7 @@ trait BotExitNodes
         foreach (array_slice($list, $page * self::EXIT_PAGE, self::EXIT_PAGE, true) as $i => $client) {
             $on = in_array($id, self::exitClientNodes($client), true);
             $data[] = [['text' => ($on ? '✅ ' : '⬜ ') . mb_substr((string) ($client['email'] ?? '—'), 0, 40) . (!empty($client['off']) ? ' ⛔' : ''),
-                'callback_data' => "/exitU $id " . self::exitClientKey($client) . " $page"], $this->exitFullButton($client, $id, 'n', $page)];
+                'callback_data' => "/exitU $id " . self::exitClientKey($client) . " $page"], $this->exitFullButton($client, $id, 'n', $page), ...$this->exitWarpButton($node, $client, $id, 'n', $page)];
         }
         if ($pages > 1) {
             $nav = [];
@@ -2530,6 +2752,7 @@ trait BotExitNodes
                 $nodes = self::exitClientNodes($client);
                 $want = $on ?? !in_array($id, $nodes, true);
                 $nodes = $want ? array_values(array_unique([...$nodes, $id])) : array_values(array_diff($nodes, [$id]));
+                if (!$want) self::exitClearWarp($x['inbounds'][0]['settings']['clients'][$i], $id);
                 if (!$want && ($client['exit_full'] ?? null) === $id) unset($x['inbounds'][0]['settings']['clients'][$i]['exit_full']);
                 if ($nodes) $x['inbounds'][0]['settings']['clients'][$i]['exit'] = $nodes;
                 else unset($x['inbounds'][0]['settings']['clients'][$i]['exit']);
@@ -2555,6 +2778,35 @@ trait BotExitNodes
         $current = self::exitFullId($client);
         return ['text' => ($current === $id ? '✅ ' : '⬜ ') . $this->t('Весь трафик', 'All traffic'),
             'callback_data' => "/exitFull $id " . self::exitFullKey($client) . " $current $screen $index"];
+    }
+
+    private function exitWarpButton(array $node, array $client, string $id, string $screen, int $index): array
+    {
+        $selected = self::exitWarpSelected($client, $id);
+        if (!$selected && (!$this->exitWarpAvailable($node, $this->exitNodes()) || !in_array($id, self::exitClientNodes($client), true))) return [];
+        return [['text' => ($selected ? '✅ ' : '⬜ ') . $this->t('WARP ноды', 'Node WARP'),
+            'callback_data' => "/exitWarp $id " . self::exitFullKey($client) . ' ' . (int) $selected . " $screen $index"]];
+    }
+
+    public function exitWarpSelect(string $id, string $key, bool $expected, string $screen, int $index): void
+    {
+        $error = $this->applyExitNodes(function (array &$p, array &$x) use ($id, $key, $expected, $screen, $index) {
+            $node = $this->exitNodes($p)[$id] ?? null;
+            if (!$node || (!$expected && (!$node['enabled'] || !$this->exitWarpAvailable($node, $this->exitNodes($p))))) return 'exit stale';
+            foreach ($x['inbounds'][0]['settings']['clients'] ?? [] as $i => $client) {
+                if (!is_array($client) || !empty($client['exit_relay']) || empty($client['email']) || ($screen === 'u' && $i !== $index)
+                    || self::exitFullKey($client) !== $key) continue;
+                if (self::exitWarpSelected($client, $id) !== $expected || (!$expected && !in_array($id, self::exitClientNodes($client), true))) return 'exit stale';
+                $record =& $x['inbounds'][0]['settings']['clients'][$i];
+                if ($expected) self::exitClearWarp($record, $id);
+                else $record['exit_warp'][] = $id;
+                return '';
+            }
+            return 'exit stale';
+        });
+        $notice = $error === '' ? '' : $this->exitError($error);
+        if ($screen === 'u') $this->exitUserMenu($index, $notice);
+        else $this->exitUsersMenu($id, $index, $notice);
     }
 
     public function exitFullSelect(string $id, string $key, string $expected, string $screen, int $index): void
@@ -2624,7 +2876,7 @@ trait BotExitNodes
             foreach ($nodes as $id => $node) {
                 $id = (string) $id;
                 $data[] = [['text' => (in_array($id, $mine, true) ? '✅ ' : '⬜ ') . mb_substr($node['name'] !== '' ? $node['name'] : $id, 0, 40)
-                    . ($node['enabled'] ? '' : $this->t(' (выключен)', ' (disabled)')), 'callback_data' => "/exitUT $i $id $key"], $this->exitFullButton($client, $id, 'u', $i)];
+                    . ($node['enabled'] ? '' : $this->t(' (выключен)', ' (disabled)')), 'callback_data' => "/exitUT $i $id $key"], $this->exitFullButton($client, $id, 'u', $i), ...$this->exitWarpButton($node, $client, $id, 'u', $i)];
             }
             if (!$nodes) $text[] = $this->t('Узлов нет: Xray → Узлы выхода.', 'No nodes: Xray → Exit nodes.');
         }
@@ -2702,15 +2954,16 @@ trait BotExitNodes
     }
 
     /** Временный конфиг: $cases — [['label' => …, 'email' => string|null], …]. */
-    public function exitTraceConfig(array $x, array $cases, int $base, string $dir): array
+    public function exitTraceConfig(array $x, array $cases, int $base, string $dir, string $network = 'tcp', int $port = 443): array
     {
+        if (!in_array($network, ['tcp', 'udp'], true) || $port < 1 || $port > 65535) throw new InvalidArgumentException('Invalid trace destination');
         $main = (string) ($x['inbounds'][0]['tag'] ?? '');
         $rules = [['type' => 'field', 'inboundTag' => ['trace-dns'], 'outboundTag' => 'trace-dns-out']];
         $outbounds = [['protocol' => 'blackhole', 'tag' => 'r-default'], ['protocol' => 'freedom', 'tag' => 'trace-dns-out']];
         foreach ($x['routing']['rules'] ?? [] as $n => $r) {
             if (!is_array($r) || array_diff(array_keys($r), self::EXIT_TRACE_FIELDS)) continue;
-            if (isset($r['network']) && !in_array('tcp', preg_split('~\s*,\s*~', strtolower(is_array($r['network']) ? implode(',', $r['network']) : (string) $r['network'])), true)) continue;
-            if (isset($r['port']) && !self::exitPortMatches($r['port'], 443)) continue;
+            if (isset($r['network']) && !in_array($network, preg_split('~\s*,\s*~', strtolower(is_array($r['network']) ? implode(',', $r['network']) : (string) $r['network'])), true)) continue;
+            if (isset($r['port']) && !self::exitPortMatches($r['port'], $port)) continue;
             if (isset($r['inboundTag']) && !in_array($main, (array) $r['inboundTag'], true)) continue;
             $tags = [];
             foreach ($cases as $k => $case) {
@@ -2740,15 +2993,15 @@ trait BotExitNodes
     }
 
     /** k => номер сработавшего правила xray.json, -1 — выход по умолчанию, null — ответа ядра нет; null целиком — ядро не запустилось. */
-    public function exitTrace(string $target, array $cases): ?array
+    public function exitTrace(string $target, array $cases, string $network = 'tcp', int $port = 443, ?array $x = null): ?array
     {
-        $x = $this->getXray();
+        $x ??= $this->getXray();
         if (!is_array($x) || !$cases) return null;
         $base = random_int(41000, 48000);
         $dir = $this->exitTraceRoot() . '/.exit-trace-' . bin2hex(random_bytes(6));
         if (!@mkdir($dir, 0700)) return null;
         try {
-            $json = json_encode($this->exitTraceConfig($x, $cases, $base, $dir), JSON_UNESCAPED_SLASHES);
+            $json = json_encode($this->exitTraceConfig($x, $cases, $base, $dir, $network, $port), JSON_UNESCAPED_SLASHES);
             if ($json === false || @file_put_contents("$dir/config.json", $json) === false) return null;
             $host = str_contains($target, ':') ? "[$target]" : $target;
             $curl = '';
@@ -2815,11 +3068,11 @@ trait BotExitNodes
     }
 
     /** Строки ответа для одного пользователя по номеру правила. */
-    public function exitTraceDescribe(?int $rule, string $host): string
+    public function exitTraceDescribe(?int $rule, string $host, ?array $x = null, ?array $p = null): string
     {
         if ($rule === null) return $this->t('ядро не ответило', 'the core did not answer');
-        $x = $this->getXray();
-        $p = $this->getPacConf();
+        $x ??= $this->getXray();
+        $p ??= $this->getPacConf();
         if ($rule < 0) {
             return $this->exitTraceOutbound((string) ($x['outbounds'][0]['tag'] ?? 'direct'))
                 . $this->t("\n   ни одно правило не подошло — выход по умолчанию", "\n   no rule matched: the default outbound");
@@ -2859,6 +3112,11 @@ trait BotExitNodes
         if ($to === self::EXIT_IPV6_TAG) {
             return '🌍 ' . $this->t('через IPv6 этого сервера (профиль для узла «Выход: только IPv6»)', 'through this server’s IPv6 (node profile “Egress: IPv6 only”)');
         }
+        if (str_starts_with($to, self::EXIT_TAG . 'warp-')) {
+            $id = substr($to, strlen(self::EXIT_TAG . 'warp-'));
+            $node = $this->exitNodes()[$id] ?? null;
+            return $this->t('☁️ Через WARP ноды ', '☁️ Via node WARP ') . ($node ? $this->exitName($id, $node) : self::esc($id));
+        }
         if (str_starts_with($to, self::EXIT_TAG)) {
             $id = substr($to, strlen(self::EXIT_TAG));
             $node = $this->exitNodes()[$id] ?? null;
@@ -2881,27 +3139,38 @@ trait BotExitNodes
     public function exitWherePrompt(): void
     {
         $this->exitPrompt($this->t("домен или адрес, а через пробел — пользователь Xray (необязательно).\nНапример: <code>www.youtube.com</code> или <code>chatgpt.com alice</code>.\nБез пользователя бот покажет маршрут для пользователя без узлов и для пользователей каждого узла.",
-            "a domain or address and, after a space, an Xray user (optional).\nFor example: <code>www.youtube.com</code> or <code>chatgpt.com alice</code>.\nWithout a user the bot shows the route for a user without nodes and for users of each node."), 'saveExitWhere', []);
+            "a domain or address and, after a space, an Xray user (optional).\nFor example: <code>www.youtube.com</code> or <code>chatgpt.com alice</code>.\nWithout a user the bot shows the route for a user without nodes and for users of each node.")
+            . $this->t("\nВ конце можно указать транспорт и порт, например <code>example.org alice udp/443</code>.", "\nOptionally append the transport and port, for example <code>example.org alice udp/443</code>."), 'saveExitWhere', []);
     }
 
     public function saveExitWhere($text): void
     {
-        $parts = preg_split('~\s+~', trim((string) $text), 2);
+        $text = trim((string) $text);
+        $network = 'tcp';
+        $port = 443;
+        if (preg_match('~\s+(tcp|udp)/([^\s]*)$~iD', $text, $m)) {
+            $network = strtolower($m[1]);
+            $port = preg_match('~^[0-9]{1,5}$~D', $m[2]) ? (int) $m[2] : 0;
+            $text = substr($text, 0, -strlen($m[0]));
+        }
+        $parts = preg_split('~\s+~', $text, 2);
         $target = self::exitTraceTarget((string) ($parts[0] ?? ''));
         $lines = ['Menu -> ' . $this->i18n('xray') . $this->t(' -> Узлы выхода -> Куда пойдёт домен', ' -> Exit nodes -> Where a domain goes')];
-        if ($target === null) {
+        if ($port < 1 || $port > 65535) {
+            $lines[] = $this->t('Укажите порт от 1 до 65535.', 'Enter a port from 1 to 65535.');
+        } elseif ($target === null) {
             $lines[] = $this->t('Не похоже на домен или адрес: ', 'This does not look like a domain or address: ') . '<code>' . self::esc(mb_substr((string) ($parts[0] ?? ''), 0, 100)) . '</code>';
         } else {
             $user = isset($parts[1]) ? trim($parts[1]) : null;
             $cases = $this->exitTraceCases($user === '' ? null : $user);
-            $lines[] = '<code>' . self::esc($target) . '</code>' . $this->t(' — TCP 443, как запрос видит этот сервер', ': TCP 443, as this server sees the request');
+            $lines[] = '<code>' . self::esc($target) . '</code> · ' . strtoupper($network) . ' ' . $port . $this->t(', как запрос видит этот сервер', ', as this server sees the request');
             if (!$cases) {
                 $lines[] = $this->t('Пользователь не найден: ', 'User not found: ') . '<code>' . self::esc(mb_substr((string) $user, 0, 60)) . '</code>';
-            } elseif (($result = $this->exitTrace($target, $cases)) === null) {
+            } elseif (($result = $this->exitTrace($target, $cases, $network, $port, $snapshot = $this->getXray())) === null) {
                 $lines[] = $this->t('Проверка не удалась: временный Xray в контейнере xr не запустился.', 'The check failed: the temporary Xray in the xr container did not start.');
             } else {
                 foreach ($cases as $k => $case) {
-                    $lines[] = "\n<b>" . self::esc($case['label']) . '</b>' . (!empty($case['off']) ? $this->t(' (отключён)', ' (disabled)') : '') . ":\n" . $this->exitTraceDescribe($result[$k] ?? null, $target);
+                    $lines[] = "\n<b>" . self::esc($case['label']) . '</b>' . (!empty($case['off']) ? $this->t(' (отключён)', ' (disabled)') : '') . ":\n" . $this->exitTraceDescribe($result[$k] ?? null, $target, $snapshot);
                 }
                 $lines[] = $this->t("\nКлиенты sing-box и Mihomo сами отправляют домены из списка WARP в WARP, а домены, которые приложение шлёт мимо VPN, до сервера не доходят.",
                     "\nsing-box and Mihomo clients send WARP-list domains to WARP by themselves, and domains an app sends outside the VPN never reach the server.");

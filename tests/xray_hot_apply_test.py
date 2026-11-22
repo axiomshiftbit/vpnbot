@@ -84,7 +84,7 @@ class HotPlanTest(unittest.TestCase):
 
     def test_bot_only_fields_need_nothing(self):
         for field, value in [('time', 1893456000), ('traffic', 10**9), ('subtoken', 'f' * 32), ('off', 'real-id'),
-                             ('exit', ['n1']), ('exit_full', 'abcdef12'), ('hwid_limit', 2), ('hwid_disabled', 1), ('singtemplate', 'x'),
+                             ('exit', ['n1']), ('exit_full', 'abcdef12'), ('exit_warp', ['abcdef12']), ('hwid_limit', 2), ('hwid_disabled', 1), ('singtemplate', 'x'),
                              ('managed_protocols', {'anytls': 0}), ('ext', [{'url': 'https://e.test'}])]:
             with self.subTest(field=field):
                 new = config()

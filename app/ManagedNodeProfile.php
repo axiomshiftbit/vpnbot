@@ -130,6 +130,20 @@ final class ManagedNodeProfile
         return $parsed + ['managed_outbound' => $outbound] + ($amnezia === null ? [] : ['managed_amnezia' => $amnezia]);
     }
 
+    /** Reuse the validated controller transport and replace only its login. */
+    public static function warpOutbound(array $outbound, $uuid): array
+    {
+        if (!is_string($uuid) || !preg_match('~^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$~D', $uuid)) {
+            throw new InvalidArgumentException('Invalid WARP controller identity');
+        }
+        if ($outbound['protocol'] === 'vless') $login =& $outbound['settings']['vnext'][0]['users'][0]['id'];
+        elseif ($outbound['protocol'] === 'trojan') $login =& $outbound['settings']['servers'][0]['password'];
+        else throw new InvalidArgumentException('Unsupported WARP controller channel');
+        if (!is_string($login) || strtolower($login) === $uuid) throw new InvalidArgumentException('WARP needs a separate login');
+        $login = $uuid;
+        return $outbound;
+    }
+
     private static function xhttpExtra(array $extra): void
     {
         self::fields($extra, ['xmux', 'noGRPCHeader', 'xPaddingBytes', 'scMaxEachPostBytes', 'scMinPostsIntervalMs', 'scStreamUpServerSecs']);

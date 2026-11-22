@@ -60,7 +60,7 @@ def installed(store):
 
 # Modules copied to the node's code directory by node_setup.py --upgrade-code.
 MODULES = ('node_manager.py', 'node_runtime.py', 'node_config.py', 'node_xray.py', 'node_dpi.py', 'node_cover.py',
-           'node_wg.py', 'node_awg.py', 'node_state.py', 'node_upgrade.py', 'image_bundle.py', 'node_code.py')
+           'node_wg.py', 'node_awg.py', 'node_warp.py', 'node_adguard.py', 'warp_masque.sh', 'node_state.py', 'node_upgrade.py', 'image_bundle.py', 'node_code.py')
 LIB = Path('/usr/local/lib/vpnbot-node')
 INSTALLED = 'code-installed.json'
 
@@ -144,7 +144,7 @@ def images_source(store):
             bundle = image_bundle.read(store.root/name)
         except Exception:
             continue
-        if all(bundle['images'].get(image) == images.get(image) for image in ('xr', 'ng') if images.get(image)) and images.get('xr'):
+        if all(bundle['images'].get(image) == images.get(image) for image in ('xr', 'ng', 'wg', 'ad') if images.get(image)) and images.get('xr'):
             return bundle['source']
     return None
 

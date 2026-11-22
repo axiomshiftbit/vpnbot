@@ -119,7 +119,13 @@ try{
   file_put_contents("$root/config/hwid.json", '{obsolete-broken');
  }
  file_put_contents("$root/config/ipv6-egress.json",json_encode(['enabled'=>true,'public'=>'2606:4700:4700::1111']));
+ $b->pacConfUpdate(static function (&$conf) {
+  $conf['adg_panel_epoch']='fixture-main';$conf['adg_browser_epoch']='fixture-browser';
+  $conf['managed_nodes']['a1b2c3d4']['adguard_panel']=['ticket'=>str_repeat('a',64),'until'=>time()+900];
+ });
  $json=$b->export();$snapshot=json_decode($json,true,512,JSON_THROW_ON_ERROR);file_put_contents($b->update,$json);
+ rtCheck(!isset($snapshot['pac']['adg_panel_epoch']) && !isset($snapshot['pac']['adg_browser_epoch'])
+  && !isset($snapshot['pac']['managed_nodes']['a1b2c3d4']['adguard_panel']),'Local panel grants are excluded from export');
  rtCheck(!isset($snapshot['extra_files']['ipv6-egress.json']),'Host IPv6 setup is not imported from another server');
  foreach ($nodeFiles as $n=>$v) rtCheck(($snapshot['extra_files']["nodes/c0ffee00/$n"]??null)===base64_encode($v),"Общий бэкап содержит файл ноды $n побайтно");
  rtCheck(!isset($snapshot['extra_files']['nodes/a1b2c3d4/snapshot.json']) && isset($snapshot['extra_files']['nodes/a1b2c3d4/key']),'Неподключённая нода: только ключ, без несуществующей копии');

@@ -5,12 +5,18 @@ class NodeChoiceDispatchFixture extends ManagedFixtureBot {
     public function getWgMsg(){return null;}
     public function click(string $callback):void{$this->input['callback']=$callback;$this->action();}
 }
+$legacy = new NodeChoiceDispatchFixture();
+$legacy->click('/nodeField aabbccdd warp_mode');
+$legacy->click('/nodeChoice aabbccdd warp_mode masque');
+if ($legacy->screens || isset($legacy->pacState['managed_nodes']['aabbccdd']['draft'])) throw new RuntimeException('Legacy node accepted WARP configuration');
 $checks=0;
 foreach(['ru','en'] as $lang){
  foreach(ManagedNodeFields::all() as $path=>$field){
   if($field[3]!=='choice')continue;
   foreach($field[4] as $value){
-   $b=new NodeChoiceDispatchFixture();$b->language=$lang;$id='aabbccdd';$b->showSetting($path);
+   $b=new NodeChoiceDispatchFixture();$b->language=$lang;$id='aabbccdd';
+   $b->pacState['managed_nodes'][$id]['status']['warp_egress']=true;
+   $b->showSetting($path);
    $b->click('/nodeField '.$id.' '.$path);$screen=end($b->screens);$callbacks=array_column(array_merge(...$screen[1]),'callback_data');
    $callback="/nodeChoice $id $path $value";
    if(!in_array($callback,$callbacks,true))throw new RuntimeException('Missing choice button: '.$path);

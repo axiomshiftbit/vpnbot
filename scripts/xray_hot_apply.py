@@ -64,7 +64,7 @@ def indexed(items, field='tag'):
 # an unknown field costs at most a needless rmu+adu, never a stale credential.
 BOT_FIELDS = frozenset({
     'subtoken', 'time', 'traffic', 'traffic_off', 'off', 'off_pwd', 'protocol_source', 'managed_protocols',
-    'ext', 'exit', 'exit_full', 'exit_ipv6', 'exit_transport_ipv6', 'exit_relay', 'awg', 'hwid_limit', 'hwid_disabled',
+    'ext', 'exit', 'exit_full', 'exit_warp', 'exit_ipv6', 'exit_transport_ipv6', 'exit_relay', 'awg', 'hwid_limit', 'hwid_disabled',
     'v2raytemplate', 'singtemplate', 'clashtemplate',
 })
 LOOPBACK = ('127.0.0.1', '::1', 'localhost')

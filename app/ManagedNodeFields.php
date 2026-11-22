@@ -20,6 +20,8 @@ final class ManagedNodeFields
             'transport' => ['basic', 'ru' => 'Транспорт', 'en' => 'Transport', 'choice', ['reality', 'ws', 'grpc', 'xhttp', 'trojan-grpc']],
             'core' => ['basic', 'ru' => 'Ядро', 'en' => 'Core', 'choice', ['origin', 'origin2', 'origin3', 'fork']],
             'family' => ['network', 'ru' => 'Выход в интернет', 'en' => 'Internet egress', 'choice', [4, 6]],
+            'adguard.enabled' => ['network', 'ru'=>'Блокировка рекламы AdGuard Home', 'en'=>'AdGuard Home ad filtering', 'bool'],
+            'warp_mode' => ['network', 'ru' => 'Выход пользователей через WARP (IPv4)', 'en' => 'User egress via WARP (IPv4)', 'choice', ['off', 'wireguard', 'masque']],
             'connect_family' => ['network', 'ru' => 'Связь бот → нода', 'en' => 'Bot → node link', 'choice', [4, 6]],
             'vpn_sources' => ['vpn', 'ru' => 'Серверы для VPN (без SSH)', 'en' => 'VPN servers (no SSH)', 'list'],
             'domain' => ['domains', 'ru' => 'Свой домен', 'en' => 'Own domain', 'string'],
@@ -107,6 +109,7 @@ final class ManagedNodeFields
 
     public static function get(array $options, string $path)
     {
+        if ($path === 'warp_mode') return $options['warp_mode'] ?? 'off';
         $value = $options;
         foreach (explode('.', $path) as $name) $value = is_array($value) ? ($value[$name] ?? null) : null;
         return $value;

@@ -1,0 +1,50 @@
+--- a/client_v2/package-lock.json
++++ b/client_v2/package-lock.json
+@@ -19,7 +19,7 @@
+         "date-fns": "^4.1.0",
+         "ipaddr.js": "^2.2.0",
+         "js-yaml": "^4.1.0",
+-        "nanoid": "^5.1.0",
++        "nanoid": "5.1.16",
+         "qs": "^6.14.0",
+         "solid-js": "^1.9.0",
+         "solid-transition-group": "^0.3.0"
+@@ -12825,9 +12825,9 @@
+       }
+     },
+     "node_modules/nanoid": {
+-      "version": "5.1.11",
+-      "resolved": "https://registry.npmjs.org/nanoid/-/nanoid-5.1.11.tgz",
+-      "integrity": "sha512-v+KEsUv2ps74PaSKv0gHTxTCgMXOIfBEbaqa6w6ISIGC7ZsvHN4N9oJ8d4cmf0n5oTzQz2SLmThbQWhjd/8eKg==",
++      "version": "5.1.16",
++      "resolved": "https://registry.npmjs.org/nanoid/-/nanoid-5.1.16.tgz",
++      "integrity": "sha512-kVrnsrJqMR8+oLJnGEmSWw9BivK5mt7H3FZatVRjrc5wGqFYuBxX1yG7+A7Gi5AefkX6t/oCkizcQgpu0cY1dQ==",
+       "funding": [
+         {
+           "type": "github",
+@@ -14100,9 +14100,9 @@
+       "license": "MIT"
+     },
+     "node_modules/postcss/node_modules/nanoid": {
+-      "version": "3.3.12",
+-      "resolved": "https://registry.npmjs.org/nanoid/-/nanoid-3.3.12.tgz",
+-      "integrity": "sha512-ZB9RH/39qpq5Vu6Y+NmUaFhQR6pp+M2Xt76XBnEwDaGcVAqhlvxrl3B2bKS5D3NH3QR76v3aSrKaF/Kiy7lEtQ==",
++      "version": "3.3.16",
++      "resolved": "https://registry.npmjs.org/nanoid/-/nanoid-3.3.16.tgz",
++      "integrity": "sha512-bzlKTyNJ7+LdGIIwy8ijFpIqEQIvafahV7eYykJ8Cvh42EdJeODoJ6gUJXpQJvej1BddH8OqTXZNE/KfbWAu8Q==",
+       "dev": true,
+       "funding": [
+         {
+@@ -16739,9 +16739,9 @@
+       }
+     },
+     "node_modules/valibot": {
+-      "version": "1.4.1",
+-      "resolved": "https://registry.npmjs.org/valibot/-/valibot-1.4.1.tgz",
+-      "integrity": "sha512-klCmFTz2jeDluy9RwX+F884TCiogtdBJ/YaxSx1EOBYXa3NXNWj8kR1jjN8rzluwojJVWWaHJ4r1U5LfICnM3g==",
++      "version": "1.4.2",
++      "resolved": "https://registry.npmjs.org/valibot/-/valibot-1.4.2.tgz",
++      "integrity": "sha512-gjdCvJ6d3RyHAneqxMYMW9QMCwYMb3jpOO0IyHZV1bnRHFBHrX3VkIILt5XYR0WhwHiH7Mty8ovuPZ/O3gamrg==",
+       "license": "MIT",
+       "peerDependencies": {
+         "typescript": ">=5"

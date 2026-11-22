@@ -53,18 +53,22 @@ def snapshot(value):
         raise ValueError('unsupported snapshot')
     result = {'schema': 1, 'options': settings(value['options']), 'identity': identity(value['identity']),
               'peers': peers(value['peers']), 'images': {}, 'tls': {}}
-    if any(peer['id'] == result['identity']['uuid'] for peer in result['peers']):
+    if any(peer['id'] in (result['identity']['uuid'], result['identity'].get('warp_uuid')) for peer in result['peers']):
         raise ValueError('peer conflicts with controller')
     channels = {peer['id']: peer['channel'] for peer in result['peers'] if peer.get('channel', 'vless') != 'vless'}
     external = result['identity'].get('external', {})
     if set(external) != set(channels) or any(external[key]['channel'] != channel for key, channel in channels.items()):
         raise ValueError('external channel identities do not match peers')
-    if not isinstance(value['images'], dict) or 'xr' not in value['images'] or set(value['images'])-{'xr', 'ng'}:
+    if not isinstance(value['images'], dict) or 'xr' not in value['images'] or set(value['images'])-{'xr', 'ng', 'wg', 'ad'}:
         raise ValueError('invalid node images')
     for name, image in value['images'].items():
         if not isinstance(image, str) or not re.fullmatch(r'ghcr\.io/axiomshiftbit/vpnbot-'+name+r'@sha256:[a-f0-9]{64}', image):
             raise ValueError('only immutable VPNBot images are accepted')
         result['images'][name] = image
+    if result['options'].get('adguard', {}).get('enabled') and 'ad' not in result['images']:
+        raise ValueError('DNS filter image is unavailable')
+    if result['options'].get('warp_mode', 'off') != 'off' and ('warp_uuid' not in result['identity'] or 'wg' not in result['images']):
+        raise ValueError('WARP identity and helper image are required')
     if not isinstance(value['tls'], dict) or set(value['tls']) not in (set(), {'fullchain.pem', 'privkey.pem'}):
         raise ValueError('invalid certificate snapshot')
     for name, encoded in value['tls'].items():

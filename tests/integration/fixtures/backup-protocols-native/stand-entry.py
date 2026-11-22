@@ -31,8 +31,14 @@ def main():
    if exe(c,'swanctl','--stats').returncode==0:break
    time.sleep(.1)
   check(exe(c,'swanctl','--load-all').returncode==0,'ike-old-client-config-load')
- def payload(c,interface,expected,label):
-  r=exe(c,'curl','-4','--noproxy','*','--interface',interface,'-sS','--max-time','8','https://example.com/',timeout=15)
+ def payload(c,interface,expected,label,*,new_oc_session=False):
+  # On a newly authenticated OpenConnect tunnel the first TLS handshake can
+  # be interrupted. Only that transient result gets a bounded readiness check.
+  attempts=3 if new_oc_session else 1
+  for attempt in range(attempts):
+   r=exe(c,'curl','-4','--noproxy','*','--interface',interface,'-sS','--max-time','8','https://example.com/',timeout=15)
+   if r.returncode!=35 or attempt+1==attempts:break
+   time.sleep(0.5*(attempt+1))
   check((r.returncode==0 and b'Example Domain'in r.stdout)==expected,label)
  def probe(label,expected,profiles):
   for instance,profile in enumerate(profiles):
@@ -45,7 +51,7 @@ def main():
   cmd=['openconnect','https://'+meta['oc_host'],'--resolve='+meta['oc_host']+':10.10.0.10','--user=auditoc','--passwd-on-stdin','--non-inter','--cafile=/tmp/audit-oc-ca.crt','--background','--pid-file=/tmp/backup-native-oc.pid','--interface=backupaudit','--script=/etc/vpnc/vpnc-script']
   r=exe(c,'sh','-c',shlex.join(cmd)+' >/tmp/backup-native-oc.log 2>&1',input=(meta['oc_password']+'\n').encode(),timeout=40)
   check((r.returncode==0)==expected,label+'-old-oc-auth')
-  if expected:payload(c,'backupaudit',True,label+'-oc-payload')
+  if expected:payload(c,'backupaudit',True,label+'-oc-payload',new_oc_session=True)
   oc_stop();ike_stop();ike_restart();c='vpnbot-audit-ipsecclient'
   r=exe(c,'swanctl','--initiate','--child','audit-tunnel','--timeout','15',timeout=22);check((r.returncode==0)==expected,label+'-old-ike-auth')
   if expected:

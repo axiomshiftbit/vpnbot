@@ -20,6 +20,8 @@ networks:
             config:
                 - subnet: 10.10.1.0/24
 volumes:
+    node-adguard-ui:
+        name: ${COMPOSE_PROJECT_NAME:-vpnbot}-node-adguard-ui-v1-${ADGUARD_VERSION:-v1.0.0}
     adguard:
     warp:
 
@@ -168,6 +170,12 @@ services:
             # через `ssh -L 8090:127.0.0.1:8090 <сервер>`.
             - 127.0.0.1:8090:8090
         volumes:
+            - type: volume
+              source: node-adguard-ui
+              target: /vpnbot-panel-assets
+              read_only: true
+              volume:
+                  nocopy: true
             - ./config/.profile:/root/.ashrc:ro
             - ./config/php.ini:/etc/php85/php.ini
             - ./config/:/config/
@@ -475,6 +483,7 @@ services:
                 # дефолт ARG, и FROM adguard/adguardhome: роняет сборку.
                 ADGUARD_VERSION: ${ADGUARD_VERSION:-v1.0.0}
         volumes:
+            - node-adguard-ui:/vpnbot-panel-assets:ro
             - ./config/.profile:/root/.ashrc:ro
             - type: volume
               target: /opt/adguardhome/work
@@ -592,6 +601,7 @@ services:
             - ./config/xray.json:/xray.json:ro
             - ./scripts/start_xray.sh:/start_xray.sh
             - ./scripts/xray_hot_apply.py:/xray_hot_apply.py:ro
+            - ./scripts/node_warp_probe.py:/node_warp_probe.py:ro
             - ./scripts/node_awg_client.py:/node-carrier/node_awg_client.py:ro
             - ./scripts/node_awg.py:/node-carrier/node_awg.py:ro
             - ./scripts/node_wg.py:/node-carrier/node_wg.py:ro

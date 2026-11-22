@@ -2,15 +2,18 @@
 """Closed configuration format for a standalone VPNBot exit node."""
 import base64
 import ipaddress
+import hmac
 import re
 import uuid
 from urllib.parse import urlencode
 import node_xray
 import node_cover
+import node_adguard
 import node_wg
 import node_awg
 
 
+WARP_CORE_PORT = 18443
 TRANSPORTS = ('reality', 'ws', 'grpc', 'xhttp', 'trojan-grpc')
 GRPC = ('grpc', 'trojan-grpc')
 CORES = {'origin': '/usr/bin/xray', 'origin2': '/usr/bin/xray-2', 'origin3': '/usr/bin/xray-3', 'fork': '/usr/bin/xray-smux'}
@@ -49,19 +52,26 @@ def hostname(value):
 
 def settings(value):
     """Remote callers can change only these settings, never a core config."""
-    if not isinstance(value, dict) or set(value) - {'connect_family', 'xray', 'cover', 'wireguard', 'amnezia', 'domain_aliases', 'vpn_sources'} != {'transport', 'family', 'core', 'domain', 'mask'}:
+    if not isinstance(value, dict) or set(value) - {'connect_family', 'xray', 'cover', 'wireguard', 'amnezia', 'domain_aliases', 'vpn_sources', 'warp_mode', 'adguard'} != {'transport', 'family', 'core', 'domain', 'mask'}:
         raise ValueError('invalid settings fields')
     if not isinstance(value['transport'], str) or not isinstance(value['core'], str) \
             or value['transport'] not in TRANSPORTS or value['core'] not in CORES \
             or type(value['family']) is not int or value['family'] not in (4, 6):
         raise ValueError('unsupported transport, address family or core')
     result = dict(value)
+    if 'adguard' in value:
+        result['adguard'] = node_adguard.settings(value['adguard'])
     if 'wireguard' in value:
         result['wireguard'] = node_wg.settings(value['wireguard'])
     if 'amnezia' in value:
         result['amnezia'] = node_awg.settings(value['amnezia'])
     if result.get('wireguard', {}).get('active') and result.get('amnezia', {}).get('active'):
         raise ValueError('only one controller channel can be active')
+    mode = value.get('warp_mode', 'off')
+    if mode not in ('off', 'wireguard', 'masque'):
+        raise ValueError('invalid WARP egress mode')
+    if mode != 'off' and (value['family'] != 4 or result.get('wireguard', {}).get('active')):
+        raise ValueError('WARP egress requires IPv4 egress and a VLESS, Trojan or Amnezia controller channel')
     if 'cover' in value and type(value['cover']) is not bool:
         raise ValueError('invalid cover site flag')
     if 'connect_family' in value and (type(value['connect_family']) is not int or value['connect_family'] not in (4, 6)):
@@ -150,10 +160,13 @@ def needs_certificate(options):
 
 
 def identity(value):
-    if not isinstance(value, dict) or set(value)-{'encryption', 'mldsa', 'cover_auth', 'wireguard', 'amnezia', 'external'} != {'uuid', 'private', 'public', 'short_id', 'path'}:
+    if not isinstance(value, dict) or set(value)-{'encryption', 'mldsa', 'cover_auth', 'wireguard', 'amnezia', 'external', 'warp_uuid'} != {'uuid', 'private', 'public', 'short_id', 'path'}:
         raise ValueError('invalid node identity')
     if not isinstance(value['uuid'], str) or str(uuid.UUID(value['uuid'])) != value['uuid']:
         raise ValueError('invalid client identity')
+    if 'warp_uuid' in value and (not isinstance(value['warp_uuid'], str) or
+            str(uuid.UUID(value['warp_uuid'])) != value['warp_uuid'] or value['warp_uuid'] == value['uuid']):
+        raise ValueError('invalid WARP controller identity')
     for key in ('private', 'public'):
         if not isinstance(value[key], str) or not re.fullmatch(r'[A-Za-z0-9_-]{43}', value[key]):
             raise ValueError('invalid Reality identity')
@@ -209,7 +222,14 @@ def external_peers(keys, external, channel):
     return result
 
 
-def core_config(options, host, keys, external=None):
+def warp_probe_identity(warp_id):
+    # Only the controller receives the WARP identity. Scope the diagnostic
+    # login separately so revoking a DNS client cannot disable tunnel checks.
+    digest = hmac.digest(uuid.UUID(warp_id).bytes, b'vpnbot/node-warp-health/v1', 'sha256')
+    return str(uuid.UUID(bytes=digest[:16], version=4))
+
+
+def core_config(options, host, keys, external=None, warp_outbound=None):
     options, host, keys = settings(options), deployment(host), identity(keys)
     family = options['family']
     source = host['public4' if family == 4 else 'public6']
@@ -242,8 +262,17 @@ def core_config(options, host, keys, external=None):
         else:
             stream['xhttpSettings'] = {'path': '/' + keys['path'], 'mode': 'auto'}
     clients = [client]
+    warp_enabled = options.get('warp_mode', 'off') != 'off'
+    probe_id = None
+    if warp_enabled:
+        if warp_outbound is None or warp_outbound.get('protocol') != options['warp_mode']:
+            raise ValueError('WARP outbound is unavailable')
+        clients.append(dict(client, **{'password' if trojan else 'id': keys['warp_uuid'], 'email': 'vpnbot/warp'}))
+        if options.get('adguard', {}).get('enabled'):
+            probe_id = warp_probe_identity(keys['warp_uuid'])
+            clients.append(dict(client, **{'password' if trojan else 'id': probe_id, 'email': 'vpnbot/warp-health'}))
     for peer in peers(external or []):
-        if peer['id'] == keys['uuid']:
+        if peer['id'] in (keys['uuid'], keys.get('warp_uuid'), probe_id):
             raise ValueError('peer conflicts with controller identity')
         if peer['enabled'] and peer.get('channel', 'vless') != 'wireguard':
             clients.append({'password' if trojan else 'id': peer['id'], 'email': peer['name'],
@@ -285,6 +314,21 @@ def core_config(options, host, keys, external=None):
                 result['inbounds'].append(inbound)
                 if options.get('xray', {}).get('block_torrent'):
                     result['routing']['rules'][0]['inboundTag'].append(inbound['tag'])
+    if warp_enabled:
+        # Resolve once before checking destination ACLs. Only the resulting IP
+        # is passed into WARP, including for UDP.
+        rules = result.setdefault('routing', {}).setdefault('rules', [])
+        if not any(out['tag'] == 'block' for out in result['outbounds']):
+            result['outbounds'].append({'tag': 'block', 'protocol': 'blackhole'})
+        result['outbounds'].extend([
+            {'tag': 'warp-resolve', 'protocol': 'loopback', 'targetStrategy': 'ForceIPv4',
+             'settings': {'inboundTag': 'warp-resolved'}},
+            dict(warp_outbound, tag='warp')])
+        rules.extend([
+            {'type': 'field', 'inboundTag': ['warp-resolved'], 'ip': denied, 'outboundTag': 'block'},
+            {'type': 'field', 'inboundTag': ['warp-resolved'], 'ip': ['0.0.0.0/0'], 'outboundTag': 'warp'},
+            {'type': 'field', 'inboundTag': ['warp-resolved'], 'outboundTag': 'block'},
+            {'type': 'field', 'inboundTag': ['node'], 'user': ['vpnbot/warp'], 'outboundTag': 'warp-resolve'}])
     return result
 
 
@@ -368,6 +412,10 @@ def export_profile(options, host, keys, peer=None):
               'subscription': base64.b64encode((link + '\n').encode()).decode()}
     channel = peer.get('channel', 'vless') if peer else ('wireguard' if options.get('wireguard', {}).get('active') else 'amnezia' if options.get('amnezia', {}).get('active') else 'vless')
     entry = external_peers(keys, [peer], channel)[0] if peer and channel != 'vless' else None
+    if peer is None and options.get('warp_mode', 'off') != 'off':
+        result['warp_uuid'] = keys['warp_uuid']
+        if options.get('adguard', {}).get('enabled'):
+            result['warp_probe_uuid'] = warp_probe_identity(keys['warp_uuid'])
     if channel == 'wireguard':
         if not options.get('wireguard', {}).get('enabled'): raise ValueError('WireGuard channel disabled')
         result['channel'] = 'wireguard'
@@ -382,7 +430,7 @@ def export_profile(options, host, keys, peer=None):
     return result
 
 
-def firewall(options, host):
+def firewall(options, host, dns_links=None):
     options, host = settings(options), deployment(host)
     if options.get('amnezia', {}).get('enabled') and 'awg_uid' not in host:
         raise ValueError('Amnezia service account is not installed')
@@ -446,6 +494,11 @@ def firewall(options, host):
               ' chain forward { type filter hook forward priority -20; policy drop; }',
               ' chain output { type filter hook output priority -20; policy accept;',
               '  ct state invalid drop', f'  meta skuid {uid} jump core_egress']
+    if options.get('warp_mode', 'off') != 'off':
+        marker = lines.index(f'  meta skuid {uid} jump core_egress')
+        lines[marker:marker] = [
+            f'  oifname "lo" ip daddr 127.0.0.1 tcp dport {WARP_CORE_PORT} meta skuid {uid} accept',
+            f'  oifname "lo" ip daddr 127.0.0.1 tcp dport {WARP_CORE_PORT} drop']
     if 'awg_uid' in host:
         awg_uid = host['awg_uid']
         if options.get('amnezia', {}).get('enabled'):
@@ -489,4 +542,11 @@ def firewall(options, host):
         result = result.replace(' chain prerouting { type nat hook prerouting priority -110; policy accept;',
                                 ' chain prerouting { type nat hook prerouting priority -110; policy accept;\n'+'\n'.join(nat))
         result = result.replace('  tcp dport 8080 ct status dnat', '\n'.join(allow)+'\n  tcp dport 8080 ct status dnat')
+    if dns_links:
+        ingress, output = node_adguard.firewall(dns_links, uid)
+        result = result.replace('  iifname "lo" accept', '\n'.join(ingress + ['  iifname "lo" accept']))
+        marker = ' chain output { type filter hook output priority -20; policy accept;\n  ct state invalid drop\n'
+        if marker not in result:
+            raise ValueError('node output firewall unavailable')
+        result = result.replace(marker, marker + '\n'.join(output) + '\n', 1)
     return result

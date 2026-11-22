@@ -37,17 +37,18 @@ class GateBot extends Bot
 {
     public array $conf = ['domain' => 'vpn.example.org', 'hashbot' => 'abcd1234'];
     public array $sent = [];
+    public array $recipients = [];
     public array $locks = [];
     public string $linksFile;
     public function __construct(string $key)
     {
         $this->key = $key; $this->language = 'ru'; Lang::$en = false;
-        $this->input = ['chat' => 1, 'message_id' => 2, 'callback_id' => 'cb', 'callback' => ''];
+        $this->input = ['chat' => -10, 'from' => 1, 'message_id' => 2, 'callback_id' => 'cb', 'callback' => ''];
         $this->linksFile = sys_get_temp_dir() . '/adg-links-' . bin2hex(random_bytes(4)) . '.json';
     }
     public function getPacConf() { return $this->conf; }
     public function setPacConf(array $conf) { $this->conf = $conf; return true; }
-    public function send($chat, $text, ?int $to = 0, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false) { $this->sent[] = $text; return ['result' => ['message_id' => 3]]; }
+    public function send($chat, $text, ?int $to = 0, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false) { $this->sent[] = $text; $this->recipients[] = [$chat, $to]; return ['result' => ['message_id' => 3]]; }
     public function menu($type = false, $arg = false, $return = false) {}
     public function withLock(string $name, callable $fn, int $timeout = 0, $busy = null) { $this->locks[] = $name; return $fn(); }
 }
@@ -55,6 +56,8 @@ class GateBot extends Bot
 // adguardLinkConsume пишет в /logs; в тесте подменяем путь через подкласс.
 class GateBotTmp extends GateBot
 {
+    public ?int $clock = null;
+    protected function adguardGateNow(): int { return $this->clock ?? time(); }
     protected function adguardLinksFile(): string { return $this->linksFile; }
 }
 
@@ -124,7 +127,34 @@ $idx = (string) file_get_contents(__DIR__ . '/../app/index.php');
 agCheck(str_contains($idx, '=== "/adguard$hash-gate"') && str_contains($idx, "adguardGateCheck(is_string(\$_COOKIE['adg'] ?? null)"), 'index.php отвечает на подзапрос по cookie adg');
 agCheck(strpos($idx, '"/adguard$hash-gate"') < strpos($idx, '// tlgrm') && strpos($idx, '"/webapp$hash/adg"') < strpos($idx, 'preg_quote("/webapp$hash/")'),
     'маршруты пропуска стоят раньше общего отказа /webapp<hash>/');
-agCheck(str_contains($idx, "empty(\$bot->getPacConf()['adgbrowser']) || !\$bot->adguardLinkConsume(\$token)"), 'ссылка работает только в режиме «сторонний браузер»');
+agCheck(str_contains($idx, '$bot->adguardExchangeLink($token)') && str_contains($idx, '$bot->adguardSetGateCookie($hash, $cookie)'), 'браузер получает только проверенный пропуск');
+$tmp->clock = 1900000000;
+$tmp->conf['adgbrowser'] = 1;
+$link = $tmp->adguardGateToken('link', 900);
+$telegram = $tmp->adguardGateToken('cookie', 604800);
+$tmp->clock += 899;
+$browser = $tmp->adguardExchangeLink($link);
+agCheck(is_string($browser) && $tmp->adguardGateCheck($browser, 'cookie'), 'ссылка на последней секунде открывает панель');
+agCheck(explode('.', $browser)[0] === explode('.', $link)[0] && explode('.', $telegram)[0] === explode('.', $link)[0], 'пропуска имеют один предельный срок');
+$tmp->clock++;
+agCheck(!$tmp->adguardGateCheck($browser, 'cookie') && !$tmp->adguardGateCheck($telegram, 'cookie'), 'на границе 900 секунд оба пропуска истекли');
+$link = $tmp->adguardGateToken('link', 900);
+$telegram = $tmp->adguardGateToken('cookie', 900);
+$browser = $tmp->adguardExchangeLink($tmp->adguardGateToken('link', 900));
+$tmp->adguardSetPanelOpen(false);
+agCheck(!$tmp->adguardGateCheck($telegram, 'cookie') && !$tmp->adguardGateCheck($browser, 'cookie') && $tmp->adguardExchangeLink($link) === null, 'закрытие отзывает сессии и неиспользованную ссылку');
+$tmp->adguardSetPanelOpen(true);
+agCheck(!$tmp->adguardGateCheck($telegram, 'cookie') && !$tmp->adguardGateCheck($browser, 'cookie') && $tmp->adguardExchangeLink($link) === null, 'открытие не восстанавливает старый доступ');
+agCheck($tmp->adguardGateCheck($tmp->adguardGateToken('cookie', 900), 'cookie'), 'после открытия работает новый вход');
+$saved = $tmp->conf;
+$saved['managed_nodes'] = ['aabbccdd'=>['adguard_panel'=>['until'=>$tmp->clock+900]]];
+$oldCookie = $tmp->adguardGateToken('cookie', 900);
+$tmp->adguardSetPanelOpen(false);
+$tmp->conf = $tmp->preserveBackupSettings($saved, $tmp->conf);
+agCheck(!$tmp->adguardGateCheck($oldCookie, 'cookie') && !empty($tmp->conf['adg_panel_closed'])
+    && !isset($tmp->conf['managed_nodes']['aabbccdd']['adguard_panel']), 'восстановление не возвращает отозванные пропуска основного бота и нод');
+
+@unlink($tmp->linksFile); @unlink($tmp->linksFile . '.lock');
 
 // ── 4. Меню и ссылка ─────────────────────────────────────────────────────────
 require __DIR__ . '/../app/i18n.php';
@@ -135,6 +165,7 @@ $bot->conf['adgbrowser'] = 1;
 $bot->adguardBrowserLink();
 agCheck(count($bot->sent) === 1 && preg_match('~https://vpn\.example\.org/webappabcd1234/adg\?t=(\d{10}\.[a-f0-9]{16}\.[a-f0-9]{40})~', $bot->sent[0], $m)
     && $bot->adguardGateCheck($m[1], 'link') && (int) explode('.', $m[1])[0] - time() <= Bot::ADGUARD_LINK_TTL, 'ссылка на 15 минут уходит администратору');
+agCheck($bot->recipients === [[1, 0]] || $bot->recipients === [[1, null]], 'ссылка из группового чата выслана только администратору без привязки к сообщению группы');
 agCheck(str_contains($bot->sent[0], 'один раз'), 'в сообщении сказано про одноразовость');
 foreach (['browser_notify_on', 'browser_notify_off'] as $key) {
     agCheck(preg_match('~[А-Яа-я]~u', $i[$key]['ru']) && !preg_match('~[А-Яа-я]~u', $i[$key]['en']), "перевод $key");

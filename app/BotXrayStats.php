@@ -47,8 +47,17 @@ trait BotXrayStats
         }
         foreach ($stats['inbounds'] ?? [] as $row) $pair($row, ['upload', 'download']);
         foreach ($stats['exits'] ?? [] as $row) {
-            if (!is_array($row) || array_diff_key($row, array_flip(['global', 'session', 'base', 'since']))
+            if (!is_array($row) || array_diff_key($row, array_flip(['global', 'session', 'base', 'since', 'modes']))
                 || !is_int($row['since'] ?? null) || $row['since'] < 0) $fail();
+            if (array_key_exists('modes', $row)) {
+                $modes = $row['modes'];
+                if (!is_array($modes) || count($modes) !== 4 || !is_int($modes['since'] ?? null) || $modes['since'] < 0
+                    || !is_array($modes['raw'] ?? null) || count($modes['raw']) !== 2) $fail();
+                foreach (['node', 'warp'] as $mode) {
+                    $pair($modes[$mode] ?? null, ['up', 'down']);
+                    $pair($modes['raw'][$mode] ?? null, ['up', 'down']);
+                }
+            }
             foreach (['global', 'session', 'base'] as $key) $pair($row[$key] ?? null, ['up', 'down']);
         }
         return $stats + ['_schema' => 1, 'global' => ['upload' => 0, 'download' => 0],

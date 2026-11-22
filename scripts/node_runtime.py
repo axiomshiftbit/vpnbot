@@ -10,6 +10,7 @@ import ssl
 import ipaddress
 import re
 import subprocess
+import sys
 import time
 import uuid
 from email.utils import parsedate_to_datetime
@@ -20,11 +21,14 @@ import node_xray
 import node_cover
 import node_wg
 import node_awg
+import node_warp
+import node_adguard
 
 
 CONTAINER = 'vpnbot-node-xray'
 COVER_CONTAINER = 'vpnbot-node-cover'
 AWG_CONTAINER = 'vpnbot-node-amnezia'
+WARP_CONTAINER = 'vpnbot-node-warp'
 LABEL = 'org.vpnbot.managed-node'
 
 
@@ -188,6 +192,8 @@ class Runtime:
         advanced = node_xray.settings(options.get('xray', {}), options['core'], options['transport'])
         enabled = {'encryption': advanced['encryption']['auth'] != 'off', 'mldsa': advanced['reality']['mldsa'],
                    'wireguard': options.get('wireguard', {}).get('enabled'), 'amnezia': options.get('amnezia', {}).get('enabled')}
+        if options.get('warp_mode', 'off') != 'off' and 'warp_uuid' not in keys:
+            keys['warp_uuid'] = str(uuid.uuid4())
         if rotate in enabled and not enabled[rotate]:
             raise ValueError('rotation target is disabled')
         if options.get('wireguard', {}).get('enabled') and (rotate == 'wireguard' or 'wireguard' not in keys):
@@ -230,12 +236,21 @@ class Runtime:
         else: keys.pop('external',None)
 
     def ensure_images(self, value):
-        if value['options'].get('cover') and 'ng' not in value['images']:
+        needed = []
+        if value['options'].get('adguard', {}).get('enabled'):
+            needed.append('ad')
+        if value['options'].get('cover'):
+            needed.append('ng')
+        if value['options'].get('warp_mode', 'off') != 'off':
+            needed.append('wg')
+        for name in needed:
+            if name in value['images']:
+                continue
             from image_bundle import fetch, read
             path = self.store.root/'release.json'
             if not path.exists():
                 fetch('latest', path)
-            value['images']['ng'] = read(path)['images']['ng']
+            value['images'][name] = read(path)['images'][name]
         for image in value['images'].values():
             self.pull(image)
 
@@ -275,7 +290,7 @@ class Runtime:
             command(['docker', 'pull', image], timeout=300)
 
     def container(self, name=CONTAINER):
-        if name not in (CONTAINER, COVER_CONTAINER, AWG_CONTAINER):
+        if name not in (CONTAINER, COVER_CONTAINER, AWG_CONTAINER, WARP_CONTAINER, node_adguard.CONTAINER):
             raise ValueError('unsupported container')
         result = command(['docker', 'inspect', '--format', '{{json .}}', name], required=False)
         if result.returncode:
@@ -287,7 +302,7 @@ class Runtime:
 
     def stop(self):
         # Check ownership of every name before removing any container.
-        existing = [name for name in (CONTAINER, COVER_CONTAINER, AWG_CONTAINER) if self.container(name) is not None]
+        existing = [name for name in (CONTAINER, COVER_CONTAINER, AWG_CONTAINER, WARP_CONTAINER, node_adguard.CONTAINER) if self.container(name) is not None]
         for name in existing:
             command(['docker', 'rm', '-f', name])
 
@@ -306,7 +321,17 @@ class Runtime:
         # Reject an unavailable bot-to-node address before any stop/apply.
         config.endpoint(value['options'], self.host)
         directory = self.store.path(generation)/'runtime/core'
-        body = config.core_config(value['options'], self.routed_host(), value['identity'], value['peers'])
+        mode = value['options'].get('warp_mode', 'off')
+        if mode == 'masque' and not node_warp.masque_supported(self.core_command(value['images']['xr'], value['options']['core'], 'version').stdout):
+            raise ValueError('MASQUE WARP requires Xray 26.10.10 or newer')
+        warp = node_warp.outbound(mode, value['images']['wg'], self.store.root, command) if mode != 'off' else None
+        body = config.core_config(value['options'], self.routed_host(), value['identity'], value['peers'], warp)
+        if value['options'].get('adguard', {}).get('enabled'):
+            links = node_adguard.networks(command)
+            node_adguard.route(body, value, links)
+        if warp is not None:
+            strict = node_warp.isolate_resolver(body, value['identity']['warp_uuid'])
+            self.write_runtime(self.store.path(generation)/'runtime/warp', {'xray.json': state.encode(strict)})
         files = {'xray.json': state.encode(body)}
         certificates = {name: base64.b64decode(encoded, validate=True) for name, encoded in value['tls'].items()}
         if value['options'].get('cover'):
@@ -343,9 +368,11 @@ class Runtime:
         if expected != actual:
             raise ValueError('certificate and private key do not match')
 
-    def docker_arguments(self, generation):
+    def docker_arguments(self, generation, *, warp=False):
         value = self.store.load(generation)
         directory = self.store.path(generation)/'runtime/core'
+        if warp:
+            directory = self.store.path(generation)/'runtime/warp'
         # REALITY's target dialer uses the OS resolver. A host-local stub such
         # as 127.0.0.53 is deliberately unreachable by the core's UID guard.
         # Keep that guard intact and provide public resolvers of the chosen
@@ -374,11 +401,15 @@ class Runtime:
     def validate(self, generation):
         self.prepare(generation)
         command(['docker', 'run', '--rm', *self.docker_arguments(generation), 'run', '-test', '-c', '/node/xray.json'], timeout=30)
+        if self.store.load(generation)['options'].get('warp_mode', 'off') != 'off':
+            command(['docker', 'run', '--rm', *self.docker_arguments(generation, warp=True), 'run', '-test', '-c', '/node/xray.json'], timeout=30)
         if self.store.load(generation)['options'].get('cover'):
             command(['docker', 'run', '--rm', *self.cover_arguments(generation), '-t', '-c', '/node/nginx.conf'])
         if self.store.load(generation)['options'].get('amnezia', {}).get('enabled'):
             command(['docker', 'run', '--rm', *self.amnezia_arguments(generation), '-n', '-c', '/node/carrier.conf'])
-        rules = config.firewall(self.store.load(generation)['options'], self.routed_host())
+        options = self.store.load(generation)['options']
+        links = node_adguard.networks(command) if options.get('adguard', {}).get('enabled') else None
+        rules = config.firewall(options, self.routed_host(), links)
         command(['nft', '-c', '-f', '-'], data=self.transaction(rules).encode())
 
     def transaction(self, rules):
@@ -392,7 +423,9 @@ class Runtime:
 
     def load_firewall(self, generation=None):
         """Build the guard from a generation with the installed code; check, persist, load atomically."""
-        rules = config.firewall(self.store.load(generation)['options'], self.routed_host())
+        options = self.store.load(generation)['options']
+        links = node_adguard.networks(command) if options.get('adguard', {}).get('enabled') else None
+        rules = config.firewall(options, self.routed_host(), links)
         transaction = self.transaction(rules)
         command(['nft', '-c', '-f', '-'], data=transaction.encode())
         state.atomic(self.guard, rules.encode())
@@ -404,8 +437,14 @@ class Runtime:
         self.container()
         self.container(COVER_CONTAINER)
         self.container(AWG_CONTAINER)
+        self.container(WARP_CONTAINER)
+        self.container(node_adguard.CONTAINER)
         self.load_firewall(generation)
         self.stop()
+        if value['options'].get('warp_mode', 'off') != 'off':
+            command(['docker', 'run', '-d', '--name', WARP_CONTAINER, '--label', LABEL+'=1',
+                     '--restart', 'no', '--log-driver', 'none', *self.docker_arguments(generation, warp=True),
+                     'run', '-c', '/node/xray.json'])
         command(['docker', 'run', '-d', '--name', CONTAINER, '--label', LABEL+'=1',
                  '--restart', 'no', '--log-driver', 'local', '--log-opt', 'max-size=1m', '--log-opt', 'max-file=2',
                  *self.docker_arguments(generation), 'run', '-c', '/node/xray.json'])
@@ -418,6 +457,13 @@ class Runtime:
                      '--restart', 'no', '--log-driver', 'none', *self.amnezia_arguments(generation),
                      '-c', '/node/carrier.conf', '-s'])
         options = value['options']
+        private_listeners = []
+        if options.get('warp_mode', 'off') != 'off':
+            private_listeners.append(('127.0.0.1', config.WARP_CORE_PORT))
+        if options.get('adguard', {}).get('enabled'):
+            links = node_adguard.networks(command)
+            node_adguard.start(command, self.store.root, links, value['images']['ad'], LABEL)
+            private_listeners.extend((link['service'], node_adguard.DNS_PORT) for link in links.values())
         core_port = 9444 if options.get('cover') and options['transport'] != 'reality' else 8443
         listeners = [('127.0.0.1' if self.host['public4'] or core_port == 9444 else '::1', core_port)]
         if options.get('cover'):
@@ -426,6 +472,14 @@ class Runtime:
             info = self.container()
             if not info or not info.get('State', {}).get('Running'):
                 raise RuntimeError('node core failed to start')
+            if options.get('warp_mode', 'off') != 'off':
+                strict = self.container(WARP_CONTAINER)
+                if not strict or not strict.get('State', {}).get('Running'):
+                    raise RuntimeError('isolated WARP DNS core failed to start')
+            if options.get('adguard', {}).get('enabled'):
+                filter_info = self.container(node_adguard.CONTAINER)
+                if not filter_info or not filter_info.get('State', {}).get('Running'):
+                    raise RuntimeError('node DNS filter failed to start')
             if value['options'].get('amnezia', {}).get('enabled'):
                 helper = self.container(AWG_CONTAINER)
                 if not helper or not helper.get('State', {}).get('Running'):
@@ -434,6 +488,20 @@ class Runtime:
                 for address, port in listeners:
                     with socket.create_connection((address, port), timeout=.2):
                         pass
+                if private_listeners:
+                    # These listeners accept the Xray uid only. Keep the production guard active during admission.
+                    check = subprocess.run([sys.executable, '-I', '-c',
+                        'import json,socket,sys\nfor host,port in json.load(sys.stdin):\n with socket.create_connection((host,port),.3): pass'],
+                        input=json.dumps(private_listeners).encode(), user=self.host['uid'], group=self.host['gid'],
+                        extra_groups=[], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+                    if check.returncode:
+                        time.sleep(.2)
+                        continue
+                if options.get('adguard', {}).get('enabled'):
+                    reply = node_adguard.panel({'method':'GET','path':'/control/status','body':'','type':''},
+                                               self.store.root, filter_info, command)
+                    if reply['status'] != 200 or not json.loads(base64.b64decode(reply['body'])).get('running'):
+                        raise RuntimeError('node DNS filter is not ready')
                 return
             except OSError:
                 time.sleep(.2)
@@ -492,6 +560,14 @@ class Runtime:
         """Container state only: the 15-second watch needs no status metadata."""
         value = self.store.load() if value is None else value
         info = self.container() if info is None else info
+        if value['options'].get('warp_mode', 'off') != 'off':
+            strict = self.container(WARP_CONTAINER)
+            if not strict or not strict.get('State', {}).get('Running'):
+                return False
+        if value['options'].get('adguard', {}).get('enabled'):
+            ad = self.container(node_adguard.CONTAINER)
+            if not ad or not ad.get('State', {}).get('Running'):
+                return False
         cover = self.container(COVER_CONTAINER) if value['options'].get('cover') else None
         running = bool(info and info.get('State', {}).get('Running'))
         if value['options'].get('cover'):

@@ -49,6 +49,11 @@ if (Panel::isPanelListener()) {
 $webapp = $bot->webappAuth($_GET, $c['key'], (array) ($c['admin'] ?? []));
 
 switch (true) {
+    case preg_match('~^' . preg_quote("/webapp$hash/nad/", '~') . '([a-f0-9]{8})/(.*)$~D', (string) parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH), $nodePanel):
+        try { $bot->nodeAdguardWeb($nodePanel[1], $nodePanel[2], "/webapp$hash/nad/$nodePanel[1]/"); }
+        catch (Throwable $e) { http_response_code(503); }
+        exit;
+
     // Пропуск в веб-панель AdGuard: подзапрос nginx (auth_request) перед
     // каждым запросом к /adguard<hash>/. 204 — пускать, 401 — в мини-приложение.
     case parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) === "/adguard$hash-gate":
@@ -61,13 +66,13 @@ switch (true) {
         header('Cache-Control: no-store');
         header('Referrer-Policy: no-referrer');
         $token = is_string($_GET['t'] ?? null) ? $_GET['t'] : '';
-        if (empty($bot->getPacConf()['adgbrowser']) || !$bot->adguardLinkConsume($token)) {
+        $cookie = $bot->adguardExchangeLink($token);
+        if ($cookie === null || !$bot->adguardSetGateCookie($hash, $cookie)) {
             http_response_code(403);
             header('Content-Type: text/plain; charset=utf-8');
             echo "The link is invalid, expired or already used. Request a new one in the bot.\n";
             exit;
         }
-        $bot->adguardSetGateCookie($hash, Bot::ADGUARD_BROWSER_TTL);
         header("Location: /adguard$hash/", true, 302);
         exit;
 
@@ -130,7 +135,11 @@ switch (true) {
         // сертификата cookie с ним не сохранится, и вход в панель сломается).
         // Пропуск — подписанный ключом бота токен со сроком, а не публичный
         // hash из ссылок подписки (его мог выставить себе любой подписчик).
-        $bot->adguardSetGateCookie($hash, Bot::ADGUARD_GATE_TTL);
+        $cookie = $bot->adguardTokenUntil('cookie', (int) $_GET['auth_date'] + Bot::ADGUARD_GATE_TTL);
+        if (!$bot->adguardSetGateCookie($hash, $cookie)) {
+            http_response_code(403);
+            break;
+        }
         echo "/adguard$hash/";
         break;
 

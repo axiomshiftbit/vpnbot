@@ -101,6 +101,12 @@ trait BotManagedNodePeers
         }
         $peers = [];
         $status = $this->managedNodes()[$id]['status'] ?? [];
+        // A managed DNS grant follows this peer through the node's atomic rotation.
+        if ($action === 'rotate' && !empty($status['adguard_filter'])) {
+            try { $this->managedNodeSubmit($id, 'rotate', $peer['id'], (string) ($status['generation'] ?? '')); $this->managedNodeMenu($id); }
+            catch (Throwable $e) { $this->managedNodePeersMenu($id, $this->t('Смена ключа не началась. Обновите состояние ноды.', 'Key rotation did not start. Refresh the node status.')); }
+            return;
+        }
         foreach ($this->managedNodePeers($id, $status) as $item) {
             if ($item['id'] === $peer['id']) {
                 if ($action === 'delete') continue;

@@ -27,6 +27,8 @@ trait BotManagedNodeMenus
         $text = [$this->t('Ноды → ', 'Nodes → ') . self::esc($node['name']) . ' → ' . $this->t(...$title)];
         $buttons = [];
         foreach (ManagedNodeFields::all() as $path => $field) {
+            if ($path === 'warp_mode' && empty($node['status']['warp_egress'])) continue;
+            if ($path === 'adguard.enabled' && empty($node['status']['adguard_filter'])) continue;
             if ($field[0] !== $group || !ManagedNodeFields::fieldActive($options, $path)) continue;
             if ($group === 'network' && in_array($path, ['family', 'connect_family'], true)) continue;
             $awgVersion=$options['amnezia']['version'] ?? '3.1';
@@ -44,6 +46,9 @@ trait BotManagedNodeMenus
         if ($group === 'root') foreach (ManagedNodeFields::GROUPS as $name => $label) if (ManagedNodeFields::groupActive($options, $name)) $groups[] = ['text' => $this->t(...$label), 'callback_data' => "/nodeSettings $id $name"];
         array_push($data, ...array_chunk($groups, 2));
         if ($group === 'network') {
+            if (!empty($node['status']['warp_egress'])) $text[] = $this->t(
+                'WARP работает на самой ноде. Для него нужны выход IPv4 и связь через VLESS, Trojan или AmneziaWG. Для MASQUE нужно ядро Xray 26.10.10 или новее. После применения выберите «WARP ноды» у нужных пользователей.',
+                'WARP runs on the node. It requires IPv4 egress and a VLESS, Trojan or AmneziaWG uplink. MASQUE requires Xray 26.10.10 or later. After applying, select Node WARP for the intended users.');
             $text[] = $this->t('Первая часть — соединение основного бота с нодой. Вторая — выход ноды в интернет. Это не адреса телефона или телевизора. SSH настраивается отдельно в карточке ноды.',
                 'The first family is the main bot’s connection to the node. The second is the node’s internet egress. These are not your phone or TV addresses. SSH has separate settings in the node card.');
             foreach (['44', '46', '64', '66'] as $pair) $data[] = [['text' =>
@@ -116,7 +121,7 @@ trait BotManagedNodeMenus
     {
         $node = $this->managedNodes()[$id] ?? null;
         $field = ManagedNodeFields::all()[$path] ?? null;
-        if (!$node || !$node['connected'] || !$field) return;
+        if (!$node || !$node['connected'] || !$field || ($path === 'adguard.enabled' && empty($node['status']['adguard_filter'])) || ($path === 'warp_mode' && empty($node['status']['warp_egress']))) return;
         if ($node['job']) { $this->managedNodeMenu($id, $this->t('Дождитесь завершения текущего изменения.', 'Wait for the current change to finish.')); return; }
         if ($path === 'vpn_sources') { $this->managedNodeVpnSourcesMenu($id); return; }
         $options = $node['draft'] ?? $node['status']['options'] ?? [];
@@ -229,6 +234,9 @@ trait BotManagedNodeMenus
 
     private function managedNodeNetworkProblem(array $options, array $node): string
     {
+        if (($options['warp_mode'] ?? 'off') !== 'off' && (($options['family'] ?? 4) !== 4 || !empty($options['wireguard']['active']))) {
+            return $this->t('Для WARP выберите выход IPv4 и канал VLESS, Trojan или AmneziaWG.', 'WARP requires IPv4 egress and a VLESS, Trojan or AmneziaWG uplink.');
+        }
         if (($options['connect_family'] ?? 4) !== 6) return '';
         $network=$this->exitIpv6Network();
         if (empty($network['enabled']) || !filter_var($network['public'] ?? '',FILTER_VALIDATE_IP,FILTER_FLAG_IPV6)) {
@@ -281,7 +289,7 @@ trait BotManagedNodeMenus
     public function managedNodeChoice(string $id, string $path, string $value): void
     {
         $field = ManagedNodeFields::all()[$path] ?? null;
-        if (!$field || $field[3] !== 'choice') return;
+        if (!$field || $field[3] !== 'choice' || ($path === 'warp_mode' && empty($this->managedNodes()[$id]['status']['warp_egress']))) return;
         if ($path==='amnezia.version' && in_array($value,$field[4],true)) {
             $this->managedNodeDraftWrite($id, function (&$node) use ($value) {
                 $options=$node['draft'] ?? $node['status']['options'];

@@ -30,15 +30,15 @@ class NodeBusy(ValueError):
     """The node rejected this request before executing any operation."""
 
 
-def encode(value):
+def encode(value, limit=LIMIT):
     body = json.dumps(value, separators=(',', ':'), allow_nan=False).encode()
-    if len(body) > LIMIT:
+    if len(body) > limit:
         raise ValueError('size')
     return body
 
 
-def decode(body):
-    if len(body) > LIMIT:
+def decode(body, limit=LIMIT):
+    if len(body) > limit:
         raise ValueError('size')
     def pairs(items):
         result = {}
@@ -166,7 +166,7 @@ def validate_pair(directory):
         raise ValueError('controller_key_mismatch')
 
 
-def run(args, data=b'', timeout=15, *, rpc=False):
+def run(args, data=b'', timeout=15, *, rpc=False, limit=LIMIT):
     # Anonymous regular files avoid pipe deadlocks and unbounded communicate()
     # buffering. RLIMIT_FSIZE bounds a hostile peer's response on disk as well.
     import resource
@@ -175,7 +175,7 @@ def run(args, data=b'', timeout=15, *, rpc=False):
         incoming.seek(0)
         def limits():
             resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-            resource.setrlimit(resource.RLIMIT_FSIZE, (LIMIT+1, LIMIT+1))
+            resource.setrlimit(resource.RLIMIT_FSIZE, (limit+1, limit+1))
         process = subprocess.Popen(list(map(str, args)), stdin=incoming, stdout=outgoing, stderr=subprocess.DEVNULL,
                                    start_new_session=True, preexec_fn=limits,
                                    env={'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'LANG': 'C.UTF-8'})
@@ -186,8 +186,8 @@ def run(args, data=b'', timeout=15, *, rpc=False):
             process.wait()
             raise
         outgoing.seek(0)
-        body = outgoing.read(LIMIT+1)
-        if len(body) > LIMIT:
+        body = outgoing.read(limit+1)
+        if len(body) > limit:
             raise ValueError('ssh_failed')
         if status:
             if rpc and status == 1:
@@ -280,14 +280,15 @@ class Client:
         return args
 
     @key_locked
-    def request(self, request, target=None):
+    def request(self, request, target=None, *, panel=False):
         if target is None:
             path = self.directory/'endpoint.json'
             trusted(path)
             target = endpoint(decode(path.read_bytes()))
-        if not isinstance(request, dict) or request.get('action') not in ('ping', 'status', 'tls_probe', 'backup', 'profile', 'confirm', 'submit', 'job'):
+        if not isinstance(request, dict) or request.get('action') not in (('adguard_panel',) if panel else ('ping', 'status', 'tls_probe', 'backup', 'profile', 'confirm', 'submit', 'job')):
             raise ValueError('request')
-        args, body = self.ssh(target), encode(request)
+        args = self.ssh(target)
+        body = b'!'+encode(request,2*1024*1024) if panel else encode(request)
         deadline = self.deadline
         # submit too: "busy" means the node refused before queueing anything, and
         # its one-second status/watch passes would otherwise fail a user's Apply.
@@ -297,7 +298,11 @@ class Client:
             if remaining <= 0:
                 raise NodeBusy('node_busy_timeout')
             try:
-                result = decode(run(args, body, timeout=min(15, remaining), rpc=True))
+                if panel:
+                    limit = 12*1024*1024
+                    result = decode(run(args, body, timeout=min(15, remaining), rpc=True, limit=limit),limit)
+                else:
+                    result = decode(run(args, body, timeout=min(15, remaining), rpc=True))
                 break
             except NodeBusy:
                 # Retry only an explicit lock refusal: nothing ran. Ambiguous SSH
@@ -489,7 +494,12 @@ class Client:
 
 def main():
     os.umask(0o077)
-    value = decode(sys.stdin.buffer.read(LIMIT+1))
+    first = sys.stdin.buffer.read(1)
+    panel = first == b'!'
+    limit = 2*1024*1024 if panel else LIMIT
+    value = decode((b'' if panel else first)+sys.stdin.buffer.read(limit+1),limit)
+    if panel and value.get('action') != 'adguard_panel':
+        raise ValueError('invalid panel request')
     if not isinstance(value, dict) or set(value) != {'id', 'action', 'value'}:
         raise ValueError('request')
     client = Client(value['id'])
@@ -502,6 +512,8 @@ def main():
             result = client.reconnect(value['value'])
         elif value['action'] == 'rebind':
             result = client.rebind(value['value'])
+        elif panel:
+            result = client.request({'action':'adguard_panel', 'http':value['value']}, panel=True)
         elif value['action'] == 'rpc':
             result = client.request(value['value'])
         elif value['action'] == 'saved' and value['value'] is None:
@@ -520,7 +532,7 @@ def main():
             result = {'saved': True}
         else:
             raise ValueError('action')
-        sys.stdout.buffer.write(encode({'ok': True, 'result': result}))
+        sys.stdout.buffer.write(encode({'ok': True, 'result': result}, 12*1024*1024 if panel else LIMIT))
 
 
 if __name__ == '__main__':

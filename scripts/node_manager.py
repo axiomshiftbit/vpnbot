@@ -227,10 +227,14 @@ class Manager:
                     or previous.get('domain_aliases', []) != data.get('domain_aliases', [])):
                 value['tls'] = self.certificate(data)
                 certificate_result = {'certificate_result': 'issued'}
-            if 'xray' in data or data.get('cover') or any(data.get(channel, {}).get('enabled') for channel in ('wireguard', 'amnezia')):
+            if 'xray' in data or data.get('cover') or data.get('warp_mode', 'off') != 'off' or any(data.get(channel, {}).get('enabled') for channel in ('wireguard', 'amnezia')):
                 self.runtime.ensure_keys(value)
         elif name == 'peers':
             value['peers'] = data
+            dns = value['options'].get('adguard')
+            if dns:
+                enabled = {peer['id'] for peer in data if peer['enabled']}
+                dns['peers'] = [key for key in dns['peers'] if key in enabled]
             for peer in data:
                 channel=peer.get('channel','vless')
                 if channel != 'vless': value['options'].setdefault(channel,{})['enabled']=True
@@ -238,6 +242,8 @@ class Manager:
         elif name == 'rotate':
             if data == 'controller':
                 value['identity']['uuid'] = str(uuid.uuid4())
+                if 'warp_uuid' in value['identity']:
+                    value['identity']['warp_uuid'] = str(uuid.uuid4())
             elif data in ('reality', 'encryption', 'mldsa', 'wireguard', 'amnezia'):
                 self.runtime.ensure_keys(value, rotate=data)
             else:
@@ -245,6 +251,9 @@ class Manager:
                 for peer in value['peers']:
                     if peer['id'] == data:
                         peer['id'] = str(uuid.uuid4())
+                        dns = value['options'].get('adguard')
+                        if dns and data in dns['peers']:
+                            dns['peers'] = [peer['id'] if key == data else key for key in dns['peers']]
                         found = True
                 if not found:
                     raise ValueError('peer no longer exists')
@@ -267,6 +276,10 @@ class Manager:
                 path = self.store.root/'release.json'
                 fetch(data, path)
             value['images']['xr'] = read(path)['images']['xr']
+            if value['options'].get('adguard', {}).get('enabled'):
+                value['images']['ad'] = read(path)['images']['ad']
+            if value['options'].get('warp_mode', 'off') != 'off':
+                value['images']['wg'] = read(path)['images']['wg']
             if value['options'].get('cover'):
                 value['images']['ng'] = read(path)['images']['ng']
         elif name in ('renew', 'renew_force'):
@@ -285,7 +298,12 @@ class Manager:
             certificate_result = {'certificate_result': 'deleted'}
         if name in ('peers','rotate') and ('external' in value['identity'] or any(peer.get('channel','vless') != 'vless' for peer in value['peers'])):
             self.runtime.ensure_external_keys(value)
-        if value['options'].get('cover'):
+        if value['options'].get('warp_mode', 'off') == 'off':
+            value['images'].pop('wg', None)
+        filtering = value['options'].get('adguard', {}).get('enabled')
+        if not filtering:
+            value['images'].pop('ad', None)
+        if filtering or value['options'].get('cover') or value['options'].get('warp_mode', 'off') != 'off':
             self.runtime.ensure_images(value)
         value = state.snapshot(value)
         self.runtime.pull(value['images']['xr'])
@@ -393,7 +411,7 @@ class Manager:
                 host |= connections(status.get('sources') or [], options.get('vpn_sources') or [])
             except Exception:
                 host = {}
-            return status | {'code': code, 'host': host}
+            return status | {'code': code, 'host': host, 'warp_egress': True, 'adguard_filter': True}
         if action == 'tls_probe':
             return self.runtime.tls_probe()
         if action == 'backup':
@@ -440,7 +458,12 @@ def main():
     if mode == 'rpc':
         signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError()))
         signal.alarm(12)
-        request = state.decode(sys.stdin.buffer.read(state.MAX_BYTES+1))
+        first = sys.stdin.buffer.read(1)
+        panel = first == b'!'
+        limit = 2*1024*1024 if panel else state.MAX_BYTES
+        request = state.decode((b'' if panel else first) + sys.stdin.buffer.read(limit+1), limit)
+        if panel and (not isinstance(request, dict) or set(request) != {'action','http'} or request['action'] != 'adguard_panel'):
+            raise ValueError('invalid panel frame')
     store = state.Store(ROOT)
     descriptor = os.open(ROOT/'lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
@@ -453,8 +476,15 @@ def main():
             host = config.deployment(state.decode(stream.read(state.MAX_DEPLOYMENT_BYTES+1), state.MAX_DEPLOYMENT_BYTES))
         manager = Manager(store, Runtime(store, host))
         if mode == 'rpc':
-            result = manager.rpc(request)
-            sys.stdout.buffer.write(state.encode({'ok': True, 'result': result})+b'\n')
+            if panel:
+                import node_adguard
+                if not store.load()['options'].get('adguard', {}).get('enabled'):
+                    raise ValueError('DNS panel is disabled')
+                result = node_adguard.panel(request['http'], store.root, manager.runtime.container(node_adguard.CONTAINER), command)
+            else:
+                result = manager.rpc(request)
+            limit = 12*1024*1024 if panel else state.MAX_BYTES
+            sys.stdout.buffer.write(state.encode({'ok': True, 'result': result}, limit)+b'\n')
         elif mode == 'worker':
             manager.worker()
         elif mode == 'boot':

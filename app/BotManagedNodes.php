@@ -3,6 +3,7 @@
 require_once __DIR__ . '/ManagedNodeProfile.php';
 require_once __DIR__ . '/ManagedNodeFields.php';
 require_once __DIR__ . '/BotManagedNodePeers.php';
+require_once __DIR__ . '/BotNodeAdguard.php';
 require_once __DIR__ . '/BotManagedNodeSubscriptions.php';
 require_once __DIR__ . '/BotManagedNodeNavigation.php';
 require_once __DIR__ . '/BotManagedNodeMenus.php';
@@ -13,6 +14,7 @@ require_once __DIR__ . '/BotManagedNodePresets.php';
 trait BotManagedNodes
 {
     use BotManagedNodePeers;
+    use BotNodeAdguard;
     use BotManagedNodeSubscriptions;
     use BotManagedNodeNavigation;
     use BotManagedNodeMenus;
@@ -147,7 +149,10 @@ trait BotManagedNodes
     {
         if (!preg_match('~^[a-f0-9]{8}$~D', $id)) throw new RuntimeException('Invalid node');
         $body = json_encode(['id' => $id, 'action' => $action, 'value' => $value], JSON_THROW_ON_ERROR);
-        if (strlen($body) > 65536) throw new RuntimeException('Node request too large');
+        $panel = $action === 'adguard_panel';
+        $limit = $panel ? 12 * 1024 * 1024 : 65536;
+        if ($panel) $body = '!' . $body;
+        if (strlen($body) > ($panel ? 2 * 1024 * 1024 : 65536)) throw new RuntimeException('Node request too large');
         $process = proc_open(['python3', '-I', __DIR__ . '/node_ssh.py'],
             [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'w']], $pipes);
         if (!is_resource($process)) throw new RuntimeException('Node transport unavailable');
@@ -158,8 +163,8 @@ trait BotManagedNodes
             }
             fclose($pipes[0]);
             stream_set_timeout($pipes[1], 25);
-            $response = stream_get_contents($pipes[1], 65537);
-            if (stream_get_meta_data($pipes[1])['timed_out'] || !is_string($response) || strlen($response) > 65536) {
+            $response = stream_get_contents($pipes[1], $limit + 1);
+            if (stream_get_meta_data($pipes[1])['timed_out'] || !is_string($response) || strlen($response) > $limit) {
                 throw new RuntimeException('Node transport timeout');
             }
             $reply = json_decode($response, true, 64, JSON_THROW_ON_ERROR);
@@ -198,7 +203,7 @@ trait BotManagedNodes
             if (!is_array($pac)) throw new RuntimeException('Node settings unavailable');
             $nodes = $this->managedNodes($pac);
             $node = $nodes[$id] ?? null;
-            $edit($node);
+            if ($edit($node) === false) return true;
             if ($node === null) unset($pac['managed_nodes'][$id]);
             else $pac['managed_nodes'][$id] = $node;
             return $this->setPacConf($pac) !== false;
@@ -206,10 +211,18 @@ trait BotManagedNodes
         if (!$saved) throw new RuntimeException('Node state not saved');
     }
 
-    public function managedNodeUseProfile(string $id, array $profile): string
+    public function managedNodeUseProfile(string $id, array $profile, ?array $options = null): string
     {
+        if ($options !== null && ((($options['warp_mode'] ?? 'off') !== 'off') !== isset($profile['warp_uuid']))) return 'exit stale';
         $pac = $this->getPacConf();
         $parsed = ManagedNodeProfile::parse($profile, (string) ($pac['xray_core'] ?? 'origin'));
+        if (array_key_exists('warp_uuid', $profile)) {
+            $warp = ManagedNodeProfile::warpOutbound($parsed['managed_outbound'], $profile['warp_uuid']);
+            if (isset($profile['warp_probe_uuid'])) {
+                ManagedNodeProfile::warpOutbound($parsed['managed_outbound'], $profile['warp_probe_uuid']);
+                ManagedNodeProfile::warpOutbound($warp, $profile['warp_probe_uuid']);
+            }
+        }
         if ($this->exitAddressProblem($parsed['address']) !== '') throw new RuntimeException('Node endpoint is not allowed');
         return $this->applyExitNodes(function (array &$p) use ($id, $profile) {
             if (!isset($this->managedNodes($p)[$id])) return 'exit not found';
@@ -244,7 +257,8 @@ trait BotManagedNodes
         // Restarting the remote core invalidates VLESS Encryption's in-memory
         // 0-RTT ticket. The first request can require a fresh handshake. Allow
         // one real retry; a persistent failure still prevents confirmation.
-        return !empty($this->exitProbe($id, false)['ok']) || !empty($this->exitProbe($id, false)['ok']);
+        if (empty($this->exitProbe($id, false)['ok']) && empty($this->exitProbe($id, false)['ok'])) return false;
+        return !isset($this->exitNodes()[$id]['managed_profile']['warp_uuid']) || $this->exitWarpProbe($id);
     }
 
     public function managedNodeSubmit(string $id, string $operation, $value, ?string $expectedGeneration = null): void
@@ -301,7 +315,7 @@ trait BotManagedNodes
                 return;
             }
             $profile = $this->managedNodeRpc($id, ['action' => 'profile', 'peer' => null]);
-            if ($this->managedNodeUseProfile($id, $profile) !== '' || !$this->managedNodeTrafficReady($id)) {
+            if ($this->managedNodeUseProfile($id, $profile, $status['options'] ?? []) !== '' || !$this->managedNodeTrafficReady($id)) {
                 $this->managedNodeRestoreClient($id, $saved['before']);
                 throw new RuntimeException('Current node generation is not reachable');
             }
@@ -327,7 +341,7 @@ trait BotManagedNodes
             if ($saved['phase'] === 'wait_rollback' && !empty($status['pending'])) return;
             $profile = $this->managedNodeRpc($id, ['action' => 'profile', 'peer' => null]);
             try {
-                if ($this->managedNodeUseProfile($id, $profile) !== '') throw new RuntimeException('Client configuration rejected');
+                if ($this->managedNodeUseProfile($id, $profile, $status['options'] ?? []) !== '') throw new RuntimeException('Client configuration rejected');
                 if (!$this->managedNodeTrafficReady($id)) throw new RuntimeException('Node traffic probe failed');
                 if (isset($job['result']['certificate_result']) && $this->managedNodeCertificateResult($job, $status) === 'unverified') throw new RuntimeException('Installed certificate not verified');
             } catch (Throwable $error) {
@@ -346,7 +360,7 @@ trait BotManagedNodes
             // when its long-term keys and exported profile stay unchanged.
             if (in_array($this->exitNodes()[$id]['managed_profile']['channel'] ?? '', ['wireguard', 'amnezia'], true)) {
                 $profile = $this->managedNodeRpc($id, ['action' => 'profile', 'peer' => null]);
-                if ($this->managedNodeUseProfile($id, $profile) !== '') throw new RuntimeException('Client configuration rejected');
+                if ($this->managedNodeUseProfile($id, $profile, $status['options'] ?? []) !== '') throw new RuntimeException('Client configuration rejected');
             }
             if (!$this->managedNodeTrafficReady($id)) throw new RuntimeException('Restarted node traffic probe failed');
         }
@@ -482,6 +496,7 @@ trait BotManagedNodes
             elseif (!empty($node['error'])) $text[] = $this->t('Последнее изменение не подтверждено; проверьте связь и состояние отката.', 'The last change was not confirmed; check connectivity and rollback status.');
             if (($node['last_operation']['checkout'] ?? '') === 'kept' && empty($node['error']) && !$node['job']) $text[] = $this->t('Код ноды обновлён. Каталог /root/vpnbot на ноде оставлен без изменений: в нём локальные правки, другая ветка или более новый коммит.',
                 'Node code was updated. The /root/vpnbot directory on the node was left unchanged: it has local edits, another branch or a newer commit.');
+            if (!empty($node['status']['adguard_filter'])) $data[] = [['text' => 'AdGuard Home', 'callback_data' => "/nodeAd $id"]];
             $data[] = [['text' => $this->t('⚙️ Xray и подключение', '⚙️ Xray and connection'), 'callback_data' => "/nodeSettings $id"]];
             $data[] = [['text' => $this->t('🧭 Маршруты и наборы', '🧭 Routes and rule sets'), 'callback_data' => "/nr $id"],
                 ['text' => $this->t('👥 Пользователи', '👥 Users'), 'callback_data' => "/nuUsers $id 0"]];
@@ -548,7 +563,7 @@ trait BotManagedNodes
                 $profile = $this->managedNodeRpc($id, ['action' => 'profile', 'peer' => null]);
                 $this->managedNodeTransport($id, 'snapshot');
                 $before = $this->exitNodes()[$id] ?? null;
-                if ($this->managedNodeUseProfile($id, $profile) !== '') throw new RuntimeException('Client rejected');
+                if ($this->managedNodeUseProfile($id, $profile, $status['options'] ?? []) !== '') throw new RuntimeException('Client rejected');
                 try {
                     if (!$this->managedNodeTrafficReady($id)) throw new RuntimeException('Node traffic probe failed');
                     $this->managedNodeWrite($id, static function (&$node) use ($status) {
