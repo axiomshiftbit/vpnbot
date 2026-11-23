@@ -201,6 +201,21 @@ try {
     unset($b->pacState['managed_nodes']);
     $check($b->managedNodeBackupCaption(time()) === '', 'no nodes, no caption');
     foreach (['/nodeExport aabbccdd', '/nodeExport aabbccdd yes', '/nodeImport aabbccdd'] as $callback) $check(strlen($callback) <= 64, 'callback fits');
+    // Main-server IP blocks: tell the admin when the node does not enforce them yet.
+    $b = $make();
+    $b->pacState['managed_nodes']['aabbccdd']['status']['running'] = true;
+    $exit = ['policy' => ['revision' => str_repeat('c', 32), 'controller_ips' => ['11.77.1.0/24'], 'lists' => [], 'bindings' => []]];
+    $guardLine = static fn(array $node) => Closure::bind(fn() => $this->managedNodeIpGuardLine($node, $exit), $b, Bot::class)();
+    $node = $b->pacState['managed_nodes']['aabbccdd'];
+    $check($guardLine($node) === '', 'no main-server IP blocks: no guard line');
+    $b->xrayState['routing']['rules'][] = ['type' => 'field', 'ruleTag' => 'vpnbot:routes:block:ip', 'ip' => ['11.77.1.0/24'], 'outboundTag' => 'block'];
+    $check(str_contains($guardLine($node), 'Обновите код ноды'), 'node code without the guard asks for an update');
+    $node['status']['controller_ip_guard'] = true;
+    $check($guardLine($node) === '', 'confirmed list: no guard line');
+    $b->xrayState['routing']['rules'][0]['ip'][] = '198.51.100.0/24';
+    $check(str_contains($guardLine($node), 'не подтверждены нодой') && !str_contains($guardLine($node), 'черновик'), 'changed list waits for node confirmation');
+    $node['draft'] = $node['status']['options'] ?? [];
+    $check(str_contains($guardLine($node), 'примените или сбросьте'), 'a pending draft is named as the delay');
 } finally {
     foreach (glob("$root/aabbccdd/*") ?: [] as $path) unlink($path);
     @rmdir("$root/aabbccdd"); @rmdir($root);

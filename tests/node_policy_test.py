@@ -97,6 +97,28 @@ class NodePolicy(unittest.TestCase):
         with self.assertRaises(ValueError):
             node_state.policy_size(dict(value, unknown='x'*70000))
 
+    def test_dedicated_login_without_rows_keeps_its_exit(self):
+        # Another subject has rows, this one has none: its dedicated WARP login
+        # must never fall through to the core's first outbound (direct).
+        value, bot = fixture()
+        policy = value['options']['policy']
+        other = 'bot-' + 'b' * 20
+        policy['bindings'] = {other: policy['bindings'][bot], bot: []}
+        for strict in (False, True):
+            with self.subTest(strict=strict):
+                value['options']['warp_mode'] = 'off'
+                main = node.core_config(value['options'], HOST, IDENTITY, [PEER], None)
+                core = {'inbounds': [{'tag': 'warp-handoff', 'settings': {'clients': []}}], 'outbounds': [], 'routing': {'rules': []}} if strict else None
+                if strict:
+                    main['outbounds'].append({'tag': 'warp', 'protocol': 'trojan', 'settings': {'servers': [{'address': '127.0.0.1', 'port': 1, 'password': 'x'}]}})
+                node_policy.compile_policy(main, core, value)
+                for role, expected in (('direct', 'direct'), ('warp', 'warp' if strict else 'block')):
+                    email = f'vpnbot/{bot}/{role}'
+                    first = next((r for r in main['routing']['rules'] if email in r.get('user', [])), None)
+                    self.assertIsNotNone(first, email)
+                    self.assertEqual(set(first) - {'type', 'inboundTag', 'user', 'outboundTag'}, set(), email)
+                    self.assertEqual(first['outboundTag'], expected, email)
+
     @unittest.skipUnless(os.environ.get('VLESS_TEST_XRAY'), 'requires Xray')
     def test_direct_ip_with_missing_default_warp(self):
         value, bot = fixture()

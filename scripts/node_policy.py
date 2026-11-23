@@ -155,7 +155,9 @@ def compile_policy(main, strict, value):
             personal = [row for i, row in enumerate(personal) if row['action'] == 'block' or i < cutoff]
         rows = bindings.get('all', []) + personal
         controller_ips = policy.get('controller_ips', []) if scope == 'controller' or scope.startswith('bot-') else []
-        if not rows and not controller_ips:
+        # A dedicated relay login always gets its default exit. Without a rule
+        # it would fall through to the core's first outbound (direct).
+        if not rows and not controller_ips and not role:
             continue
         field = {'type': 'field', 'inboundTag': incoming_tags}
         if email:

@@ -664,14 +664,27 @@ trait BotExitNodes
             $this->exitMainDns($c, array_keys($domains));
         }
         $nodes = $this->exitNodes($p);
+        // Only a node whose code reports the guard can enforce controller IP blocks,
+        // and only after it confirmed the current list. Until then (older node code,
+        // a pending draft, a sync in progress) the controller checks the resolved IP
+        // itself and uses the logins of the node's confirmed policy, never a blackhole.
+        $managed = $this->managedNodes($p);
+        $ipGuard = static fn(string $nodeId) => isset($nodes[$nodeId]['managed_profile'])
+            && !empty($managed[$nodeId]['status']['controller_ip_guard']);
         $controllerIps = [];
-        if (array_filter($nodes, static fn($node) => isset($node['managed_profile']))) {
+        if (array_filter(array_keys($nodes), static fn($nodeId) => $ipGuard((string) $nodeId))) {
             try {
                 $controllerIps = $this->controllerBlockedIps($c);
             } catch (Throwable $error) {
                 $controllerIps = null;
             }
         }
+        // A standalone WireGuard channel cannot carry a policy login. The node applies
+        // the list to its WireGuard controller identity; the controller checks as well.
+        $enforced = static fn(string $nodeId) => $ipGuard($nodeId) && $controllerIps
+            && ($nodes[$nodeId]['managed_profile']['channel'] ?? '') !== 'wireguard'
+            && !empty($nodes[$nodeId]['policy']['revision'])
+            && ($nodes[$nodeId]['policy']['controller_ips'] ?? []) === $controllerIps;
         $index = 0;
         unset($c['_vpnbot_amnezia']);
         foreach ($nodes as $id => $node) {
@@ -683,9 +696,7 @@ trait BotExitNodes
             $warpList = array_values(array_diff($warpEmails, $warpFull));
             $outbound = $node['enabled'] ? $this->exitNodeOutbound($node) : null;
             $policy = $node['policy'] ?? [];
-            $delegate = isset($node['managed_profile']) && $controllerIps !== [];
-            $confirmed = $delegate && $controllerIps !== null && !empty($policy['revision'])
-                && ($policy['controller_ips'] ?? []) === $controllerIps;
+            $delegate = $enforced($id);
             $warpTag = 'block';
             if ($outbound && $node['kind'] === 'remote' && isset($node['managed_profile']['warp_uuid'])) {
                 try {
@@ -700,12 +711,10 @@ trait BotExitNodes
                         $c['outbounds'][] = $diagnostic + ['tag' => $probeTag];
                     }
                     if ($delegate) {
-                        if ($confirmed) {
-                            $secured = self::exitPolicyOutbound($outbound, 'controller', 'warp', $policy);
-                            if (($node['managed_profile']['channel'] ?? '') === 'amnezia') {
-                                ManagedNodeProfile::setEndpoint($secured, '127.0.0.1', 10920 + $index - 1);
-                            }
-                        } else $secured = ['protocol' => 'blackhole'];
+                        $secured = self::exitPolicyOutbound($outbound, 'controller', 'warp', $policy);
+                        if (($node['managed_profile']['channel'] ?? '') === 'amnezia') {
+                            ManagedNodeProfile::setEndpoint($secured, '127.0.0.1', 10920 + $index - 1);
+                        }
                         $c['outbounds'][] = $secured + ['tag' => $warpTag];
                     } else $c['outbounds'][] = $warp + ['tag' => $warpTag];
                     $c['inbounds'][] = ['tag' => $warpTag, 'listen' => '127.0.0.1', 'port' => $port + self::EXIT_MAX,
@@ -751,7 +760,7 @@ trait BotExitNodes
                 $roles[$mode] = [];
                 foreach ($roles as $role => $domains) {
                     $target = 'block';
-                    if ((!$delegate || $confirmed) && $outbound && in_array($outbound['protocol'], ['trojan', 'vless'], true)) {
+                    if ($outbound && in_array($outbound['protocol'], ['trojan', 'vless'], true)) {
                         $target = self::EXIT_TAG . 'subject-' . $id . '-' . $scope . '-' . $role;
                         $relay = self::exitPolicyOutbound($outbound, $scope, $role, $policy);
                         if (($node['managed_profile']['channel'] ?? '') === 'amnezia') ManagedNodeProfile::setEndpoint($relay, '127.0.0.1', 10920 + $index - 1);
@@ -803,16 +812,14 @@ trait BotExitNodes
             if ($delegate) {
                 $probeTarget = self::EXIT_TAG . 'health-direct-' . $id;
                 $c['outbounds'][] = $outbound + ['tag' => $probeTarget];
-                if ($confirmed && in_array($outbound['protocol'], ['trojan', 'vless'], true)) {
+                if (in_array($outbound['protocol'], ['trojan', 'vless'], true)) {
                     $healthTag = self::EXIT_TAG . 'health-check-' . $id;
                     $c['outbounds'][] = self::exitPolicyOutbound($outbound, 'controller', 'health', $policy) + ['tag' => $healthTag];
                     $probe[] = ['type' => 'field', 'ruleTag' => self::EXIT_RULE . $id . ':connectivity',
                         'inboundTag' => [self::EXIT_PROBE_TAG . $id], 'network' => 'tcp', 'port' => '443',
                         'domain' => ['full:www.gstatic.com'], 'outboundTag' => $healthTag];
-                }
-                $outbound = $confirmed && in_array($outbound['protocol'], ['trojan', 'vless'], true)
-                    ? self::exitPolicyOutbound($outbound, 'controller', 'direct', $policy)
-                    : ['protocol' => 'blackhole'];
+                    $outbound = self::exitPolicyOutbound($outbound, 'controller', 'direct', $policy);
+                } else $outbound = ['protocol' => 'blackhole'];
             }
             $c['outbounds'][] = $outbound + ['tag' => $tag];
             // Вход проверки: узел напрямую, без запасного пути — «Проверить»
@@ -847,13 +854,14 @@ trait BotExitNodes
                 $target = $groupProbe ?? ['outboundTag' => $tag];
                 $resolve = !$delegate && (bool) $blockedIps;
                 if ($resolve && $node['kind'] === 'group' && $members) {
-                    // Managed members check the final IP after their own DNS. Unmanaged
-                    // members need a controller-side lookup after the balancer chooses.
+                    // Members enforcing the confirmed controller list check the final IP
+                    // after their own DNS. Other members need a controller-side lookup
+                    // after the balancer chooses.
                     $guardedMembers = [];
                     foreach ($node['members'] as $member) {
                         $memberTag = self::EXIT_TAG . $member;
                         if (!in_array($memberTag, $members, true)) continue;
-                        if (isset($nodes[$member]['managed_profile'])) $guardedMembers[$memberTag] = $memberTag;
+                        if ($enforced((string) $member)) $guardedMembers[$memberTag] = $memberTag;
                     }
                     if ($guardedMembers) {
                         $resolve = false;

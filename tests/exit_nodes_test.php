@@ -366,6 +366,7 @@ $guardPac = ['exits'=>[$id=>$node, $second=>$node, $gid=>$group]];
 unset($guardPac['exits'][$second]['managed_profile']);
 $guard = ['revision'=>str_repeat('a',32), 'controller_ips'=>['11.77.1.0/24'], 'lists'=>[], 'bindings'=>[]];
 $guardPac['exits'][$id]['policy'] = $guard;
+$guardPac['managed_nodes'][$id] = ['name' => 'guarded', 'connected' => true, 'status' => ['controller_ip_guard' => true]];
 $guardSeed = $base;
 $guardSeed['routing']['domainStrategy'] = 'IPIfNonMatch';
 $guardSeed['routing']['rules'][] = ['type'=>'field','ruleTag'=>'vpnbot:routes:block:ip','ip'=>$guard['controller_ips'],'outboundTag'=>'block'];
@@ -404,11 +405,79 @@ foreach (['auto',$id,$second] as $choice) {
     $check(ManagedNodeProfile::credential($byTag[Bot::EXIT_TAG.$id]) !== ManagedNodeProfile::credential($profile['outbound']),
         'group member authenticates the confirmed list revision');
 }
-$stalePac=$guardPac;
-$stalePac['exits'][$id]['policy']['controller_ips']=[];
-$c=$guardSeed;
-$bot->ensureExitNodes($c,$stalePac);
-$byTag=array_column($c['outbounds'],null,'tag');
-$check($byTag[Bot::EXIT_TAG.$id]['protocol']==='blackhole' && $byTag[$wt]['protocol']==='blackhole', 'stale ordinary and WARP group members are closed');
+// Until the node confirms the current list (sync in progress, pending draft or an
+// older list), keep the node usable and check the resolved IP on the controller.
+foreach ([[], ['198.51.100.0/24']] as $nodeList) {
+    $stalePac=$guardPac;
+    $stalePac['exits'][$gid]['choice']=$id;
+    $stalePac['exits'][$id]['policy']['controller_ips']=$nodeList;
+    $c=$guardSeed;
+    $bot->ensureExitNodes($c,$stalePac);
+    $byTag=array_column($c['outbounds'],null,'tag');
+    $rules=array_column($c['routing']['rules'],null,'ruleTag');
+    $label = $nodeList ? 'older list' : 'no list yet';
+    $check(($byTag[Bot::EXIT_TAG.$id]['protocol'] ?? '')==='vless'
+        && ManagedNodeProfile::credential($byTag[Bot::EXIT_TAG.$id]) === ManagedNodeProfile::credential($profile['outbound']),
+        "unconfirmed member ($label) keeps the controller login accepted by the node");
+    $check(($byTag[$wt]['protocol'] ?? '')==='vless'
+        && ManagedNodeProfile::credential($byTag[$wt]) === $wid, "unconfirmed member ($label) keeps its WARP egress");
+    $check(($rules["vpnbot:exit:$id:probe"]['outboundTag'] ?? '') === Bot::EXIT_TAG.$id && !isset($rules["vpnbot:exit:$id:connectivity"]),
+        "probe of an unconfirmed member ($label) uses the route of its clients");
+    $hop = $rules["vpnbot:exit:$gid:full"]['outboundTag'] ?? '';
+    $check(($byTag[$hop]['targetStrategy'] ?? '')==='ForceIP'
+        && in_array($hop, $rules['vpnbot:exit:resolved-block']['inboundTag'] ?? [], true)
+        && in_array('11.77.1.0/24', $rules['vpnbot:exit:resolved-block']['ip'] ?? [], true),
+        "full traffic via an unconfirmed member ($label) rechecks the current list on the controller");
+}
+// Node code without the IP guard cannot confirm controller blocks: keep it usable
+// and check the resolved IP on the controller, as before the guard existed.
+$legacyPac = ['exits'=>[$id=>$node]];
+$legacyPac['managed_nodes'][$id] = ['name' => 'legacy', 'connected' => true, 'status' => []];
+$legacySeed = $guardSeed;
+$legacySeed['inbounds'][0]['settings']['clients'][0]['exit_full'] = $id;
+$legacySeed['inbounds'][0]['settings']['clients'][0]['exit'] = [$id];
+$legacySeed['inbounds'][0]['settings']['clients'][1]['exit'] = [$id];
+$c = $legacySeed;
+$bot->ensureExitNodes($c, $legacyPac);
+$byTag = array_column($c['outbounds'], null, 'tag');
+$rules = array_column($c['routing']['rules'], null, 'ruleTag');
+$hop = $rules["vpnbot:exit:$id:full"]['outboundTag'] ?? '';
+$check(($byTag[Bot::EXIT_TAG.$id]['protocol'] ?? '') === 'vless'
+    && ManagedNodeProfile::credential($byTag[Bot::EXIT_TAG.$id]) === ManagedNodeProfile::credential($profile['outbound']),
+    'a node without the IP guard keeps its controller login instead of a blackhole');
+$check(($rules["vpnbot:exit:$id:probe"]['outboundTag'] ?? '') === Bot::EXIT_TAG.$id, 'the probe of a legacy node checks the route used by clients');
+$check(($byTag[$hop]['targetStrategy'] ?? '') === 'ForceIP'
+    && in_array($hop, $rules['vpnbot:exit:resolved-block']['inboundTag'] ?? [], true)
+    && in_array('11.77.1.0/24', $rules['vpnbot:exit:resolved-block']['ip'] ?? [], true),
+    'full traffic through a legacy node rechecks the resolved IP on the controller');
+$legacyGroup = ['exits'=>[$id=>$node, $second=>$guardPac['exits'][$second], $gid=>$group + ['choice' => $id]]];
+$legacyGroup['managed_nodes'][$id] = $legacyPac['managed_nodes'][$id];
+$c = $guardSeed;
+$bot->ensureExitNodes($c, $legacyGroup);
+$byTag = array_column($c['outbounds'], null, 'tag');
+$rules = array_column($c['routing']['rules'], null, 'ruleTag');
+$hop = $rules["vpnbot:exit:$gid:full"]['outboundTag'] ?? '';
+$check(($byTag[$hop]['targetStrategy'] ?? '') === 'ForceIP'
+    && in_array($hop, $rules['vpnbot:exit:resolved-block']['inboundTag'] ?? [], true),
+    'a legacy managed group member is not trusted to enforce controller IP blocks');
+// A standalone WireGuard channel cannot carry policy logins: even with a confirmed
+// list it stays usable, the controller checks the resolved IP of full traffic.
+$wgProfile = ['link' => $link, 'channel' => 'wireguard', 'outbound' => ['tag' => 'node', 'protocol' => 'wireguard', 'settings' => [
+    'secretKey' => base64_encode(str_repeat('a', 32)), 'mtu' => 1280, 'noKernelTun' => true,
+    'address' => ['10.77.77.2/32'], 'remoteDNS' => ['1.1.1.1', '9.9.9.9'],
+    'peers' => [['publicKey' => base64_encode(str_repeat('b', 32)), 'preSharedKey' => base64_encode(str_repeat('c', 32)),
+        'endpoint' => '203.0.113.7:51820', 'allowedIPs' => ['0.0.0.0/0', '::/0'], 'keepAlive' => 25]]]]];
+$wgPac = ['exits' => [$id => ['managed_profile' => $wgProfile, 'policy' => $guard] + $node]];
+$wgPac['managed_nodes'][$id] = ['name' => 'wg', 'connected' => true, 'status' => ['controller_ip_guard' => true]];
+$check(($bot->exitNodeOutbound($wgPac['exits'][$id])['protocol'] ?? '') === 'wireguard', 'WireGuard channel fixture is valid');
+$c = $legacySeed;
+$bot->ensureExitNodes($c, $wgPac);
+$byTag = array_column($c['outbounds'], null, 'tag');
+$rules = array_column($c['routing']['rules'], null, 'ruleTag');
+$hop = $rules["vpnbot:exit:$id:full"]['outboundTag'] ?? '';
+$check(($byTag[Bot::EXIT_TAG.$id]['protocol'] ?? '') === 'wireguard', 'a WireGuard channel with a confirmed list is not closed');
+$check(($byTag[$hop]['targetStrategy'] ?? '') === 'ForceIP'
+    && in_array($hop, $rules['vpnbot:exit:resolved-block']['inboundTag'] ?? [], true),
+    'full traffic over a WireGuard channel rechecks the resolved IP on the controller');
 if ($failures) { fwrite(STDERR, "exit_nodes_test FAIL:\n - " . implode("\n - ", $failures) . "\n"); exit(1); }
 echo "exit_nodes_test OK\n";

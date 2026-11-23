@@ -36,8 +36,28 @@ trait BotManagedNodeCard
             $lines[] = $this->exitTrafficLine($id);
             if (isset($exit['managed_profile']['warp_uuid'])) $lines[] = $this->exitWarpHealthLine($id);
             $lines[] = $this->managedNodeUsersLine($id);
+            $lines[] = $this->managedNodeIpGuardLine($node, $exit);
         }
         return array_values(array_filter($lines, static fn($line) => $line !== ''));
+    }
+
+    /** Controller IP blocks take effect on the node only after it confirms the current list. */
+    private function managedNodeIpGuardLine(array $node, array $exit): string
+    {
+        $config = $this->getXray();
+        try {
+            $ips = is_array($config) ? $this->controllerBlockedIps($config) : [];
+        } catch (Throwable $error) {
+            $ips = null;
+        }
+        if ($ips === []) return '';
+        if (empty($node['status']['controller_ip_guard'])) {
+            return $this->t('⚠️ Код ноды не применяет запреты IP основного сервера. Для «Весь трафик» адрес проверяет основной сервер, маршруты по спискам доменов идут без этой проверки. Обновите код ноды.',
+                '⚠️ The node code does not enforce main-server IP blocks. The main server checks the address for All traffic; domain-list routes skip this check. Update the node code.');
+        }
+        if ($ips !== null && !empty($exit['policy']['revision']) && ($exit['policy']['controller_ips'] ?? []) === $ips) return '';
+        return $this->t('⏳ Запреты IP основного сервера ещё не подтверждены нодой. До подтверждения адрес для «Весь трафик» проверяет основной сервер, маршруты по спискам доменов идут без этой проверки.', '⏳ The node has not confirmed the main-server IP blocks yet. Until then the main server checks the address for All traffic; domain-list routes skip this check.')
+            . (isset($node['draft']) ? ' ' . $this->t('Синхронизацию задерживает черновик настроек: примените или сбросьте его.', 'A settings draft delays synchronization: apply or discard it.') : '');
     }
 
     private function managedNodeVersionLine(array $status): string
