@@ -13,6 +13,9 @@ import time
 from node_config import settings, identity, peers, needs_certificate
 
 MAX_BYTES = 65536
+# Named destination lists travel only in configure/restore requests and snapshots.
+POLICY_BYTES = 4 * 1024 * 1024
+CORE_CONFIG_BYTES = 16 * 1024 * 1024
 # Local root-owned deployment/enrollment files may contain complete ASN lists.
 # This limit never applies to SSH requests, snapshots or responses.
 MAX_DEPLOYMENT_BYTES = 8 * 1024 * 1024
@@ -45,6 +48,35 @@ def encode(value, limit=MAX_BYTES):
     if len(result) > limit:
         raise ValueError('snapshot exceeds size limit')
     return result
+
+
+def policy_size(value):
+    """Keep the original metadata limit when transferring a larger policy."""
+    container = value
+    path = []
+    if 'operation' in container:
+        if container['operation'] not in ('configure', 'restore'):
+            return MAX_BYTES
+        path.append('value')
+        if container['operation'] == 'restore':
+            path.append('options')
+    else:
+        path.append('options')
+    for key in path:
+        if not isinstance(container, dict) or not isinstance(container.get(key), dict):
+            return MAX_BYTES
+        container = container[key]
+    if 'policy' not in container:
+        return MAX_BYTES
+    stripped = dict(container)
+    del stripped['policy']
+    for i in reversed(range(len(path))):
+        parent = value
+        for key in path[:i]:
+            parent = parent[key]
+        stripped = dict(parent, **{path[i]: stripped})
+    encode(stripped)
+    return POLICY_BYTES
 
 
 def snapshot(value):
@@ -88,7 +120,7 @@ def snapshot(value):
     for channel in ('wireguard', 'amnezia'):
         if result['options'].get(channel, {}).get('enabled') and channel not in result['identity']:
             raise ValueError('backup channel identity is required')
-    encode(result)
+    encode(result, policy_size(result))
     return result
 
 
@@ -148,9 +180,14 @@ class Store:
         trusted(path)
         if not path.exists():
             return None
-        if not path.is_file() or path.stat().st_nlink != 1 or path.stat().st_size > MAX_BYTES:
+        large = name == 'request.json' or bool(re.fullmatch(r'generations/[a-f0-9]{32}/snapshot\.json', name))
+        limit = POLICY_BYTES if large else MAX_BYTES
+        if not path.is_file() or path.stat().st_nlink != 1 or path.stat().st_size > limit:
             raise ValueError('invalid state file')
-        return decode(path.read_bytes())
+        value = decode(path.read_bytes(), limit)
+        if path.stat().st_size > MAX_BYTES and (not isinstance(value, dict) or policy_size(value) == MAX_BYTES):
+            raise ValueError('oversized state metadata')
+        return value
 
     def current(self):
         value = self.read('current.json')
@@ -164,13 +201,16 @@ class Store:
         self.path(generation)
         return snapshot(self.read('generations/'+generation+'/snapshot.json'))
 
-    def create(self, value):
-        data = encode(snapshot(value))
+    def create(self, value, bundle=None):
+        value = snapshot(value)
+        data = encode(value, policy_size(value))
         self.prune()
         generation = secrets.token_hex(16)
         path = self.path(generation)
         path.mkdir(mode=0o700)
         atomic(path/'snapshot.json', data)
+        if bundle is not None:
+            atomic(path/'image-bundle.json', encode(bundle))
         return generation
 
     def prune(self):

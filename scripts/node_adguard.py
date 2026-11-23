@@ -76,6 +76,8 @@ def initial_config(links, password_hash):
 
 
 def route(core, value, links):
+    import node_policy
+
     options = value['options']['adguard']
     rules = core.setdefault('routing', {}).setdefault('rules', [])
     incoming = [i['tag'] for i in core['inbounds'] if i['tag'] in ('node', 'node-wg4', 'node-wg6')]
@@ -93,6 +95,8 @@ def route(core, value, links):
                        health | {'network': 'tcp', 'domain': ['full:www.cloudflare.com'], 'port': '443', 'outboundTag': 'warp-resolve'},
                        health | {'outboundTag': 'block'}])
     if options['controller']:
+        for scope, role, mode, _ in node_policy.accounts(value) if value['options'].get('policy') else ():
+            allowed['node' if mode == 'direct' else 'warp'].append(f'vpnbot/{scope}/{role}')
         allowed['node'].append('controller')
         allowed_wg.append('controller-wg')
         allowed['warp'].append('vpnbot/warp')

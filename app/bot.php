@@ -966,6 +966,25 @@ class Bot
             case preg_match('~^/nodeAdClients ([a-f0-9]{8}) (fill|deny)$~D', $this->input['callback'], $m):
                 $this->nodeAdguardClients($m[1], $m[2] === 'fill');
                 break;
+            case preg_match('~^/np ([a-f0-9]{8}) (all|(?:bot|peer)-[a-f0-9]{20})(?: (\d{1,3}))?$~D', $this->input['callback'], $m):
+                $this->nodePolicyMenu($m[1], $m[2], (int)($m[3] ?? 0));
+                break;
+            case preg_match('~^/xm ([a-f0-9]{8}) ([a-f0-9]{20}) (\d{1,6})$~D', $this->input['callback'], $m):
+                $this->exitMainMenu($m[1], $m[2], (int)$m[3]);
+                break;
+            case preg_match('~^/xmSet ([a-f0-9]{8}) ([a-f0-9]{20}) ([a-f0-9]{10}) ([01]) (\d{1,6})$~D', $this->input['callback'], $m):
+                $this->exitMainSelect($m[1], $m[2], $m[3], (bool)$m[4], (int)$m[5]);
+                break;
+            case preg_match('~^/npSet ([a-f0-9]{8}) (all|(?:bot|peer)-[a-f0-9]{20}) ([a-f0-9]{10}) (off|block|warp|direct)$~D', $this->input['callback'], $m):
+                $this->nodePolicyAssign($m[1], $m[2], $m[3], $m[4]);
+                break;
+            case preg_match('~^/npClean ([a-f0-9]{8}) ([a-f0-9]{10})$~D', $this->input['callback'], $m):
+                $this->nodePolicyClean($m[1], $m[2]);
+                break;
+            case preg_match('~^/np(Edit|Test|Sync) ([a-f0-9]{8}) (all|(?:bot|peer)-[a-f0-9]{20})$~D', $this->input['callback'], $m):
+                if ($m[1] === 'Sync') $this->nodePolicySync($m[2], $m[3]);
+                else $this->nodePolicyPrompt($m[2], $m[3], $m[1] === 'Test');
+                break;
             case preg_match('~^/nodeSettings ([a-f0-9]{8})(?: ([a-z]+))?$~D', $this->input['callback'], $m):
                 $this->managedNodeSettingsMenu($m[1], $m[2] ?? 'root');
                 break;
@@ -1026,8 +1045,8 @@ class Bot
             case preg_match('~^/nodePeers ([a-f0-9]{8})$~', $this->input['callback'], $m):
                 $this->managedNodePeersMenu($m[1]);
                 break;
-            case preg_match('~^/nodePeerAdd ([a-f0-9]{8})$~', $this->input['callback'], $m):
-                $this->managedNodePeerAddPrompt($m[1]);
+            case preg_match('~^/nodePeerAdd ([a-f0-9]{8})( paused)?$~', $this->input['callback'], $m):
+                $this->managedNodePeerAddPrompt($m[1], isset($m[2]));
                 break;
             case preg_match('~^/nodePeer ([a-f0-9]{8}) ([a-f0-9]{10})$~', $this->input['callback'], $m):
                 $this->managedNodePeerMenu($m[1], $m[2]);
@@ -7834,7 +7853,19 @@ NFT;
         // Трафик узлов выхода: копится так же, как у пользователей, —
         // чтобы перезапуск Xray при каждой правке узлов его не обнулял.
         $exits = [];
-        foreach (array_keys($this->exitNodes()) as $id) {
+        $nodes = $this->exitNodes();
+        // Personal rules use separate authenticated outbounds. Attribute each
+        // counter once to the channel requested by the controller for this row.
+        $policyChannels = [];
+        foreach ($counters as $key => $bytes) {
+            if (!preg_match('~^outbound>>>' . self::EXIT_TAG . 'subject-([0-9a-f]{8})-(bot-[0-9a-f]{20})-(direct|warp|row-([0-9]{1,3}))>>>traffic>>>(uplink|downlink)$~D', $key, $match)) continue;
+            [, $nodeId, $scope, $role, $row, $direction] = $match;
+            $channel = $row === '' ? $role : ($nodes[$nodeId]['policy']['bindings'][$scope][(int)$row]['action'] ?? 'direct');
+            $prefix = 'outbound>>>' . self::EXIT_TAG . ($channel === 'warp' ? 'warp-' : '') . $nodeId . '>>>traffic>>>' . $direction;
+            $policyChannels[$prefix] = ($policyChannels[$prefix] ?? 0) + $bytes;
+        }
+        foreach ($policyChannels as $key => $bytes) $counters[$key] = ($counters[$key] ?? 0) + $bytes;
+        foreach (array_keys($nodes) as $id) {
             $id = (string) $id;
             $name = 'outbound>>>' . self::EXIT_TAG . $id . '>>>traffic>>>';
             $warpName = 'outbound>>>' . self::EXIT_TAG . 'warp-' . $id . '>>>traffic>>>';
@@ -12655,8 +12686,15 @@ NFT;
         return is_array($json) ? $json : [];
     }
 
+    private function adguardPrivateChat(): bool
+    {
+        return (int) ($this->input['from'] ?? 0) > 0
+            && (string) $this->input['from'] === (string) ($this->input['chat'] ?? '');
+    }
+
     public function adguardpsswd()
     {
+        if (!$this->adguardPrivateChat()) return $this->menu('adguard');
         $r = $this->send(
             $this->input['chat'],
             $this->t("@{$this->input['username']} введите пароль", "@{$this->input['username']} enter password"),
@@ -12672,6 +12710,7 @@ NFT;
 
     public function setAdguardKey()
     {
+        if (!$this->adguardPrivateChat()) return $this->menu('adguard');
         $r = $this->send(
             $this->input['chat'],
             $this->t("@{$this->input['username']} введите ключ", "@{$this->input['username']} enter key"),
@@ -12702,6 +12741,7 @@ NFT;
 
     public function setAdKey($key)
     {
+        if (!$this->adguardPrivateChat()) return $this->menu('adguard');
         $key = strtolower(trim((string) $key));
         if ($key === '-') {
             $key = ''; // «-» убирает ClientID
@@ -13978,6 +14018,7 @@ NFT;
 
     public function chpsswd($pass)
     {
+        if (!$this->adguardPrivateChat()) return $this->menu('adguard');
         $pass = trim((string) $pass);
         if (!self::adguardPasswordValid($pass)) {
             $this->send($this->input['from'], $this->t('Пароль не принят: от 8 до 72 символов (в байтах), без переводов строк.', 'Password rejected: 8 to 72 characters (in bytes), without line breaks.'));
@@ -14181,6 +14222,7 @@ NFT;
     // заблокировано, кто и куда ходит чаще всего.
     public function adgStats()
     {
+        if (!$this->adguardPrivateChat()) return $this->menu('adguard');
         $path = 'Menu -> AdGuard -> ' . $this->i18n('adg statistics');
         $back = [[['text' => '🔄 ' . $this->i18n('refresh'), 'callback_data' => '/adgStats']],
             $this->menuHelpButton('adguard', 'statistics'),
@@ -28892,7 +28934,12 @@ DNS-over-HTTPS with IP:
                 return $this->userXrLocked($i);
             }
         }
-        $c['inbounds'][0]['settings']['clients'][$i]['email'] = $name;
+        $client = &$c['inbounds'][0]['settings']['clients'][$i];
+        if (($client['email'] ?? '') !== $name) {
+            $client['node_policy_identity'] = ['source' => ManagedProtocol::xraySource($client), 'scope' => self::nodePolicyBotScope($client)];
+        }
+        $client['email'] = $name;
+        unset($client);
         if ($this->restartXray($c) === false) throw new RuntimeException($this->t('Не удалось применить настройки Xray', 'Could not apply Xray settings'));
         $this->adguardXrayClients();
         $this->userXrLocked($i);
@@ -36206,6 +36253,17 @@ DNS-over-HTTPS with IP:
     public function adguardMenu()
     {
         $conf   = $this->getPacConf();
+        $browserLink = !empty($conf['adgbrowser']) && empty($conf['adg_panel_closed']) ? [[[
+            'text' => $this->t('🔗 Ссылка для браузера (15 мин)', '🔗 Browser link (15 min)'),
+            'callback_data' => '/adguardLink',
+        ]]] : [];
+        $panelSwitch = [[ 'text' => empty($conf['adg_panel_closed']) ? $this->t('🔒 Закрыть доступ к панели', '🔒 Close panel access') : $this->t('🔓 Открыть доступ к панели', '🔓 Open panel access'),
+            'callback_data' => empty($conf['adg_panel_closed']) ? '/adguardPanel close' : '/adguardPanel open' ]];
+        if (!$this->adguardPrivateChat()) {
+            return ['text' => $this->t('Настройки AdGuard Home и данные доступа доступны в личном чате с ботом.',
+                'Open your private chat with the bot for AdGuard Home settings and credentials.'),
+                'data' => [$panelSwitch, ...$browserLink, [['text' => $this->i18n('back'), 'callback_data' => '/menu']]]];
+        }
         $ip     = $this->ip;
         $domain = $this->getDomain();
         $hash   = $this->getHashBot();
@@ -36302,12 +36360,8 @@ DNS-over-HTTPS with IP:
                     'callback_data' => '/adguardChBr'
                 ],
             ],
-            [[ 'text' => empty($conf['adg_panel_closed']) ? $this->t('🔒 Закрыть доступ к панели', '🔒 Close panel access') : $this->t('🔓 Открыть доступ к панели', '🔓 Open panel access'),
-                'callback_data' => empty($conf['adg_panel_closed']) ? '/adguardPanel close' : '/adguardPanel open' ]],
-            ...(!empty($conf['adgbrowser']) && empty($conf['adg_panel_closed']) ? [[[
-                'text'          => $this->t('🔗 Ссылка для браузера (15 мин)', '🔗 Browser link (15 min)'),
-                'callback_data' => '/adguardLink',
-            ]]] : []),
+            $panelSwitch,
+            ...$browserLink,
             [
                 [
                     'text'          => $this->i18n('change password'),

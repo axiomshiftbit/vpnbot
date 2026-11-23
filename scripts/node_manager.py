@@ -186,8 +186,11 @@ class Manager:
     def __init__(self, store, runtime):
         self.store, self.runtime = store, runtime
 
-    def apply(self, value):
-        generation = self.store.create(value)
+    def apply(self, value, bundle=None):
+        if bundle is None:
+            from node_upgrade import matching_bundle
+            bundle = matching_bundle(self.store, value['images'])
+        generation = self.store.create(value, bundle)
         self.runtime.validate(generation)
         pending = self.store.begin(generation)
         try:
@@ -215,6 +218,7 @@ class Manager:
             raise ValueError('another change awaits confirmation')
         name, data = request['operation'], request['value']
         value = self.store.load()
+        bundle = None
         certificate_result = {}
         if name == 'restart':
             self.runtime.apply(self.store.current())
@@ -222,6 +226,9 @@ class Manager:
         if name == 'configure':
             previous = value['options']
             config.endpoint(data, self.runtime.host)
+            if data.get('cover') and not previous.get('cover'):
+                # Older snapshots retained an inactive cover's stale image.
+                value['images'].pop('ng', None)
             value['options'] = data
             if config.needs_certificate(data) and (not value['tls'] or previous['domain'] != data['domain']
                     or previous.get('domain_aliases', []) != data.get('domain_aliases', [])):
@@ -230,6 +237,11 @@ class Manager:
             if 'xray' in data or data.get('cover') or data.get('warp_mode', 'off') != 'off' or any(data.get(channel, {}).get('enabled') for channel in ('wireguard', 'amnezia')):
                 self.runtime.ensure_keys(value)
         elif name == 'peers':
+            bindings = value['options'].get('policy', {}).get('bindings', {})
+            keep = {config.node_policy.peer_scope(peer['id']) for peer in data}
+            for scope in list(bindings):
+                if scope.startswith('peer-') and scope not in keep:
+                    del bindings[scope]
             value['peers'] = data
             dns = value['options'].get('adguard')
             if dns:
@@ -251,6 +263,10 @@ class Manager:
                 for peer in value['peers']:
                     if peer['id'] == data:
                         peer['id'] = str(uuid.uuid4())
+                        bindings = value['options'].get('policy', {}).get('bindings', {})
+                        old_scope = config.node_policy.peer_scope(data)
+                        if old_scope in bindings:
+                            bindings[config.node_policy.peer_scope(peer['id'])] = bindings.pop(old_scope)
                         dns = value['options'].get('adguard')
                         if dns and data in dns['peers']:
                             dns['peers'] = [peer['id'] if key == data else key for key in dns['peers']]
@@ -260,28 +276,32 @@ class Manager:
         elif name == 'restore':
             value = data
         elif name == 'rollback':
+            from node_upgrade import matching_bundle
             previous = self.store.read('previous.json')
             if previous is None:
                 raise ValueError('no previous generation is available')
             value = self.store.load(previous)
+            bundle = matching_bundle(self.store, value['images'], previous)
         elif name in ('update', 'upgrade'):
             from image_bundle import fetch, read
+            import node_upgrade
+            node_upgrade.preserve_current_bundle(self.store)
             if name == 'upgrade':
                 # Images of exactly the commit whose code the upgrade unit installed.
-                import node_upgrade
                 path = self.store.root/node_upgrade.RELEASE
-                if read(path)['source'] != node_upgrade.installed(self.store):
-                    raise ValueError('installed code and image bundle differ')
             else:
                 path = self.store.root/'release.json'
                 fetch(data, path)
-            value['images']['xr'] = read(path)['images']['xr']
+            bundle = read(path)
+            if name == 'upgrade' and bundle['source'] != node_upgrade.installed(self.store):
+                raise ValueError('installed code and image bundle differ')
+            value['images']['xr'] = bundle['images']['xr']
             if value['options'].get('adguard', {}).get('enabled'):
-                value['images']['ad'] = read(path)['images']['ad']
+                value['images']['ad'] = bundle['images']['ad']
             if value['options'].get('warp_mode', 'off') != 'off':
-                value['images']['wg'] = read(path)['images']['wg']
+                value['images']['wg'] = bundle['images']['wg']
             if value['options'].get('cover'):
-                value['images']['ng'] = read(path)['images']['ng']
+                value['images']['ng'] = bundle['images']['ng']
         elif name in ('renew', 'renew_force'):
             if not config.needs_certificate(value['options']):
                 raise ValueError('this transport does not use a certificate')
@@ -300,6 +320,8 @@ class Manager:
             self.runtime.ensure_external_keys(value)
         if value['options'].get('warp_mode', 'off') == 'off':
             value['images'].pop('wg', None)
+        if not value['options'].get('cover'):
+            value['images'].pop('ng', None)
         filtering = value['options'].get('adguard', {}).get('enabled')
         if not filtering:
             value['images'].pop('ad', None)
@@ -309,7 +331,7 @@ class Manager:
         self.runtime.pull(value['images']['xr'])
         if certificate_result and value['tls']:
             certificate_result['certificate_fingerprint'] = hashlib.sha256(base64.b64decode(value['tls']['fullchain.pem'], validate=True)).hexdigest()
-        return self.apply(value) | certificate_result
+        return self.apply(value, bundle) | certificate_result
 
     def certificate(self, options, force=False):
         if force:
@@ -326,7 +348,7 @@ class Manager:
         if self.store.pending() or (job and job.get('state') in ('queued', 'running')):
             raise ValueError('node is busy')
         identifier = secrets.token_hex(16)
-        state.atomic(self.store.root/'request.json', state.encode(request))
+        state.atomic(self.store.root/'request.json', state.encode(request, state.policy_size(request)))
         state.atomic(self.store.root/'job.json', state.encode({'id': identifier, 'state': 'queued', 'time': int(time.time())}))
         try:
             command(['systemctl', 'start', '--no-block', UPGRADE_UNIT if request['operation'] == 'upgrade'
@@ -411,7 +433,7 @@ class Manager:
                 host |= connections(status.get('sources') or [], options.get('vpn_sources') or [])
             except Exception:
                 host = {}
-            return status | {'code': code, 'host': host, 'warp_egress': True, 'adguard_filter': True}
+            return status | {'code': code, 'host': host, 'warp_egress': True, 'adguard_filter': True, 'named_policy': True, 'controller_ip_guard': True}
         if action == 'tls_probe':
             return self.runtime.tls_probe()
         if action == 'backup':
@@ -460,8 +482,13 @@ def main():
         signal.alarm(12)
         first = sys.stdin.buffer.read(1)
         panel = first == b'!'
-        limit = 2*1024*1024 if panel else state.MAX_BYTES
-        request = state.decode((b'' if panel else first) + sys.stdin.buffer.read(limit+1), limit)
+        policy_frame = first == b'#'
+        limit = 2*1024*1024 if panel else state.POLICY_BYTES + 1024 if policy_frame else state.MAX_BYTES
+        request = state.decode((b'' if panel or policy_frame else first) + sys.stdin.buffer.read(limit+1), limit)
+        if policy_frame and (not isinstance(request, dict) or set(request) != {'action','request'}
+                or request['action'] != 'submit' or not isinstance(request['request'], dict)
+                or state.policy_size(request['request']) != state.POLICY_BYTES):
+            raise ValueError('invalid named policy frame')
         if panel and (not isinstance(request, dict) or set(request) != {'action','http'} or request['action'] != 'adguard_panel'):
             raise ValueError('invalid panel frame')
     store = state.Store(ROOT)
@@ -484,6 +511,8 @@ def main():
             else:
                 result = manager.rpc(request)
             limit = 12*1024*1024 if panel else state.MAX_BYTES
+            if request.get('action') in ('status', 'backup') and state.policy_size(result) == state.POLICY_BYTES:
+                limit = state.POLICY_BYTES + 1024
             sys.stdout.buffer.write(state.encode({'ok': True, 'result': result}, limit)+b'\n')
         elif mode == 'worker':
             manager.worker()

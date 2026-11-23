@@ -22,6 +22,7 @@ import node_cover
 import node_wg
 import node_awg
 import node_warp
+import node_policy
 import node_adguard
 
 
@@ -243,14 +244,18 @@ class Runtime:
             needed.append('ng')
         if value['options'].get('warp_mode', 'off') != 'off':
             needed.append('wg')
-        for name in needed:
-            if name in value['images']:
-                continue
-            from image_bundle import fetch, read
+        missing = [name for name in needed if name not in value['images']]
+        if missing:
+            from node_upgrade import matching_bundle
             path = self.store.root/'release.json'
-            if not path.exists():
+            bundle = matching_bundle(self.store, value['images'])
+            if bundle is None and not path.exists():
+                from image_bundle import fetch
                 fetch('latest', path)
-            value['images'][name] = read(path)['images'][name]
+                bundle = matching_bundle(self.store, value['images'])
+            if bundle is None:
+                raise ValueError('no matching image bundle for the node generation')
+            value['images'].update({name: bundle['images'][name] for name in missing})
         for image in value['images'].values():
             self.pull(image)
 
@@ -329,10 +334,11 @@ class Runtime:
         if value['options'].get('adguard', {}).get('enabled'):
             links = node_adguard.networks(command)
             node_adguard.route(body, value, links)
-        if warp is not None:
-            strict = node_warp.isolate_resolver(body, value['identity']['warp_uuid'])
-            self.write_runtime(self.store.path(generation)/'runtime/warp', {'xray.json': state.encode(strict)})
-        files = {'xray.json': state.encode(body)}
+        strict = node_warp.isolate_resolver(body, value['identity']['warp_uuid']) if warp is not None else None
+        node_policy.compile_policy(body, strict, value)
+        if strict:
+            self.write_runtime(self.store.path(generation)/'runtime/warp', {'xray.json': state.encode(strict, state.CORE_CONFIG_BYTES)})
+        files = {'xray.json': state.encode(body, state.CORE_CONFIG_BYTES)}
         certificates = {name: base64.b64decode(encoded, validate=True) for name, encoded in value['tls'].items()}
         if value['options'].get('cover'):
             cover = self.store.path(generation)/'runtime/cover'

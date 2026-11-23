@@ -293,7 +293,7 @@ print('{"ok":true,"result":{"schema":1}}')
         import subprocess
         elapsed = [0.0]
         budgets = []
-        def peer(args, body, timeout, rpc):
+        def peer(args, body, timeout, rpc, limit=transport.LIMIT):
             budgets.append(timeout)
             if timeout < 14:
                 elapsed[0] += timeout

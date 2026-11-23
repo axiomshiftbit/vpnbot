@@ -4,6 +4,7 @@ require_once __DIR__ . '/ManagedNodeProfile.php';
 require_once __DIR__ . '/ManagedNodeFields.php';
 require_once __DIR__ . '/BotManagedNodePeers.php';
 require_once __DIR__ . '/BotNodeAdguard.php';
+require_once __DIR__ . '/BotNodePolicy.php';
 require_once __DIR__ . '/BotManagedNodeSubscriptions.php';
 require_once __DIR__ . '/BotManagedNodeNavigation.php';
 require_once __DIR__ . '/BotManagedNodeMenus.php';
@@ -15,6 +16,7 @@ trait BotManagedNodes
 {
     use BotManagedNodePeers;
     use BotNodeAdguard;
+    use BotNodePolicy;
     use BotManagedNodeSubscriptions;
     use BotManagedNodeNavigation;
     use BotManagedNodeMenus;
@@ -148,11 +150,16 @@ trait BotManagedNodes
     protected function managedNodeTransport(string $id, string $action, $value = null): array
     {
         if (!preg_match('~^[a-f0-9]{8}$~D', $id)) throw new RuntimeException('Invalid node');
-        $body = json_encode(['id' => $id, 'action' => $action, 'value' => $value], JSON_THROW_ON_ERROR);
+        $body = json_encode(['id' => $id, 'action' => $action, 'value' => $value], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         $panel = $action === 'adguard_panel';
-        $limit = $panel ? 12 * 1024 * 1024 : 65536;
+        $large = strlen($body) > 65536 && (
+            ($action === 'import' && isset($value['snapshot']->options->policy))
+            || ($action === 'rpc' && ($value['action'] ?? '') === 'submit' && (isset($value['request']['value']['policy']) || isset($value['request']['value']['options']['policy'])))
+        );
+        $limit = $panel ? 12 * 1024 * 1024 : (in_array($action,['rpc','saved','rebind','reconnect'],true) ? 4 * 1024 * 1024 + 4096 : 65536);
+        if ($large) $body = '#' . $body;
         if ($panel) $body = '!' . $body;
-        if (strlen($body) > ($panel ? 2 * 1024 * 1024 : 65536)) throw new RuntimeException('Node request too large');
+        if (strlen($body) > ($panel ? 2 * 1024 * 1024 : ($large ? 4 * 1024 * 1024 + 4096 : 65536))) throw new RuntimeException('Node request too large');
         $process = proc_open(['python3', '-I', __DIR__ . '/node_ssh.py'],
             [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'w']], $pipes);
         if (!is_resource($process)) throw new RuntimeException('Node transport unavailable');
@@ -189,6 +196,9 @@ trait BotManagedNodes
                 if ($operation === 'configure') $options = &$request['request']['value'];
                 else $options = &$request['request']['value']['options'];
                 if (($options['amnezia']['parameters'] ?? null) === []) $options['amnezia']['parameters'] = (object) [];
+                foreach (['lists', 'bindings'] as $map) {
+                    if (($options['policy'][$map] ?? null) === []) $options['policy'][$map] = (object) [];
+                }
                 unset($options);
                 if ($operation === 'restore' && ($request['request']['value']['tls'] ?? null) === []) $request['request']['value']['tls'] = (object) [];
             }
@@ -224,12 +234,16 @@ trait BotManagedNodes
             }
         }
         if ($this->exitAddressProblem($parsed['address']) !== '') throw new RuntimeException('Node endpoint is not allowed');
-        return $this->applyExitNodes(function (array &$p) use ($id, $profile) {
+        return $this->applyExitNodes(function (array &$p) use ($id, $profile, $options) {
             if (!isset($this->managedNodes($p)[$id])) return 'exit not found';
             if (!isset($p['exits'][$id]) && count($this->exitNodes($p)) >= self::EXIT_MAX) return 'exit too many';
             $node = $p['exits'][$id] ?? ['name' => $p['managed_nodes'][$id]['name'], 'fallback' => 'block', 'created' => time()] + self::exitNodeDefaults();
             $node['link'] = $profile['link'];
             $node['managed_profile'] = $profile;
+            if ($options !== null) {
+                if (isset($options['policy'])) $node['policy'] = $options['policy'];
+                else unset($node['policy']);
+            }
             if (($profile['channel'] ?? '') === 'amnezia') $node['managed_session'] = bin2hex(random_bytes(8));
             $node['kind'] = 'remote';
             $node['sub'] = '';
@@ -244,6 +258,8 @@ trait BotManagedNodes
             if ($before === null) { unset($pac['exits'][$id]); return ''; }
             if (!isset($pac['exits'][$id])) return 'exit not found';
             $pac['exits'][$id]['link'] = $before['link'];
+            if (isset($before['policy'])) $pac['exits'][$id]['policy'] = $before['policy'];
+            else unset($pac['exits'][$id]['policy']);
             if (isset($before['managed_profile'])) $pac['exits'][$id]['managed_profile'] = $before['managed_profile'];
             else unset($pac['exits'][$id]['managed_profile']);
             if (($before['managed_profile']['channel'] ?? '') === 'amnezia') $pac['exits'][$id]['managed_session'] = bin2hex(random_bytes(8));
@@ -270,6 +286,11 @@ trait BotManagedNodes
     {
         $node = $this->managedNodes()[$id] ?? null;
         if (!$node || !$node['connected'] || $node['job']) throw new RuntimeException('Node is not ready');
+        if ($operation === 'configure' && !empty($node['status']['controller_ip_guard'])) {
+            $config = $this->getXray();
+            if (!is_array($config) || !isset($config['routing']['rules'])) throw new RuntimeException('Controller rules unavailable');
+            $value = $this->withControllerIps($value, $this->controllerBlockedIps($config));
+        }
         if ($operation === 'configure' && $this->managedNodeNetworkProblem($value, $node) !== '') throw new RuntimeException('Node connection family is not prepared');
         if (isset($node['draft']) && $operation !== 'configure') throw new RuntimeException('Apply or discard the settings draft first');
         if (!empty($node['recovery_required']) && $operation !== 'restore') throw new RuntimeException('Restore the saved node first');
@@ -279,7 +300,7 @@ trait BotManagedNodes
         if (!preg_match('~^[a-f0-9]{32}$~D', $generation)) throw new RuntimeException('Refresh the node before changing it');
         $job = $this->managedNodeRpc($id, ['action' => 'submit', 'request' => ['operation' => $operation, 'value' => $value, 'generation' => $generation]]);
         if (!preg_match('~^[a-f0-9]{32}$~D', (string) ($job['job'] ?? ''))) throw new RuntimeException('Invalid node job');
-        $before = array_intersect_key($exit, array_flip(['link', 'managed_profile']));
+        $before = array_intersect_key($exit, array_flip(['link', 'managed_profile', 'policy']));
         $draft = $operation === 'configure' ? array_intersect_key($node, array_flip(['draft', 'draft_generation'])) : [];
         $origin = array_intersect_key($this->input ?? [], array_flip(['chat','message_id']));
         $subject = $operation === 'rotate' && is_string($value) ? $value : '';
@@ -400,7 +421,10 @@ trait BotManagedNodes
                 else {
                     $this->managedNodeAutoAmnezia((string) $id);
                     $current=$this->managedNodes()[$id];
-                    if ($current['connected'] && !$current['job'] && time()-(int)($current['status_attempt'] ?? 0)>=60) $this->managedNodeCheckStatus((string)$id);
+                    if ($current['connected'] && !$current['job'] && time()-(int)($current['status_attempt'] ?? 0)>=60) {
+                        $this->managedNodeCheckStatus((string)$id);
+                        $this->syncControllerIps((string)$id);
+                    }
                 }
             }
             catch (Throwable $error) { /* Retry without logging private requests or responses. */ }
@@ -496,6 +520,7 @@ trait BotManagedNodes
             elseif (!empty($node['error'])) $text[] = $this->t('Последнее изменение не подтверждено; проверьте связь и состояние отката.', 'The last change was not confirmed; check connectivity and rollback status.');
             if (($node['last_operation']['checkout'] ?? '') === 'kept' && empty($node['error']) && !$node['job']) $text[] = $this->t('Код ноды обновлён. Каталог /root/vpnbot на ноде оставлен без изменений: в нём локальные правки, другая ветка или более новый коммит.',
                 'Node code was updated. The /root/vpnbot directory on the node was left unchanged: it has local edits, another branch or a newer commit.');
+            if (!empty($node['status']['named_policy'])) $data[] = [['text' => $this->t('Маршрутизация и запреты', 'Routing and block lists'), 'callback_data' => "/np $id all"]];
             if (!empty($node['status']['adguard_filter'])) $data[] = [['text' => 'AdGuard Home', 'callback_data' => "/nodeAd $id"]];
             $data[] = [['text' => $this->t('⚙️ Xray и подключение', '⚙️ Xray and connection'), 'callback_data' => "/nodeSettings $id"]];
             $data[] = [['text' => $this->t('🧭 Маршруты и наборы', '🧭 Routes and rule sets'), 'callback_data' => "/nr $id"],

@@ -2,6 +2,8 @@
 import base64
 import json
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -15,6 +17,16 @@ LINKS = {name: {'gateway': f'172.29.{n}.1', 'service': f'172.29.{n}.2'}
 
 
 class NodeAdguard(unittest.TestCase):
+    def test_isolated_panel_helper_handles_managed_settings(self):
+        request = {'method': 'PUT', 'path': '/control/querylog/config/update',
+                   'type': 'application/json', 'body': ''}
+        with tempfile.TemporaryDirectory() as cwd:
+            helper = subprocess.run([sys.executable, '-I', ad.__file__, 'panel'],
+                                    input=json.dumps(['fixture', request]), capture_output=True,
+                                    text=True, cwd=cwd, timeout=5)
+        self.assertEqual(helper.returncode, 0)
+        self.assertEqual(json.loads(helper.stdout)['status'], 409)
+
     def test_existing_bridge_requires_both_isolation_options(self):
         def describe(args):
             if 'ls' in args:

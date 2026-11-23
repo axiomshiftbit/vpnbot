@@ -60,7 +60,7 @@ def installed(store):
 
 # Modules copied to the node's code directory by node_setup.py --upgrade-code.
 MODULES = ('node_manager.py', 'node_runtime.py', 'node_config.py', 'node_xray.py', 'node_dpi.py', 'node_cover.py',
-           'node_wg.py', 'node_awg.py', 'node_warp.py', 'node_adguard.py', 'warp_masque.sh', 'node_state.py', 'node_upgrade.py', 'image_bundle.py', 'node_code.py')
+           'node_wg.py', 'node_awg.py', 'node_warp.py', 'node_adguard.py', 'node_policy.py', 'warp_masque.sh', 'node_state.py', 'node_upgrade.py', 'image_bundle.py', 'node_code.py')
 LIB = Path('/usr/local/lib/vpnbot-node')
 INSTALLED = 'code-installed.json'
 
@@ -133,20 +133,46 @@ def code_status(store, directory=None):
     return result
 
 
-def images_source(store):
-    """Commit of the downloaded bundle whose images the confirmed state runs, else None."""
-    try:
-        images = store.load()['images']
-    except Exception:
-        return None
-    for name in (RELEASE, 'release.json'):
-        try:
-            bundle = image_bundle.read(store.root/name)
-        except Exception:
+def matching_bundle(store, images, generation=None):
+    """Find the generation's manifest, or an unambiguous match for an older installation."""
+    generation = generation or store.current()
+    pinned = store.path(generation)/'image-bundle.json' if generation else None
+    match = None
+    for path in (pinned, store.root/RELEASE, store.root/'release.json'):
+        if path is None:
             continue
-        if all(bundle['images'].get(image) == images.get(image) for image in ('xr', 'ng', 'wg', 'ad') if images.get(image)) and images.get('xr'):
-            return bundle['source']
-    return None
+        try:
+            bundle = image_bundle.read(path)
+        except (OSError, ValueError, TypeError):
+            continue
+        if not images.get('xr') or any(bundle['images'].get(name) != ref for name, ref in images.items()):
+            continue
+        if path == pinned:
+            return bundle
+        if match and any(match['images'][name] != bundle['images'][name] for name in ('xr', 'ng', 'wg', 'ad')):
+            return None
+        match = match or bundle
+    return match
+
+
+def images_source(store):
+    """Commit of the bundle whose images the current generation runs, if known."""
+    try:
+        bundle = matching_bundle(store, store.load()['images'])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return bundle['source'] if bundle else None
+
+
+def preserve_current_bundle(store):
+    """Before a download replaces a legacy cache, retain the manifest for rollback."""
+    generation = store.current()
+    if generation:
+        path = store.path(generation)/'image-bundle.json'
+        if not path.exists():
+            bundle = matching_bundle(store, store.load(generation)['images'], generation)
+            if bundle is not None:
+                state.atomic(path, state.encode(bundle))
 
 
 def extract(source, target):
@@ -192,6 +218,7 @@ def code_phase(store, job, channel):
     """Returns the installed commit and the clone result; raises UpgradeError."""
     branch = BRANCHES[channel]
     release = store.root/RELEASE
+    preserve_current_bundle(store)
     try:
         bundle = image_bundle.fetch(channel, release)
     except Exception as error:

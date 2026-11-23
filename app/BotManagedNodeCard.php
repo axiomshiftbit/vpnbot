@@ -10,7 +10,7 @@
 trait BotManagedNodeCard
 {
     public const NODE_FILE_TYPE = 'vpnbot-node-snapshot';
-    public const NODE_FILE_MAX_BYTES = 262144;
+    public const NODE_FILE_MAX_BYTES = 8 * 1024 * 1024;
     public const NODE_CARD_SERVERS = 12;
     public const NODE_CARD_USERS = 8;
 
@@ -168,8 +168,8 @@ trait BotManagedNodeCard
     {
         $path = $this->managedNodeRoot . "/$id/snapshot.json";
         if (is_link($path) || !is_file($path)) return null;
-        $raw = @file_get_contents($path, false, null, 0, 65537);
-        if (!is_string($raw) || strlen($raw) > 65536) return null;
+        $raw = @file_get_contents($path, false, null, 0, 4 * 1024 * 1024 + 1);
+        if (!is_string($raw) || strlen($raw) > 4 * 1024 * 1024) return null;
         try { $value = json_decode($raw, false, 64, JSON_THROW_ON_ERROR); }
         catch (JsonException $error) { return null; }
         return self::managedNodeSnapshotValid($value) ? $value : null;
@@ -224,7 +224,9 @@ trait BotManagedNodeCard
             $file = ['type' => self::NODE_FILE_TYPE, 'version' => 1, 'node' => ['id' => $id, 'name' => (string) $node['name']],
                 'created' => time(), 'snapshot_time' => $time, 'controller_key' => $key,
                 'sha256' => self::managedNodeSnapshotHash($snapshot), 'snapshot' => $snapshot];
-            $body = json_encode($file, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+            $flags = JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR;
+            $body = json_encode($file, JSON_PRETTY_PRINT | $flags);
+            if (strlen($body) > self::NODE_FILE_MAX_BYTES) $body = json_encode($file, $flags);
             $name = 'node-' . (preg_replace('~[^A-Za-z0-9_-]+~', '_', (string) $node['name']) ?: $id) . '-' . date('Ymd-Hi') . '.json';
             $sent = $this->sendFile($this->input['from'], new CURLStringFile($body, $name, 'application/json'), $this->t(
                 '🔐 Копия ноды «' . self::esc($node['name']) . '» от ' . ($time ? date('Y-m-d H:i', $time) : '—') . '. Внутри ключи подключений, REALITY и сертификат ноды — храните как пароль. Восстановление: Обслуживание → «Загрузить копию ноды».',
@@ -286,12 +288,13 @@ trait BotManagedNodeCard
             // A document wins over its caption; plain text is never read as a path.
             $parsed = $this->managedNodeImportParse(!empty($this->input['file_id']) ? $this->managedNodeImportDownload() : null, $key);
             if (isset($parsed['error'])) {
-                $notice = $this->t(...match ($parsed['error']) {
-                    'read' => ['ru' => '❌ Файл не прочитан: пришлите документ .json до 256 КБ.', 'en' => '❌ File not read: send a .json document up to 256 KB.'],
-                    'damaged' => ['ru' => '❌ Файл повреждён или изменён: контрольная сумма копии не совпала.', 'en' => '❌ The file is damaged or edited: the snapshot checksum does not match.'],
-                    'foreign' => ['ru' => '❌ Это копия другой ноды: ключ управления в файле не совпадает с ключом этой ноды.', 'en' => '❌ This is another node’s snapshot: its controller key differs from this node’s key.'],
-                    default => ['ru' => '❌ Это не файл копии ноды VPNBot.', 'en' => '❌ This is not a VPNBot node snapshot file.'],
-                });
+                $notice = match ($parsed['error']) {
+                    'read' => sprintf($this->t('❌ Файл не прочитан. Пришлите документ .json до %d МиБ.',
+                        '❌ File could not be read. Send a .json document up to %d MiB.'), intdiv(self::NODE_FILE_MAX_BYTES, 1048576)),
+                    'damaged' => $this->t('❌ Файл повреждён или изменён: контрольная сумма копии не совпала.', '❌ The file is damaged or edited: the snapshot checksum does not match.'),
+                    'foreign' => $this->t('❌ Это копия другой ноды: ключ управления в файле не совпадает с ключом этой ноды.', '❌ This is another node’s snapshot: its controller key differs from this node’s key.'),
+                    default => $this->t('❌ Это не файл копии ноды VPNBot.', '❌ This is not a VPNBot node snapshot file.'),
+                };
             } else {
                 $this->managedNodeLocked($id, function () use ($id, $parsed) {
                     $node = $this->managedNodes()[$id] ?? null;

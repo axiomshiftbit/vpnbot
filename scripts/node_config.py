@@ -6,6 +6,7 @@ import hmac
 import re
 import uuid
 from urllib.parse import urlencode
+import node_policy
 import node_xray
 import node_cover
 import node_adguard
@@ -52,13 +53,15 @@ def hostname(value):
 
 def settings(value):
     """Remote callers can change only these settings, never a core config."""
-    if not isinstance(value, dict) or set(value) - {'connect_family', 'xray', 'cover', 'wireguard', 'amnezia', 'domain_aliases', 'vpn_sources', 'warp_mode', 'adguard'} != {'transport', 'family', 'core', 'domain', 'mask'}:
+    if not isinstance(value, dict) or set(value) - {'connect_family', 'xray', 'cover', 'wireguard', 'amnezia', 'domain_aliases', 'vpn_sources', 'warp_mode', 'adguard', 'policy'} != {'transport', 'family', 'core', 'domain', 'mask'}:
         raise ValueError('invalid settings fields')
     if not isinstance(value['transport'], str) or not isinstance(value['core'], str) \
             or value['transport'] not in TRANSPORTS or value['core'] not in CORES \
             or type(value['family']) is not int or value['family'] not in (4, 6):
         raise ValueError('unsupported transport, address family or core')
     result = dict(value)
+    if 'policy' in value:
+        result['policy'] = node_policy.validate(value['policy'])
     if 'adguard' in value:
         result['adguard'] = node_adguard.settings(value['adguard'])
     if 'wireguard' in value:

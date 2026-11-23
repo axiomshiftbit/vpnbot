@@ -473,7 +473,7 @@ def setup(value, source, channel='latest', bundle=None):
                 progress('certificate')
                 node['tls'] = backend.certificate(node['options']['domain'], node['options'].get('domain_aliases', []))
             progress('validate')
-            generation = store.create(node)
+            generation = store.create(node, manifest)
             backend.validate(generation)
             progress('ssh')
             previous_ssh = install.install_ssh(value['controller_key'], host['sources'])

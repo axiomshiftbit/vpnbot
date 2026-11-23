@@ -4,7 +4,9 @@
 Большой или повреждённый набор должен дать отказ, сохранив прежний кэш,
 а не исчерпать память воркера PHP или диск контейнера.
 """
+import ipaddress
 import json
+import mmap
 import os
 from pathlib import Path
 import resource
@@ -74,6 +76,85 @@ def normalize(source, destination, fmt):
     Path(destination).write_bytes(body)
 
 
+def protobuf_fields(data):
+    def integer(offset):
+        value = 0
+        for shift in range(0, 70, 7):
+            if offset >= len(data):
+                break
+            byte = data[offset]
+            offset += 1
+            value |= (byte & 127) << shift
+            if byte < 128:
+                return value, offset
+        raise ValueError('invalid protobuf integer')
+
+    offset = 0
+    while offset < len(data):
+        key, offset = integer(offset)
+        field, wire = divmod(key, 8)
+        if field == 0:
+            raise ValueError('invalid protobuf field')
+        if wire == 0:
+            value, offset = integer(offset)
+        elif wire == 2:
+            size, offset = integer(offset)
+            if offset + size > len(data):
+                raise ValueError('truncated protobuf field')
+            value = data[offset:offset + size]
+            offset += size
+        else:
+            raise UnsupportedRule('unsupported protobuf field')
+        yield field, value
+
+
+def extract_dat(source, destination, kind, category):
+    """Expand a single configured GeoSite/GeoIP category for the node."""
+    if kind not in ('domain', 'ip') or not category or '@' in category or '!' in category:
+        raise UnsupportedRule('unsupported category selector')
+    resource.setrlimit(resource.RLIMIT_AS, (512 * 1024 * 1024,) * 2)
+    entries = []
+    with open(source, 'rb') as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
+        data = memoryview(mapped)
+        try:
+            for field, group in protobuf_fields(data):
+                if field != 1 or not isinstance(group, memoryview):
+                    raise ValueError('invalid category')
+                tag = next((bytes(v).decode() for f, v in protobuf_fields(group) if f == 1), '')
+                if tag.lower() != category.lower():
+                    continue
+                for f, item in protobuf_fields(group):
+                    if f == 1:
+                        continue
+                    if f != 2:
+                        raise UnsupportedRule('unsupported category condition')
+                    values = dict(protobuf_fields(item))
+                    if kind == 'domain':
+                        dtype = values.get(1, 0)
+                        if dtype not in range(4) or not isinstance(values.get(2), memoryview):
+                            raise ValueError('invalid geosite entry')
+                        entry = ('keyword:', 'regexp:', 'domain:', 'full:')[dtype] + bytes(values[2]).decode()
+                    else:
+                        if not isinstance(values.get(1), memoryview):
+                            raise ValueError('invalid geoip entry')
+                        address = ipaddress.ip_address(bytes(values[1]))
+                        entry = str(ipaddress.ip_network((address, values.get(2, 0)), strict=False))
+                    entries.append(entry)
+                    if len(entries) > MAX_ENTRIES:
+                        raise ValueError('oversized category')
+                break
+        finally:
+            # Drop exported slices before closing the memory map.
+            group = item = values = None
+            data.release()
+    if not entries:
+        raise ValueError('category is missing or empty')
+    body = json.dumps(entries, ensure_ascii=False).encode()
+    if len(body) > NORMALIZED_BYTES:
+        raise ValueError('oversized category')
+    Path(destination).write_bytes(body)
+
+
 def main():
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     resource.setrlimit(resource.RLIMIT_FSIZE, (UNPACKED_BYTES,) * 2)
@@ -82,7 +163,10 @@ def main():
         # резерв адресов, необходимый среде Go при запуске.
         resource.setrlimit(resource.RLIMIT_DATA, (256 * 1024 * 1024,) * 2)
         os.execvp(sys.argv[2], sys.argv[2:])
-    normalize(*sys.argv[2:])
+    if sys.argv[1] == 'dat':
+        extract_dat(*sys.argv[2:])
+    else:
+        normalize(*sys.argv[2:])
 
 
 if __name__ == '__main__':

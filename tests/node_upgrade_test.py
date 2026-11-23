@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Code phase of the node's full update against real temporary Git repositories."""
+import base64
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'scripts'))
 import node_manager as manager
 import node_state as state
 import node_upgrade as upgrade
+from node_card_status_test import bundle as image_manifest
+from node_config_test import HOST
+from node_runtime import Runtime
 from node_state_test import VALUE
 
 JOB = 'e'*32
@@ -188,6 +192,82 @@ class ManagerUpgrade(unittest.TestCase):
             state.atomic(self.store.root/'code.json', state.encode({'source': source, 'time': 0}))
             result = self.manager.execute({'operation': 'upgrade', 'value': 'latest'})
         self.assertEqual(self.store.load(result['pending']['after'])['images']['xr'], bundle['images']['xr'])
+
+    def test_optional_images_follow_confirmed_update_and_manual_rollback(self):
+        original = image_manifest('a'*40)
+        full = image_manifest('b'*40)
+        images_only = image_manifest('c'*40)
+        # An unchanged Xray digest alone cannot distinguish these releases.
+        for name in ('wg', 'ad'):
+            prefix = upgrade.image_bundle.REGISTRY + name + '@sha256:'
+            full['images'][name] = prefix + 'c'*64
+            images_only['images'][name] = prefix + 'd'*64
+        state.atomic(self.store.root/'release.json', state.encode(original))
+        state.atomic(self.store.root/upgrade.RELEASE, state.encode(full))
+        state.atomic(self.store.root/upgrade.CODE, state.encode({'source': full['source']}))
+        runtime = Runtime(self.store, HOST)
+        service = manager.Manager(self.store, runtime)
+
+        def apply(operation, value):
+            result = service.execute({'operation': operation, 'value': value})
+            self.store.confirm(result['pending']['nonce'])
+
+        def fetch(channel, path):
+            state.atomic(path, state.encode(images_only))
+
+        with patch.object(runtime, 'pull'), patch.object(runtime, 'apply'), patch.object(runtime, 'validate'):
+            apply('upgrade', 'dev')
+            with patch('image_bundle.fetch', side_effect=fetch):
+                apply('update', 'latest')
+            self.assertEqual(upgrade.images_source(self.store), images_only['source'])
+            apply('rollback', None)
+            self.assertEqual(upgrade.images_source(self.store), full['source'])
+            apply('configure', self.store.load()['options'] | {'warp_mode': 'wireguard', 'adguard': {'enabled': True}})
+        self.assertEqual(self.store.load()['images'], {name: full['images'][name] for name in ('xr', 'wg', 'ad')})
+
+    def test_legacy_generation_with_ambiguous_digests_does_not_mix_optional_images(self):
+        full, normal = image_manifest('b'*40), image_manifest('c'*40)
+        normal['images']['ad'] = upgrade.image_bundle.REGISTRY + 'ad@sha256:' + 'd'*64
+        state.atomic(self.store.root/'release.json', state.encode(normal))
+        state.atomic(self.store.root/upgrade.RELEASE, state.encode(full))
+        runtime = Runtime(self.store, HOST)
+        config = self.store.load()
+        config['options']['adguard'] = {'enabled': True}
+        with patch.object(runtime, 'pull') as pull, self.assertRaisesRegex(ValueError, 'matching image bundle'):
+            runtime.ensure_images(config)
+        pull.assert_not_called()
+        self.assertNotIn('ad', config['images'])
+
+    def test_first_update_preserves_a_legacy_generations_bundle_for_rollback(self):
+        original = image_manifest('a'*40)
+        later = image_manifest('b'*40, xr=upgrade.image_bundle.REGISTRY + 'xr@sha256:' + 'd'*64)
+        state.atomic(self.store.root/'release.json', state.encode(original))
+        with patch('image_bundle.fetch', side_effect=lambda channel, path: state.atomic(path, state.encode(later))):
+            update = self.manager.execute({'operation': 'update', 'value': 'latest'})
+        self.store.confirm(update['pending']['nonce'])
+        rollback = self.manager.execute({'operation': 'rollback', 'value': None})
+        self.store.confirm(rollback['pending']['nonce'])
+        self.assertEqual(upgrade.images_source(self.store), original['source'])
+
+    def test_reenabling_a_cover_replaces_a_legacy_inactive_image(self):
+        manifest = image_manifest('c'*40)
+        state.atomic(self.store.root/'release.json', state.encode(manifest))
+        current = self.store.load()
+        current['images']['ng'] = upgrade.image_bundle.REGISTRY + 'ng@sha256:' + 'd'*64
+        current['options']['domain'] = 'node.example.test'
+        current['identity']['cover_auth'] = '$2y$10$' + 'a'*53
+        current['tls'] = {name: base64.b64encode(b'-----BEGIN FIXTURE-----\n').decode()
+                          for name in ('fullchain.pem', 'privkey.pem')}
+        self.store.activate(self.store.create(current))
+        runtime = Runtime(self.store, HOST | {'cover_uid': 997})
+        service = manager.Manager(self.store, runtime)
+        with patch.object(runtime, 'pull'), patch.object(runtime, 'apply'), patch.object(runtime, 'validate'):
+            enable = service.execute({'operation': 'configure', 'value': current['options'] | {'cover': True}})
+            self.store.confirm(enable['pending']['nonce'])
+            self.assertEqual(self.store.load()['images']['ng'], manifest['images']['ng'])
+            disable = service.execute({'operation': 'configure', 'value': current['options']})
+            self.store.confirm(disable['pending']['nonce'])
+        self.assertNotIn('ng', self.store.load()['images'])
 
     def test_recovery_watches_upgrade_unit_during_code_phase(self):
         state.atomic(self.store.root/'request.json', state.encode({'operation': 'upgrade', 'value': 'latest'}))

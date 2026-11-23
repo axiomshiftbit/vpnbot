@@ -158,6 +158,11 @@ try {
     $b = $make(); $b->upload = $downloaded; unset($b->input['file_id']);
     $b->managedNodeImportFile('/etc/passwd', 'aabbccdd');
     $check($b->imported === [] && str_contains(end($b->screens)[0], 'не прочитан'), 'text answer is never treated as a path or file');
+    $check(str_contains(end($b->screens)[0], (Bot::NODE_FILE_MAX_BYTES / 1048576) . ' МиБ'), 'import error shows the actual document limit');
+    $b->language = 'en';
+    $b->managedNodeImportFile('', 'aabbccdd');
+    $check(str_contains(end($b->screens)[0], 'Send a .json document up to ' . intdiv(Bot::NODE_FILE_MAX_BYTES, 1048576) . ' MiB.'),
+        'English import error shows the actual document limit');
     $b = $make(); $b->upload = $downloaded; $b->input['file_id'] = 'document';
     $b->managedNodeImportFile('моя копия', 'aabbccdd');
     $check(count($b->imported) === 1, 'document with a caption is accepted');
@@ -167,6 +172,23 @@ try {
     $b = $make(); $b->upload = $downloaded; $b->pacState['managed_nodes']['aabbccdd']['connected'] = false;
     $b->managedNodeImportFile('', 'aabbccdd');
     $check(count($b->imported) === 1 && str_contains(end($b->screens)[0], 'Привяжите SSH'), 'upload before rebind keeps restore for later');
+
+    // Pretty indentation alone can push a valid 3 MiB named policy over the Telegram file importer limit.
+    $b = $make();
+    $b->pacState['managed_nodes']['aabbccdd']['connected'] = false;
+    $snapshot = json_decode($snapshotJson);
+    $domains = [];
+    for ($i = 0; $i < 185000; $i++) $domains[] = 'full:' . base_convert((string)$i, 10, 36) . '.test';
+    $snapshot->options->policy = ['lists'=>['bulk'=>['domain'=>$domains]],
+        'bindings'=>['all'=>[['list'=>'bulk','action'=>'block']]], 'revision'=>str_repeat('b',32)];
+    file_put_contents("$root/aabbccdd/snapshot.json", json_encode($snapshot, JSON_UNESCAPED_SLASHES));
+    $b->managedNodeExport('aabbccdd', true);
+    $b->upload = $b->sent[0][1] ?? '';
+    $check($b->upload !== '' && strlen($b->upload) <= Bot::NODE_FILE_MAX_BYTES, 'large exported snapshot fits the file importer');
+    $b->managedNodeImportFile('', 'aabbccdd');
+    $import = json_decode($b->imported[0] ?? '{}');
+    $check(($import->snapshot->options->policy->lists->bulk->domain ?? []) === $domains, 'large named list survives export and re-import');
+    unset($snapshot, $domains, $import);
     // Full backup caption: fresh or earlier snapshot per node, never a silent stale copy.
     $b = $make();
     $b->pacState['managed_nodes']['aabbccdd']['backup_time'] = time();

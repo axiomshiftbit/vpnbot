@@ -20,6 +20,8 @@ import tempfile
 import time
 
 LIMIT = 65536
+POLICY_LIMIT = 4 * 1024 * 1024
+POLICY_FRAME = POLICY_LIMIT + 4096
 ROOT = Path('/ssh/nodes')
 # Controller keys of nodes removed from the bot. The node keeps trusting such a
 # key, so adding the same server again reuses it instead of a rejected new one.
@@ -28,6 +30,28 @@ RETIRED = 'retired'
 
 class NodeBusy(ValueError):
     """The node rejected this request before executing any operation."""
+
+
+def policy_request(request):
+    if not isinstance(request, dict) or request.get('action') != 'submit':
+        return False
+    op = request.get('request', {})
+    if not isinstance(op, dict):
+        return False
+    value = op.get('value')
+    if not isinstance(value, dict):
+        return False
+    options = value if op.get('operation') == 'configure' else value.get('options') if op.get('operation') == 'restore' else None
+    return isinstance(options, dict) and isinstance(options.get('policy'), dict)
+
+
+def snapshot_limit(value):
+    if isinstance(value, dict) and isinstance(value.get('options'), dict) and 'policy' in value['options']:
+        options = dict(value['options'])
+        del options['policy']
+        encode(dict(value, options=options))
+        return POLICY_LIMIT
+    return LIMIT
 
 
 def encode(value, limit=LIMIT):
@@ -288,7 +312,12 @@ class Client:
         if not isinstance(request, dict) or request.get('action') not in (('adguard_panel',) if panel else ('ping', 'status', 'tls_probe', 'backup', 'profile', 'confirm', 'submit', 'job')):
             raise ValueError('request')
         args = self.ssh(target)
-        body = b'!'+encode(request,2*1024*1024) if panel else encode(request)
+        if policy_request(request):
+            body = encode(request,POLICY_FRAME)
+            if len(body) > LIMIT:
+                body = b'#' + body
+        else:
+            body = b'!'+encode(request,2*1024*1024) if panel else encode(request)
         deadline = self.deadline
         # submit too: "busy" means the node refused before queueing anything, and
         # its one-second status/watch passes would otherwise fail a user's Apply.
@@ -301,6 +330,11 @@ class Client:
                 if panel:
                     limit = 12*1024*1024
                     result = decode(run(args, body, timeout=min(15, remaining), rpc=True, limit=limit),limit)
+                elif request['action'] in ('status','backup'):
+                    reply = run(args,body,timeout=min(15,remaining),rpc=True,limit=POLICY_FRAME)
+                    result = decode(reply,POLICY_FRAME)
+                    if len(reply) > LIMIT and snapshot_limit(result.get('result')) != POLICY_LIMIT:
+                        raise ValueError('oversized metadata')
                 else:
                     result = decode(run(args, body, timeout=min(15, remaining), rpc=True))
                 break
@@ -456,8 +490,10 @@ class Client:
         path = self.directory/'snapshot.json'
         trusted(path)
         with path.open('rb') as stream:
-            body = stream.read(LIMIT+1)
-        value = decode(body)
+            body = stream.read(POLICY_LIMIT+1)
+        value = decode(body, POLICY_LIMIT)
+        if len(body) > snapshot_limit(value):
+            raise ValueError('oversized snapshot')
         if not isinstance(value, dict):
             raise ValueError('snapshot')
         return {'snapshot': value, 'hash': hashlib.sha256(body).hexdigest()[:16]}
@@ -471,7 +507,7 @@ class Client:
         if not isinstance(snapshot, dict) or set(snapshot) != {'schema', 'options', 'identity', 'peers', 'images', 'tls'} \
                 or type(snapshot['schema']) is not int or snapshot['schema'] != 1:
             raise ValueError('snapshot')
-        atomic(self.directory/'snapshot.json', encode(snapshot))
+        atomic(self.directory/'snapshot.json', encode(snapshot,snapshot_limit(snapshot)))
         return self.saved()
 
     @key_locked
@@ -496,8 +532,16 @@ def main():
     os.umask(0o077)
     first = sys.stdin.buffer.read(1)
     panel = first == b'!'
-    limit = 2*1024*1024 if panel else LIMIT
-    value = decode((b'' if panel else first)+sys.stdin.buffer.read(limit+1),limit)
+    policy_frame = first == b'#'
+    limit = 2*1024*1024 if panel else POLICY_FRAME if policy_frame else LIMIT
+    value = decode((b'' if panel or policy_frame else first)+sys.stdin.buffer.read(limit+1),limit)
+    if policy_frame:
+        if not isinstance(value,dict) or not isinstance(value.get('value'),dict):
+            raise ValueError('invalid policy frame')
+        payload = value['value']
+        if not ((value.get('action') == 'rpc' and policy_request(payload)) or
+                (value.get('action') == 'import' and snapshot_limit(payload.get('snapshot')) == POLICY_LIMIT)):
+            raise ValueError('invalid policy frame')
     if panel and value.get('action') != 'adguard_panel':
         raise ValueError('invalid panel request')
     if not isinstance(value, dict) or set(value) != {'id', 'action', 'value'}:
@@ -528,11 +572,11 @@ def main():
             result = {'hash': saved['hash']}
         elif value['action'] == 'snapshot' and value['value'] is None:
             snapshot = client.request({'action': 'backup'})
-            atomic(client.directory/'snapshot.json', encode(snapshot))
+            atomic(client.directory/'snapshot.json', encode(snapshot,snapshot_limit(snapshot)))
             result = {'saved': True}
         else:
             raise ValueError('action')
-        sys.stdout.buffer.write(encode({'ok': True, 'result': result}, 12*1024*1024 if panel else LIMIT))
+        sys.stdout.buffer.write(encode({'ok': True, 'result': result}, 12*1024*1024 if panel else POLICY_FRAME if value['action'] in ('rpc','saved','rebind','reconnect') else LIMIT))
 
 
 if __name__ == '__main__':

@@ -175,6 +175,16 @@ $check($resolve['protocol'] === 'loopback' && $resolve['targetStrategy'] === 'Fo
     && $rules["vpnbot:exit:$id:unresolved"]['outboundTag'] === 'block', 'повторная проверка IP ограничена полным назначением');
 $check(in_array('198.51.100.2', $rules['vpnbot:exit:resolved-block']['ip'], true)
     && array_search('vpnbot:exit:resolved-block', $ruleTags($c)) < array_search("vpnbot:exit:$id:resolved", $ruleTags($c)), 'запрет IP исполняется раньше выхода после DNS');
+$named = $q;
+$actor = 'bot-' . Bot::exitFullKey($full['inbounds'][0]['settings']['clients'][0]);
+$named['exits'][$id]['policy'] = ['lists'=>['media'=>['domain'=>['full:media.example']]], 'bindings'=>[$actor=>[['list'=>'media','action'=>'warp']]]];
+$candidate = $full;
+$bot->ensureExitNodes($candidate, $named);
+$selected = array_values(array_filter($candidate['routing']['rules'], static fn($rule) =>
+    in_array('alice', $rule['user'] ?? [], true) && in_array('full:media.example', $rule['domain'] ?? [], true)));
+$check(count($selected) === 1 && str_starts_with($selected[0]['outboundTag'] ?? '', 'vpnbot-exit-resolve-'),
+    'сохранение выбора WARP по имени до обязательной проверки глобального IP-блока');
+
 
 // Ручное разрешение до блок-листа сохраняется только для обычного клиента.
 array_unshift($full['routing']['rules'], ['type' => 'field', 'ruleTag' => 'early-direct', 'outboundTag' => 'direct', 'network' => 'tcp,udp']);
@@ -296,6 +306,22 @@ foreach ([false,true] as $full) foreach (['si','s','cl'] as $type) {
 }
 $check($bot->exitWarpSubscriptionPolicy($seed['inbounds'][0]['settings']['clients'][1], $p) === null, 'unassigned subscription is untouched');
 
+$splitClient = $seed['inbounds'][0]['settings']['clients'][1];
+$splitClient['exit_full'] = $id;
+$splitClient['exit_main'] = ['Банки'];
+$check($bot->exitWarpSubscriptionPolicy($splitClient, $p) === ['all'=>true,'entries'=>[]],
+    'main split subscription leaves the destination decision to the controller');
+
+$lost = $base;
+$splitClient['exit_warp'] = [$id];
+$lost['inbounds'][0]['settings']['clients'] = [$splitClient];
+$bot->ensureExitNodes($lost, ['node_policy_lists'=>['Банки'=>['domain'=>['full:bank.test']]]]);
+$bot->ensureWgGuard($lost);
+$lostRules = array_column($lost['routing']['rules'], null, 'ruleTag');
+$check(!isset($lostRules[Bot::EXIT_UNAVAILABLE . 'warp-missing'])
+    && (bool) array_filter($lostRules, static fn($r)=>str_starts_with($r['ruleTag']??'', 'vpnbot:exit:main-unavailable-')),
+    'missing default WARP node keeps explicit main exceptions and blocks remainder');
+
 // Ordered WARP groups fail closed, recover with hold-down, and skip drained or obsolete members.
 $second = 'deedfac1';
 $gid = 'eeaa7711';
@@ -335,5 +361,54 @@ $bot->ensureExitNodes($both,$policy);
 $rules=array_column($both['routing']['rules'],null,'ruleTag');
 $check($rules["vpnbot:exit:$id:warp-dns"]['outboundTag']===Bot::EXIT_TAG.'health-'.$id
     && $rules["vpnbot:exit:$id:warp-domain"]['outboundTag']===$wt,'only a service probe uses the diagnostic identity');
+// A group must select the egress before deciding which DNS server checks a name.
+$guardPac = ['exits'=>[$id=>$node, $second=>$node, $gid=>$group]];
+unset($guardPac['exits'][$second]['managed_profile']);
+$guard = ['revision'=>str_repeat('a',32), 'controller_ips'=>['11.77.1.0/24'], 'lists'=>[], 'bindings'=>[]];
+$guardPac['exits'][$id]['policy'] = $guard;
+$guardSeed = $base;
+$guardSeed['routing']['domainStrategy'] = 'IPIfNonMatch';
+$guardSeed['routing']['rules'][] = ['type'=>'field','ruleTag'=>'vpnbot:routes:block:ip','ip'=>$guard['controller_ips'],'outboundTag'=>'block'];
+$guardSeed['inbounds'][0]['settings']['clients'][0]['exit_full'] = $gid;
+$guardSeed['inbounds'][0]['settings']['clients'][0]['exit'] = [$gid];
+foreach (['auto',$id,$second] as $choice) {
+    $c = $guardSeed;
+    $guardPac['exits'][$gid]['choice'] = $choice;
+    $bot->ensureExitNodes($c,$guardPac);
+    $byTag = array_column($c['outbounds'],null,'tag');
+    $rules = array_column($c['routing']['rules'],null,'ruleTag');
+    $health = $rules["vpnbot:exit:$id:connectivity"] ?? [];
+    $check(($health['inboundTag'] ?? []) === [Bot::EXIT_PROBE_TAG.$id] && ($health['domain'] ?? []) === ['full:www.gstatic.com']
+        && ($health['network'] ?? '') === 'tcp' && ($health['port'] ?? '') === '443'
+        && ManagedNodeProfile::credential($byTag[$health['outboundTag']]) !== ManagedNodeProfile::credential($byTag[Bot::EXIT_TAG.$id]),
+        'a revision-bound connectivity check is restricted to the local probe and its HTTPS destination');
+    $route = $rules["vpnbot:exit:$gid:full"];
+    if ($choice === 'auto') {
+        $balancers = array_column($c['routing']['balancers'],null,'tag');
+        $members = $balancers[$route['balancerTag'] ?? '']['selector'] ?? [];
+        $bridge = array_values(array_diff($members,[Bot::EXIT_TAG.$id]))[0] ?? '';
+        $peer = array_column($c['inbounds'],null,'tag')[$bridge] ?? [];
+        $server = $byTag[$bridge]['settings']['servers'][0] ?? [];
+        $check(($peer['listen']??'')==='127.0.0.1' && ($server['address']??'')==='127.0.0.1'
+            && $server['port']===$peer['port'] && strlen($server['password'])===64
+            && $peer['settings']['clients'][0]['password']===$server['password'], 'group health and client connections share an authenticated local IPv4 hop');
+        $check(in_array(Bot::EXIT_TAG.$id,$members,true) && count($members)===2
+            && !in_array(Bot::EXIT_TAG.$second,$members,true), 'mixed group preserves managed DNS and checks unmanaged destinations');
+    } elseif ($choice === $id) {
+        $check(($route['outboundTag']??'') === Bot::EXIT_TAG.$id, 'manual managed member receives the original name');
+    } else {
+        $hop = $route['outboundTag']??'';
+        $check(($byTag[$hop]['targetStrategy']??'')==='ForceIP'
+            && in_array($hop,$rules['vpnbot:exit:resolved-block']['inboundTag']??[],true), 'manual unmanaged member rechecks the resolved IP');
+    }
+    $check(ManagedNodeProfile::credential($byTag[Bot::EXIT_TAG.$id]) !== ManagedNodeProfile::credential($profile['outbound']),
+        'group member authenticates the confirmed list revision');
+}
+$stalePac=$guardPac;
+$stalePac['exits'][$id]['policy']['controller_ips']=[];
+$c=$guardSeed;
+$bot->ensureExitNodes($c,$stalePac);
+$byTag=array_column($c['outbounds'],null,'tag');
+$check($byTag[Bot::EXIT_TAG.$id]['protocol']==='blackhole' && $byTag[$wt]['protocol']==='blackhole', 'stale ordinary and WARP group members are closed');
 if ($failures) { fwrite(STDERR, "exit_nodes_test FAIL:\n - " . implode("\n - ", $failures) . "\n"); exit(1); }
 echo "exit_nodes_test OK\n";

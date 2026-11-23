@@ -45,7 +45,7 @@ trait BotExitNodes
     public const EXIT_RULESET_MAX_ENTRIES = 200000;
     // Версия разбора наборов: при её смене кэш разбирается заново, даже если
     // файл источника не изменился.
-    public const EXIT_RULESET_PARSER = 3;
+    public const EXIT_RULESET_PARSER = 4;
     // Домены YouTube без зависимости от geosite.dat (кнопка «YouTube»).
     public const EXIT_YOUTUBE = ['domain:youtube.com', 'domain:googlevideo.com', 'domain:ytimg.com', 'domain:ggpht.com',
         'domain:youtu.be', 'domain:youtube-nocookie.com', 'domain:youtubei.googleapis.com', 'domain:youtubekids.com',
@@ -333,8 +333,10 @@ trait BotExitNodes
     /** A split client must send node destinations to its authenticated VPN connection. */
     public function exitWarpSubscriptionPolicy(array $client, array $pac): ?array
     {
-        if (empty($client['exit_warp']) || !empty($client['exit_relay'])) return null;
+        if (!empty($client['exit_relay'])) return null;
         $full = self::exitFullId($client);
+        if ($full !== '-' && !empty($client['exit_main'])) return ['all' => true, 'entries' => []];
+        if (empty($client['exit_warp'])) return null;
         if ($full !== '-') return self::exitWarpSelected($client, $full) ? ['all' => true, 'entries' => []] : null;
         $ids = array_intersect(self::exitClientNodes($client), (array) $client['exit_warp']);
         if (!$ids) return null;
@@ -587,6 +589,7 @@ trait BotExitNodes
     {
         $p = $p ?? $this->getPacConf();
         $this->exitRestoreFamilyPolicy($c);
+        $this->exitMainDns($c, []);
         $own = static fn($tag) => str_starts_with((string) $tag, self::EXIT_TAG);
         $c['outbounds'] = array_values(array_filter($c['outbounds'] ?? [], static fn($o) => !$own($o['tag'] ?? '')));
         $c['inbounds'] = array_values(array_filter($c['inbounds'] ?? [], static fn($i) => !$own($i['tag'] ?? '')));
@@ -609,14 +612,18 @@ trait BotExitNodes
         }
 
         $probe = $rules = $fullRules = $unavailable = [];
-        $balanced = [];
+        $balanced = $groupMembers = [];
         $ipv6 = $this->exitIpv6Attached();
-        $relay = $fullUsers = $warpUsers = [];
+        $relay = $fullUsers = $warpUsers = $mainExceptions = [];
         foreach ($c['inbounds'][0]['settings']['clients'] ?? [] as $client) {
             if (!is_array($client)) continue;
             $full = self::exitFullId($client);
             if ($full !== '-' && empty($client['off']) && is_string($client['email'] ?? null) && $client['email'] !== '') {
                 $fullUsers[$full][] = $client['email'];
+                if ($full !== 'invalid' && !empty($client['exit_main']) && is_array($client['exit_main'])) {
+                    $mainExceptions[$client['email']] = $client['exit_main'];
+                }
+                $policyOwners[$full][$client['email']] = self::nodePolicyBotScope($client);
             }
             if (empty($client['off']) && empty($client['exit_relay']) && is_string($client['email'] ?? null) && $client['email'] !== '') {
                 foreach ($full === '-' ? self::exitClientNodes($client) : [$full] as $id) {
@@ -637,9 +644,36 @@ trait BotExitNodes
                 if (($rule['ruleTag'] ?? '') === 'vpnbot:routes:block:ip') $blockedIps = array_merge($blockedIps, (array) ($rule['ip'] ?? []));
             }
         }
+        if ($mainExceptions) {
+            $catalog = $this->nodePolicyCatalog($p);
+            $deny = [self::DOCKER_NET, '::/0'];
+            foreach ($c['routing']['rules'] as $rule) {
+                if (($rule['ruleTag'] ?? '') === 'vpnbot:routes:block:ip') {
+                    $deny = array_merge($deny, $rule['ip'] ?? []);
+                }
+            }
+            $domains = $owners = [];
+            foreach ($mainExceptions as $email => $names) {
+                foreach ($names as $name) {
+                    if (is_string($name) && isset($catalog[$name])) $owners[$name][] = self::exitExactUser((string)$email);
+                }
+            }
+            foreach ($owners as $name => $users) {
+                $this->exitMainRules($c, $fullRules, $name, $users, $catalog[$name], $deny, $domains);
+            }
+            $this->exitMainDns($c, array_keys($domains));
+        }
+        $nodes = $this->exitNodes($p);
+        $controllerIps = [];
+        if (array_filter($nodes, static fn($node) => isset($node['managed_profile']))) {
+            try {
+                $controllerIps = $this->controllerBlockedIps($c);
+            } catch (Throwable $error) {
+                $controllerIps = null;
+            }
+        }
         $index = 0;
         unset($c['_vpnbot_amnezia']);
-        $nodes = $this->exitNodes($p);
         foreach ($nodes as $id => $node) {
             $id = (string) $id;
             $port = self::EXIT_PROBE_PORT + $index++;
@@ -648,6 +682,10 @@ trait BotExitNodes
             $warpFull = array_values(array_intersect($fullUsers[$id] ?? [], $warpEmails));
             $warpList = array_values(array_diff($warpEmails, $warpFull));
             $outbound = $node['enabled'] ? $this->exitNodeOutbound($node) : null;
+            $policy = $node['policy'] ?? [];
+            $delegate = isset($node['managed_profile']) && $controllerIps !== [];
+            $confirmed = $delegate && $controllerIps !== null && !empty($policy['revision'])
+                && ($policy['controller_ips'] ?? []) === $controllerIps;
             $warpTag = 'block';
             if ($outbound && $node['kind'] === 'remote' && isset($node['managed_profile']['warp_uuid'])) {
                 try {
@@ -661,7 +699,15 @@ trait BotExitNodes
                         $probeTag = self::EXIT_TAG . 'health-' . $id;
                         $c['outbounds'][] = $diagnostic + ['tag' => $probeTag];
                     }
-                    $c['outbounds'][] = $warp + ['tag' => $warpTag];
+                    if ($delegate) {
+                        if ($confirmed) {
+                            $secured = self::exitPolicyOutbound($outbound, 'controller', 'warp', $policy);
+                            if (($node['managed_profile']['channel'] ?? '') === 'amnezia') {
+                                ManagedNodeProfile::setEndpoint($secured, '127.0.0.1', 10920 + $index - 1);
+                            }
+                        } else $secured = ['protocol' => 'blackhole'];
+                        $c['outbounds'][] = $secured + ['tag' => $warpTag];
+                    } else $c['outbounds'][] = $warp + ['tag' => $warpTag];
                     $c['inbounds'][] = ['tag' => $warpTag, 'listen' => '127.0.0.1', 'port' => $port + self::EXIT_MAX,
                         'protocol' => 'trojan', 'settings' => ['clients' => [[
                             'password' => self::exitWarpProbePassword($id, $node['managed_profile']['warp_uuid']),
@@ -681,8 +727,45 @@ trait BotExitNodes
             if ($node['kind'] === 'group' && $node['enabled'] && $warpEmails) {
                 $warpTag = $this->exitWarpGroupTarget($node, $nodes, $this->exitStatus(), time());
             }
+            foreach ($fullUsers[$id] ?? [] as $email) {
+                $scope = $policyOwners[$id][$email];
+                $personal = $policy['bindings'][$scope] ?? [];
+                foreach (array_merge($policy['bindings']['all'] ?? [], $personal) as $row) {
+                    if ($row['action'] !== 'block') continue;
+                    foreach ($policy['lists'][$row['list']] ?? [] as $kind => $entries) {
+                        if (!$entries || !in_array($kind, ['domain', 'ip'], true)) continue;
+                        if ($kind === 'domain') $entries = array_map(static fn($d) => str_starts_with($d, 'keyword:') ? substr($d, 8) : $d, $entries);
+                        $fullRules[] = ['type' => 'field', 'ruleTag' => self::EXIT_RULE . 'deny-' . count($fullRules),
+                            'user' => [self::exitExactUser($email)], $kind => $entries, 'outboundTag' => 'block'];
+                    }
+                }
+                if (!$personal) continue;
+                $mode = in_array($email, $warpFull, true) ? 'warp' : 'direct';
+                $roles = [];
+                foreach ($personal as $n => $assignment) {
+                    $match = $policy['lists'][$assignment['list']]['domain'] ?? [];
+                    if ($assignment['action'] !== 'block' && $match) {
+                        $roles['row-' . $n] = array_map(static fn($d) => str_starts_with($d, 'keyword:') ? substr($d, 8) : $d, $match);
+                    }
+                }
+                $roles[$mode] = [];
+                foreach ($roles as $role => $domains) {
+                    $target = 'block';
+                    if ((!$delegate || $confirmed) && $outbound && in_array($outbound['protocol'], ['trojan', 'vless'], true)) {
+                        $target = self::EXIT_TAG . 'subject-' . $id . '-' . $scope . '-' . $role;
+                        $relay = self::exitPolicyOutbound($outbound, $scope, $role, $policy);
+                        if (($node['managed_profile']['channel'] ?? '') === 'amnezia') ManagedNodeProfile::setEndpoint($relay, '127.0.0.1', 10920 + $index - 1);
+                        $c['outbounds'][] = $relay + ['tag' => $target];
+                    }
+                    $this->exitFullRules($c, $fullRules, "$id-$scope-$role", $node, [$email], ['outboundTag' => $target], !$delegate && (bool) $blockedIps);
+                    if ($domains) $fullRules[array_key_last($fullRules)]['domain'] = $domains;
+                }
+                $fullUsers[$id] = array_values(array_diff($fullUsers[$id], [$email]));
+                $warpFull = array_values(array_diff($warpFull, [$email]));
+                if (!$fullUsers[$id]) unset($fullUsers[$id]);
+            }
             if ($warpFull) {
-                $this->exitFullRules($c, $fullRules, 'warp-' . $id, $node, $warpFull, ['outboundTag' => $warpTag], (bool) $blockedIps);
+                $this->exitFullRules($c, $fullRules, 'warp-' . $id, $node, $warpFull, ['outboundTag' => $warpTag], !$delegate && $node['kind'] !== 'group' && (bool) $blockedIps);
                 $fullUsers[$id] = array_values(array_diff($fullUsers[$id], $warpFull));
                 if (!$fullUsers[$id]) unset($fullUsers[$id]);
             }
@@ -716,6 +799,21 @@ trait BotExitNodes
             }
             $tag = self::EXIT_TAG . $id;
             $ipv6 = $ipv6 || $node['kind'] === 'ipv6';
+            $probeTarget = $tag;
+            if ($delegate) {
+                $probeTarget = self::EXIT_TAG . 'health-direct-' . $id;
+                $c['outbounds'][] = $outbound + ['tag' => $probeTarget];
+                if ($confirmed && in_array($outbound['protocol'], ['trojan', 'vless'], true)) {
+                    $healthTag = self::EXIT_TAG . 'health-check-' . $id;
+                    $c['outbounds'][] = self::exitPolicyOutbound($outbound, 'controller', 'health', $policy) + ['tag' => $healthTag];
+                    $probe[] = ['type' => 'field', 'ruleTag' => self::EXIT_RULE . $id . ':connectivity',
+                        'inboundTag' => [self::EXIT_PROBE_TAG . $id], 'network' => 'tcp', 'port' => '443',
+                        'domain' => ['full:www.gstatic.com'], 'outboundTag' => $healthTag];
+                }
+                $outbound = $confirmed && in_array($outbound['protocol'], ['trojan', 'vless'], true)
+                    ? self::exitPolicyOutbound($outbound, 'controller', 'direct', $policy)
+                    : ['protocol' => 'blackhole'];
+            }
             $c['outbounds'][] = $outbound + ['tag' => $tag];
             // Вход проверки: узел напрямую, без запасного пути — «Проверить»
             // должен видеть сам узел, а не обход.
@@ -744,9 +842,45 @@ trait BotExitNodes
                 }
             }
             $probe[] = ['type' => 'field', 'ruleTag' => self::EXIT_RULE . $id . ':probe',
-                'inboundTag' => [self::EXIT_PROBE_TAG . $id]] + ($groupProbe ?? ['outboundTag' => $tag]);
+                'inboundTag' => [self::EXIT_PROBE_TAG . $id]] + ($groupProbe ?? ['outboundTag' => $probeTarget]);
             if (isset($fullUsers[$id])) {
-                $this->exitFullRules($c, $fullRules, $id, $node, $fullUsers[$id], $groupProbe ?? ['outboundTag' => $tag], (bool) $blockedIps);
+                $target = $groupProbe ?? ['outboundTag' => $tag];
+                $resolve = !$delegate && (bool) $blockedIps;
+                if ($resolve && $node['kind'] === 'group' && $members) {
+                    // Managed members check the final IP after their own DNS. Unmanaged
+                    // members need a controller-side lookup after the balancer chooses.
+                    $guardedMembers = [];
+                    foreach ($node['members'] as $member) {
+                        $memberTag = self::EXIT_TAG . $member;
+                        if (!in_array($memberTag, $members, true)) continue;
+                        if (isset($nodes[$member]['managed_profile'])) $guardedMembers[$memberTag] = $memberTag;
+                    }
+                    if ($guardedMembers) {
+                        $resolve = false;
+                        foreach (array_diff($members, $guardedMembers) as $memberTag) {
+                            if ($node['choice'] !== 'auto' && ($target['outboundTag'] ?? '') !== $memberTag) continue;
+                            if ($node['choice'] !== 'auto') {
+                                $guardedMembers[$memberTag] = $this->exitResolvedHop($c, $fullRules, $id . '-' . $memberTag, ['outboundTag' => $memberTag]);
+                                continue;
+                            }
+                            if (!isset($groupMembers[$memberTag])) {
+                                $slot = array_search($memberTag, array_map(static fn($key) => self::EXIT_TAG . $key, array_keys($nodes)), true);
+                                $groupMembers[$memberTag] = $this->exitGroupMemberHop($c, $fullRules, $memberTag, $slot);
+                            }
+                            $guardedMembers[$memberTag] = $groupMembers[$memberTag];
+                        }
+                        if (isset($target['outboundTag'], $guardedMembers[$target['outboundTag']])) {
+                            $target['outboundTag'] = $guardedMembers[$target['outboundTag']];
+                        } elseif ($node['choice'] === 'auto' && count(array_diff($members, $guardedMembers))) {
+                            $selectors = array_values($guardedMembers);
+                            $balanced = array_merge($balanced, $selectors);
+                            $c['routing']['balancers'][] = ['tag' => $tag . '-full', 'selector' => $selectors,
+                                'strategy' => ['type' => 'leastPing'], 'fallbackTag' => 'block'];
+                            $target = ['balancerTag' => $tag . '-full'];
+                        }
+                    }
+                }
+                $this->exitFullRules($c, $fullRules, $id, $node, $fullUsers[$id], $target, $resolve);
                 unset($fullUsers[$id]);
             }
             $emails = array_map([self::class, 'exitExactUser'], array_values(array_diff($this->exitNodeEmails($c, $id, true), $warpEmails)));
@@ -774,9 +908,19 @@ trait BotExitNodes
             foreach (['domain', 'ip'] as $field) if ($x[$field]) $rules[] = ['type' => 'field', 'ruleTag' => self::EXIT_RULE . "$id:$field",
                 'user' => $emails, $field => $x[$field]] + $target;
         }
-        if ($warpUsers) $unavailable[] = ['type' => 'field', 'ruleTag' => self::EXIT_UNAVAILABLE . 'warp-missing',
-            'user' => array_values(array_unique(array_map([self::class, 'exitExactUser'], array_merge(...array_values($warpUsers))))), 'outboundTag' => 'block'];
+        $missingWarp = array_diff(array_merge([], ...array_values($warpUsers)), array_keys($mainExceptions));
+        if ($missingWarp) $unavailable[] = ['type' => 'field', 'ruleTag' => self::EXIT_UNAVAILABLE . 'warp-missing',
+            'user' => array_values(array_unique(array_map([self::class, 'exitExactUser'], $missingWarp))), 'outboundTag' => 'block'];
         // A disabled, missing or unreadable full exit must never release a user to direct.
+        foreach ($fullUsers as $id => $emails) {
+            foreach ($emails as $email) {
+                if (!isset($mainExceptions[$email])) continue;
+                $fullRules[] = ['type' => 'field', 'ruleTag' => self::EXIT_RULE . 'main-unavailable-' . count($fullRules),
+                    'user' => [self::exitExactUser($email)], 'outboundTag' => 'block'];
+                $fullUsers[$id] = array_values(array_diff($fullUsers[$id], [$email]));
+            }
+            if (!$fullUsers[$id]) unset($fullUsers[$id]);
+        }
         if ($fullUsers) $unavailable[] = ['type' => 'field', 'ruleTag' => self::EXIT_UNAVAILABLE . 'full',
             'user' => array_map([self::class, 'exitExactUser'], array_merge(...array_values($fullUsers))), 'outboundTag' => 'block'];
         $rules = array_merge($unavailable, $rules);
@@ -822,6 +966,52 @@ trait BotExitNodes
         }
     }
 
+    /** Match only local-exception names. Never retry a filtered lookup through the system resolver. */
+    private function exitMainDns(array &$c, array $domains): void
+    {
+        $tag = 'vpnbot-main-list-dns';
+        if (isset($c['dns']['servers'])) {
+            $servers = array_values(array_filter($c['dns']['servers'],
+                static fn($server) => !is_array($server) || ($server['tag'] ?? '') !== $tag));
+            if (count($servers) !== count($c['dns']['servers'])) {
+                $c['dns']['servers'] = $servers;
+                if (!empty($c['_vpnbot_main_implicit_dns']) && $servers === ['localhost']) unset($c['dns']['servers']);
+                if (!$c['dns']) unset($c['dns']);
+            }
+        }
+        unset($c['_vpnbot_main_implicit_dns']);
+        if (!$domains) return;
+        if (!isset($c['dns']['servers'])) {
+            $c['_vpnbot_main_implicit_dns'] = true;
+            $c['dns']['servers'] = ['localhost'];
+        }
+        array_unshift($c['dns']['servers'], ['address' => 'tcp+local://10.10.0.5', 'tag' => $tag, 'domains' => $domains,
+            'skipFallback' => true, 'finalQuery' => true, 'queryStrategy' => 'UseIPv4']);
+    }
+
+    /** Resolve a local exception once. Apply the main IP deny list to the actual address used for egress. */
+    private function exitMainRules(array &$c, array &$rules, string $name, array $users, array $list, array $deny, array &$domains): void
+    {
+        $key = self::exitEntryKey($name);
+        foreach (['ip', 'domain'] as $kind) {
+            $entries = $list[$kind] ?? [];
+            if (!$entries) continue;
+            if ($kind === 'domain') {
+                $entries = array_map(static fn($entry) => str_starts_with($entry, 'keyword:') ? substr($entry, 8) : $entry, $entries);
+                foreach ($entries as $entry) $domains[$entry] = true;
+            }
+            $tag = self::EXIT_TAG . "main-$key-$kind";
+            $label = self::EXIT_RULE . "main-$key-$kind";
+            $source = ['type' => 'field', 'inboundTag' => [$tag]];
+            $c['outbounds'][] = ['tag' => $tag, 'protocol' => 'loopback', 'targetStrategy' => 'ForceIPv4', 'settings' => ['inboundTag' => $tag]];
+            $rules[] = $source + ['ruleTag' => "$label-deny", 'ip' => $deny, 'outboundTag' => 'block'];
+            $rules[] = $source + ['ruleTag' => "$label-direct", 'ip' => $kind === 'ip' ? array_values($entries) : ['0.0.0.0/0'], 'outboundTag' => 'direct'];
+            $rules[] = $source + ['ruleTag' => "$label-unresolved", 'outboundTag' => 'block'];
+            $rules[] = ['type' => 'field', 'ruleTag' => $label, 'user' => $users,
+                $kind => array_values($entries), 'outboundTag' => $tag];
+        }
+    }
+
     private function insertFullExitRules(array &$c, int $position, array $fullRules, array $fullEmails, array $blockedIps): void
     {
         // Preserve early custom routes for other users. A pinned user must
@@ -853,6 +1043,47 @@ trait BotExitNodes
         array_splice($c['routing']['rules'], $insert, 0, array_merge($guards, $fullRules));
     }
 
+    private static function exitPolicyOutbound(array $outbound, string $loginScope, string $role, array $policy): array
+    {
+        $context = "vpnbot/policy/$loginScope/$role" . (isset($policy['revision']) ? '/' . $policy['revision'] : '');
+        $digest = hash_hmac('sha256', $context, ManagedNodeProfile::credential($outbound), true);
+        $digest[6] = chr((ord($digest[6]) & 15) | 64);
+        $digest[8] = chr((ord($digest[8]) & 63) | 128);
+        $hex = bin2hex(substr($digest, 0, 16));
+        $uuid = vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split($hex, 4));
+        return ManagedNodeProfile::warpOutbound($outbound, $uuid);
+    }
+
+    /** Xray's observatory dials outbounds without the incoming connection used by ForceIP.
+     * Re-enter through a private, authenticated listener so probes and clients run the same IP checks.
+     */
+    private function exitGroupMemberHop(array &$c, array &$rules, string $member, int $slot): string
+    {
+        $tag = self::EXIT_TAG . 'group-member-' . $slot;
+        $port = self::EXIT_PROBE_PORT + 2 * self::EXIT_MAX + $slot;
+        $secret = (string) ($this->key ?? '');
+        $login = $secret !== '' ? hash_hmac('sha256', 'vpnbot/group-member/' . $member, $secret) : bin2hex(random_bytes(32));
+        $c['inbounds'][] = ['tag' => $tag, 'listen' => '127.0.0.1', 'port' => $port, 'protocol' => 'trojan',
+            'settings' => ['clients' => [['password' => $login]]]];
+        $c['outbounds'][] = ['tag' => $tag, 'protocol' => 'trojan',
+            'settings' => ['servers' => [['address' => '127.0.0.1', 'port' => $port, 'password' => $login]]]];
+        $hop = $this->exitResolvedHop($c, $rules, 'member-' . $slot, ['outboundTag' => $member]);
+        $rules[] = ['type' => 'field', 'ruleTag' => self::EXIT_RULE . 'member-' . $slot,
+            'inboundTag' => [$tag], 'outboundTag' => $hop];
+        return $tag;
+    }
+
+    private function exitResolvedHop(array &$c, array &$rules, string $id, array $target): string
+    {
+        $hop = self::EXIT_RESOLVE_TAG . $id;
+        $c['outbounds'][] = ['tag' => $hop, 'protocol' => 'loopback', 'targetStrategy' => 'ForceIP',
+            'settings' => ['inboundTag' => $hop]];
+        $rules[] = ['type' => 'field', 'ruleTag' => self::EXIT_RULE . "$id:resolved", 'inboundTag' => [$hop],
+            'ip' => ['0.0.0.0/0', '::/0']] + $target;
+        $rules[] = ['type' => 'field', 'ruleTag' => self::EXIT_RULE . "$id:unresolved", 'inboundTag' => [$hop], 'outboundTag' => 'block'];
+        return $hop;
+    }
+
     private function exitFullRules(array &$c, array &$rules, string $id, array $node, array $emails, array $fullTarget, bool $checkIp): void
     {
         // A full route never uses the regular node's direct fallback.
@@ -863,13 +1094,7 @@ trait BotExitNodes
         if ($checkIp && ($fullTarget['outboundTag'] ?? '') !== 'block') {
             // A user-only rule wins before IPIfNonMatch resolves a domain.
             // Resolve only this user's destination, then re-enter below the block list.
-            $hop = self::EXIT_RESOLVE_TAG . $id;
-            $c['outbounds'][] = ['tag' => $hop, 'protocol' => 'loopback', 'targetStrategy' => 'ForceIP',
-                'settings' => ['inboundTag' => $hop]];
-            $rules[] = ['type' => 'field', 'ruleTag' => self::EXIT_RULE . "$id:resolved", 'inboundTag' => [$hop],
-                'ip' => ['0.0.0.0/0', '::/0']] + $fullTarget;
-            $rules[] = ['type' => 'field', 'ruleTag' => self::EXIT_RULE . "$id:unresolved", 'inboundTag' => [$hop], 'outboundTag' => 'block'];
-            $fullTarget = ['outboundTag' => $hop];
+            $fullTarget = ['outboundTag' => $this->exitResolvedHop($c, $rules, $id, $fullTarget)];
         }
         $rules[] = ['type' => 'field', 'ruleTag' => self::EXIT_RULE . "$id:full", 'user' => $users] + $fullTarget;
     }
@@ -881,8 +1106,13 @@ trait BotExitNodes
      */
     public function applyExitNodes(callable $edit, bool $renewSession = false): string
     {
-        return $this->withLock('xray', function () use ($edit, $renewSession) {
-            return $this->withLock('pac', function () use ($edit, $renewSession) {
+        return $this->applyExitTransaction($edit, $renewSession);
+    }
+
+    private function applyExitTransaction(callable $edit, bool $renewSession, ?callable $needsReload = null): string
+    {
+        return $this->withLock('xray', function () use ($edit, $renewSession, $needsReload) {
+            return $this->withLock('pac', function () use ($edit, $renewSession, $needsReload) {
                 $p = $this->getPacConf();
                 $x = $this->getXray();
                 if (!is_array($p) || !is_array($x)) return 'exit save failed';
@@ -892,6 +1122,7 @@ trait BotExitNodes
                 if (is_string($error) && $error !== '') return $error;
                 if ($p === $oldPac && $x === $oldXray && !$renewSession) return '';
                 if ($p !== $oldPac && $this->setPacConf($p) === false) return 'exit save failed';
+                if ($needsReload !== null && !$needsReload($x)) return '';
                 if ($this->restartXray($x) === false) {
                     if ($p !== $oldPac && $this->setPacConf($oldPac) === false) throw new RuntimeException($this->t('Не удалось восстановить настройки узлов выхода', 'Could not restore exit-node settings'));
                     return 'exit check failed';
@@ -1250,8 +1481,29 @@ trait BotExitNodes
         return $code === 0 && rename("$file.safe", $file);
     }
 
+    private function exitMrsDomainEntry(string $entry): ?string
+    {
+        $inclusive = str_starts_with($entry, '+.');
+        $children = str_starts_with($entry, '.');
+        $domain = $inclusive ? substr($entry, 2) : ($children ? substr($entry, 1) : $entry);
+        if (!$children && !str_contains($domain, '*')) return ($inclusive ? 'domain:' : 'full:') . $domain;
+
+        $labels = [];
+        foreach (explode('.', $domain) as $label) {
+            if ($label === '*') {
+                $labels[] = '[^.]+';
+            } else {
+                $label = $this->hostCanon($label);
+                if (!preg_match('~^[a-z0-9_-]{1,63}$~iD', $label)) return null;
+                $labels[] = preg_quote($label);
+            }
+        }
+        $start = $inclusive ? '^(.+\.)?' : ($children ? '^.+\.' : '^');
+        return 'regexp:' . $start . implode('\.', $labels) . '$';
+    }
+
     /** Разложить содержимое набора в записи маршрута. null — формат не разобран. */
-    public function exitRulesetConvert(string $binary, string $format, string $behavior, bool &$unsupported = false): ?array
+    public function exitRulesetConvert(string $binary, string $format, string $behavior, bool &$unsupported = false, bool $strict = false): ?array
     {
         $unsupported = false;
         $dir = sys_get_temp_dir() . '/exit-ruleset-' . bin2hex(random_bytes(6));
@@ -1269,7 +1521,10 @@ trait BotExitNodes
                 foreach ($json['rules'] as $rule) {
                     if (!is_array($rule) || isset($rule['type'])) continue; // логические правила не раскладываются
                     foreach ((array) ($rule['domain'] ?? []) as $v) $entries[] = 'full:' . $v;
-                    foreach ((array) ($rule['domain_suffix'] ?? []) as $v) $entries[] = 'domain:' . ltrim((string) $v, '.');
+                    foreach ((array) ($rule['domain_suffix'] ?? []) as $v) {
+                        // In SRS a leading dot matches subdomains only.
+                        $entries[] = str_starts_with($v, '.') ? 'regexp:.+' . preg_quote($v) . '$' : 'domain:' . $v;
+                    }
                     foreach ((array) ($rule['domain_keyword'] ?? []) as $v) $entries[] = 'keyword:' . $v;
                     foreach ((array) ($rule['domain_regex'] ?? []) as $v) $entries[] = 'regexp:' . $v;
                     foreach ((array) ($rule['ip_cidr'] ?? []) as $v) $ips[] = (string) $v;
@@ -1282,19 +1537,26 @@ trait BotExitNodes
                     $line = trim($line);
                     if ($line === '' || str_starts_with($line, '#')) continue;
                     if ($behavior === 'ipcidr') $ips[] = $line;
-                    elseif (str_starts_with($line, '+.')) $entries[] = 'domain:' . substr($line, 2);
-                    elseif (str_starts_with($line, '*.')) $entries[] = 'regexp:^[^.]+\.' . preg_quote(substr($line, 2), '') . '$';
-                    elseif (str_starts_with($line, '.')) $entries[] = 'domain:' . substr($line, 1);
-                    else $entries[] = 'full:' . $line;
+                    else {
+                        $entry = $this->exitMrsDomainEntry($line);
+                        if ($entry !== null) $entries[] = $entry;
+                        elseif ($strict) return null;
+                    }
                 }
             }
             // Значение из поля подсетей — только IP/CIDR: строка «bad» иначе
             // прошла бы как домен-суффикс.
-            foreach ($ips as $ip) if ($this->classifyRouteEntry($ip)['kind'] === 'ip') $entries[] = $ip;
+            foreach ($ips as $ip) {
+                if ($this->classifyRouteEntry($ip)['kind'] === 'ip') $entries[] = $ip;
+                elseif ($strict) return null;
+            }
             $result = [];
             foreach ($entries as $entry) {
                 $entry = (string) $entry;
-                if (!$this->routeEntryUsable($this->classifyRouteEntry($entry))) continue;
+                if (!$this->routeEntryUsable($this->classifyRouteEntry($entry))) {
+                    if ($strict) return null;
+                    continue;
+                }
                 $result[$entry] = true;
                 if (count($result) > self::EXIT_RULESET_MAX_ENTRIES) return null;
             }
@@ -1671,7 +1933,7 @@ trait BotExitNodes
         if (!$t['since']) return $this->t('Трафик через узел: ещё не подсчитан (обновляется раз в минуту)', 'Traffic through the node: not counted yet (updated once a minute)');
         $line = $this->t('Трафик через узел с ', 'Traffic through the node since ') . date('d.m.Y H:i', $t['since']) . ': ↑' . $this->getBytes($t['up']) . ' ↓' . $this->getBytes($t['down']);
         if (!empty($t['modes']['since'])) {
-            $line .= "\n" . $this->t('По выходам с ', 'By egress since ') . date('d.m.Y H:i', $t['modes']['since']);
+            $line .= "\n" . $this->t('По каналам основного сервера с ', 'By controller channel since ') . date('d.m.Y H:i', $t['modes']['since']);
             foreach (['node' => $this->t('Обычный', 'Normal'), 'warp' => 'WARP'] as $mode => $label) {
                 $line .= "\n" . $label . ' ↑' . $this->getBytes($t['modes'][$mode]['up']) . ' ↓' . $this->getBytes($t['modes'][$mode]['down']);
             }
@@ -2108,7 +2370,7 @@ trait BotExitNodes
             if (empty($p['exits'])) unset($p['exits']);
             foreach ($x['inbounds'][0]['settings']['clients'] ?? [] as $k => $client) {
                 self::exitClearWarp($x['inbounds'][0]['settings']['clients'][$k], $id);
-                if (($client['exit_full'] ?? null) === $id) unset($x['inbounds'][0]['settings']['clients'][$k]['exit_full']);
+                if (($client['exit_full'] ?? null) === $id) unset($x['inbounds'][0]['settings']['clients'][$k]['exit_full'], $x['inbounds'][0]['settings']['clients'][$k]['exit_main']);
                 if (!is_array($client['exit'] ?? null)) continue;
                 $left = array_values(array_diff($client['exit'], [$id]));
                 if ($left) $x['inbounds'][0]['settings']['clients'][$k]['exit'] = $left;
@@ -2721,6 +2983,9 @@ trait BotExitNodes
             $on = in_array($id, self::exitClientNodes($client), true);
             $data[] = [['text' => ($on ? '✅ ' : '⬜ ') . mb_substr((string) ($client['email'] ?? '—'), 0, 40) . (!empty($client['off']) ? ' ⛔' : ''),
                 'callback_data' => "/exitU $id " . self::exitClientKey($client) . " $page"], $this->exitFullButton($client, $id, 'n', $page), ...$this->exitWarpButton($node, $client, $id, 'n', $page)];
+            if (!empty($this->managedNodes()[$id]['status']['named_policy']) && self::exitFullId($client) === $id) {
+                $data[] = [['text' => $this->t('Правила', 'Rules') . ' · ' . $client['email'], 'callback_data' => "/np $id " . self::nodePolicyBotScope($client)]];
+            }
         }
         if ($pages > 1) {
             $nav = [];
@@ -2753,7 +3018,7 @@ trait BotExitNodes
                 $want = $on ?? !in_array($id, $nodes, true);
                 $nodes = $want ? array_values(array_unique([...$nodes, $id])) : array_values(array_diff($nodes, [$id]));
                 if (!$want) self::exitClearWarp($x['inbounds'][0]['settings']['clients'][$i], $id);
-                if (!$want && ($client['exit_full'] ?? null) === $id) unset($x['inbounds'][0]['settings']['clients'][$i]['exit_full']);
+                if (!$want && ($client['exit_full'] ?? null) === $id) unset($x['inbounds'][0]['settings']['clients'][$i]['exit_full'], $x['inbounds'][0]['settings']['clients'][$i]['exit_main']);
                 if ($nodes) $x['inbounds'][0]['settings']['clients'][$i]['exit'] = $nodes;
                 else unset($x['inbounds'][0]['settings']['clients'][$i]['exit']);
             }
@@ -2821,8 +3086,9 @@ trait BotExitNodes
                     || !is_string($client['email'] ?? null) || $client['email'] === '' || self::exitFullKey($client) !== $key) continue;
                 if (self::exitFullId($client) !== $expected) return 'exit stale';
                 $record = &$x['inbounds'][0]['settings']['clients'][$i];
-                if ($id === '-' || $expected === $id) unset($record['exit_full']);
+                if ($id === '-' || $expected === $id) unset($record['exit_full'], $record['exit_main']);
                 else {
+                    unset($record['exit_main']);
                     $record['exit_full'] = $id;
                     $record['exit'] = array_values(array_unique([...self::exitClientNodes($client), $id]));
                 }
@@ -2869,6 +3135,10 @@ trait BotExitNodes
             $key = self::exitClientKey($client);
             $nodes = $this->exitNodes();
             $full = self::exitFullId($client);
+            if ($full !== '-' && $full !== 'invalid') {
+                $data[] = [['text' => $this->t('Через основной сервер по спискам', 'Main server by list'),
+                    'callback_data' => "/xm $full " . self::exitFullKey($client) . ' 0']];
+            }
             if ($full !== '-' && !isset($nodes[$full])) {
                 $text[] = $this->t('Назначенный выход отсутствует. Внешние соединения заблокированы.', 'The assigned exit is missing. External connections are blocked.');
                 $data[] = [['text' => $this->t('Снять недоступный полный выход', 'Clear missing full exit'), 'callback_data' => "/exitFull - " . self::exitFullKey($client) . " $full u $i"]];
@@ -3080,6 +3350,10 @@ trait BotExitNodes
         $r = $x['routing']['rules'][$rule] ?? [];
         $to = (string) ($r['balancerTag'] ?? $r['outboundTag'] ?? '');
         $tag = (string) ($r['ruleTag'] ?? '');
+        if (str_starts_with($to, self::EXIT_TAG . 'main-')) {
+            return $this->t('Через основной сервер по персональному списку, после проверки IP и блокировок.',
+                'Main server by personal list, subject to IP and deny checks.');
+        }
         if (preg_match('~^vpnbot:exit:([a-f0-9]{8}):full$~D', $tag, $match)) {
             $id = $match[1];
             $node = $this->exitNodes($p)[$id] ?? null;

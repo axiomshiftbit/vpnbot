@@ -264,13 +264,23 @@ $check(str_contains($bot->last()[0], 'не подошло') , 'сообщени�
 $srs = json_encode(['version' => 3, 'rules' => [['domain' => ['www.youtube.com'], 'domain_suffix' => ['.googlevideo.com', 'ytimg.com'], 'domain_keyword' => ['youtube'],
     'domain_regex' => ['^yt[0-9]+\\.example$'], 'ip_cidr' => ['203.0.113.0/24', 'bad']]]]);
 $bot->toolOutput = $srs;
-$check($bot->exitRulesetConvert('BIN', 'srs', 'domain') === ['full:www.youtube.com', 'domain:googlevideo.com', 'domain:ytimg.com', 'keyword:youtube', 'regexp:^yt[0-9]+\.example$', '203.0.113.0/24'], '.srs раскладывается, «bad» из ip_cidr отброшен');
+$check($bot->exitRulesetConvert('BIN', 'srs', 'domain') === ['full:www.youtube.com', 'regexp:.+\.googlevideo\.com$', 'domain:ytimg.com', 'keyword:youtube', 'regexp:^yt[0-9]+\.example$', '203.0.113.0/24'], '.srs сохраняет границу поддоменов, «bad» из ip_cidr отброшен');
 $check(end($bot->tools)[0] === 'sing-box' && end($bot->tools)[1] === 'rule-set' && end($bot->tools)[2] === 'decompile', 'для .srs — sing-box rule-set decompile');
 $bot->toolOutput = "198.51.100.0/22\nexample.com\n";
 $check($bot->exitRulesetConvert('BIN', 'mrs', 'ipcidr') === ['198.51.100.0/22'], '.mrs ipcidr: домен отброшен');
 $bot->toolOutput = "+.googlevideo.com\n*.ytimg.com\nwww.youtube.com\n# комментарий\n.ggpht.com\n";
-$check($bot->exitRulesetConvert('BIN', 'mrs', 'domain') === ['domain:googlevideo.com', 'regexp:^[^.]+\.ytimg\.com$', 'full:www.youtube.com', 'domain:ggpht.com'], '.mrs domain раскладывается');
+$check($bot->exitRulesetConvert('BIN', 'mrs', 'domain') === ['domain:googlevideo.com', 'regexp:^[^.]+\.ytimg\.com$', 'full:www.youtube.com', 'regexp:^.+\.ggpht\.com$'], '.mrs сохраняет разницу между поддоменами и самим доменом');
 $check(array_slice(end($bot->tools), 0, 4) === ['mihomo', 'convert-ruleset', 'domain', 'mrs'], 'для .mrs — mihomo convert-ruleset');
+$bot->toolOutput = ".alpha.example\n+.beta.example\n*.gamma.example\napi.*.delta.example\n+.test.*.omega.example\n";
+$unsupported = false;
+$entries = $bot->exitRulesetConvert('BIN', 'mrs', 'domain', $unsupported, true);
+$check(is_array($entries), 'именованный список принимает допустимые маски MRS');
+foreach (['alpha.example' => false, 'a.b.alpha.example' => true, 'beta.example' => true, 'a.b.beta.example' => true,
+    'gamma.example' => false, 'a.gamma.example' => true, 'a.b.gamma.example' => false,
+    'api.eu.delta.example' => true, 'api.a.b.delta.example' => false,
+    'test.eu.omega.example' => true, 'foo.test.eu.omega.example' => true, 'test.a.b.omega.example' => false] as $host => $matches) {
+    $check(($bot->exitTraceEntry($host, $entries ?? []) !== null) === $matches, 'границы маски MRS: ' . $host);
+}
 $bot->toolOutput = "198.51.100.0/22\n2001:db8::/48\n";
 $check($bot->exitRulesetConvert('BIN', 'mrs', 'ipcidr') === ['198.51.100.0/22', '2001:db8::/48'], '.mrs ipcidr раскладывается');
 $check($bot->exitRulesetConvert('BIN', 'mrs', 'classical') === null, '.mrs classical не принимается');

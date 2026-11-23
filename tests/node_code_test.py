@@ -80,6 +80,19 @@ class NodeCode(unittest.TestCase):
             self.assert_old()
             self.assertFalse((self.lib/code.JOURNAL).exists())
 
+    def test_masque_shell_syntax_checked_before_publishing_any_files(self):
+        # A valid script may exit nonzero when run without an operation.
+        good = modules('new') | {'warp_masque.sh': b'#!/bin/sh\nexit 17\n'}
+        code.install(self.lib, self.units, good, SERVICES, LAUNCHER, self.command)
+        active = code.active_id(self.lib)
+        releases = set((self.lib/'releases').iterdir())
+        bad = good | {'warp_masque.sh': b'#!/bin/sh\nif true; then\n'}
+        with self.assertRaisesRegex(ValueError, 'shell helper syntax'):
+            code.install(self.lib, self.units, bad, {'vpnbot-node.service': 'candidate'}, LAUNCHER, self.command)
+        self.assertEqual(code.active_id(self.lib), active)
+        self.assertEqual(set((self.lib/'releases').iterdir()), releases)
+        self.assertEqual({name:(self.units/name).read_text() for name in SERVICES}, SERVICES)
+
     def test_daemon_reload_failure_rolls_back_units_before_return(self):
         calls = []
         def command(args):

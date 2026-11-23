@@ -28,6 +28,7 @@ class AdguardTestBot extends Bot
     public int $stops = 0;
     public int $starts = 0;
     public array $sent = [];
+    public array $replyTargets = [];
     public array $screens = [];
     public array $apiCalls = [];
     public array $apiReply = [];
@@ -41,7 +42,11 @@ class AdguardTestBot extends Bot
     public function stopAd() { $this->stops++; return ''; }
     public function startAd() { $this->starts++; return ''; }
     public function adguardWrite(array $c): bool { return !$this->failWrite && parent::adguardWrite($c); }
-    public function send($chat, $text, ?int $to = 0, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false) { $this->sent[] = $text; return []; }
+    public function send($chat, $text, ?int $to = 0, $button = false, $reply = false, $mode = 'HTML', $disable_notification = false) {
+        $this->sent[] = $text;
+        if ($reply) $this->replyTargets[] = $chat;
+        return [];
+    }
     public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML') { $this->screens[] = [$text, is_array($button) ? $button : []]; }
     public function menu($type = false, $arg = false, $return = false) { $this->screens[] = ['menu ' . $type, []]; }
     public function i18n(string $menu): string { return $menu; }
@@ -290,6 +295,29 @@ try {
     adgAssert(str_contains($callbacks, '/adgSettings') && str_contains($callbacks, '/adgStats') && str_contains($callbacks, '/menuhelp adguard 0'), 'нет кнопок настроек, статистики или справки');
     file_put_contents($bot->adguard, '');
     adgAssert(str_contains($bot->adguardMenu()['text'], 'не читается'), 'меню не сообщает о нечитаемом конфиге');
+
+    $bot = $new();
+    yaml_emit_file($bot->adguard, $base);
+    file_put_contents($bot->pac, json_encode(['adpswd' => 'fixture-password', 'adguardkey' => 'fixture-client', 'adgbrowser' => 1]));
+    $bot->input['chat'] = -101;
+    $menu = $bot->adguardMenu();
+    $rendered = $menu['text'] . json_encode($menu['data']);
+    adgAssert(!str_contains($rendered, 'fixture-password') && !str_contains($rendered, 'fixture-client'), 'групповое меню раскрывает данные доступа');
+    adgAssert(str_contains($rendered, '/adguardLink'), 'групповое меню потеряло выдачу ссылки администратору');
+    adgAssert(str_contains($rendered, '/adguardPanel close'), 'в групповом меню нет отзыва доступа к панели');
+    $bot->apiReply['GET stats'] = ['top_queried_domains'=>[['history.example.test'=>1]]];
+    $bot->adgStats();
+    adgAssert(!str_contains(end($bot->screens)[0], 'history.example.test'), 'групповая статистика раскрывает историю DNS');
+    $bot->adguardpsswd();
+    $bot->setAdguardKey();
+    adgAssert(!in_array(-101, $bot->replyTargets, true), 'групповой чат запрашивает секрет в ответе');
+    $bot->chpsswd('fixture-replacement');
+    $bot->setAdKey('group-client');
+    adgAssert($pac()['adpswd'] === 'fixture-password' && $pac()['adguardkey'] === 'fixture-client', 'старый групповой запрос применяет данные доступа');
+    $bot->input['chat'] = $bot->input['from'];
+    $bot->adguardpsswd();
+    $bot->setAdguardKey();
+    adgAssert(array_slice($bot->replyTargets, -2) === [1, 1], 'личный чат потерял ввод данных доступа');
 
     // ── Образ: интерфейс официального выпуска ───────────────────────────────
     $dockerfile = (string) file_get_contents(__DIR__ . '/../dockerfile/adguard.dockerfile');

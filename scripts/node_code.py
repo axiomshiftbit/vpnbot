@@ -140,13 +140,19 @@ def validate_release(path):
 
 
 def stage_release(lib, modules):
+    for name, data in modules.items():
+        if name == 'warp_masque.sh':
+            result = subprocess.run(['/bin/sh', '-n'], input=data, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, timeout=30, env={'PATH': '/usr/bin:/bin'})
+            if result.returncode:
+                raise ValueError('invalid MASQUE shell helper syntax')
+        else:
+            if not re.fullmatch(r'[a-z_]+\.py', name): raise ValueError('invalid code module')
+            compile(data, name, 'exec')
     releases = lib/'releases'; trusted(releases); releases.mkdir(mode=0o755, exist_ok=True)
     identifier = uuid.uuid4().hex
     path = releases/identifier; path.mkdir(mode=0o755)
     for name, data in modules.items():
-        if name != 'warp_masque.sh':
-            if not re.fullmatch(r'[a-z_]+\.py', name): raise ValueError('invalid code module')
-            compile(data, name, 'exec')
         atomic(path/name, data)
     validate_release(path)
     sync_directory(path); sync_directory(releases)
