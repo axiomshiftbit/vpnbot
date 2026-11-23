@@ -16,8 +16,8 @@ import ci_release_policy as release
 
 
 # Every statically linked application must remain visible even with zero CVEs.
-# Optional Xray compatibility slots are scanned when present; primary/fork/helper
-# binaries are mandatory. Native C/C++ and OS package coverage are separate.
+# Xray compatibility slots pinned in .env are mandatory like the primary/fork/helper
+# binaries. Native C/C++ and OS package coverage are separate.
 RUST_TARGETS = {
     'tt': {'usr/local/libexec/trusttunnel_endpoint', 'usr/local/bin/setup_wizard'},
     'telemt': {'usr/local/bin/telemt'},
@@ -46,6 +46,15 @@ GO_LOCAL_SOURCES = {
     'usr/bin/xray-smux': {'./third_party/reality'},
     'usr/local/bin/caddy': {'/caddy', '/forwardproxy'},
 }
+
+
+def xray_slots(root=Path(__file__).resolve().parents[1]):
+    """Older Xray cores pinned in .env are shipped as /usr/bin/xray-N and must be scanned too."""
+    env = root / '.env'
+    if not env.exists():
+        return set()
+    pinned = dict(line.split('=', 1) for line in env.read_text().splitlines() if line.startswith('XRAY_VERSION_') and '=' in line)
+    return {'usr/bin/xray-' + key.removeprefix('XRAY_VERSION_') for key, value in pinned.items() if value.strip()}
 
 
 def require_packages(results, kind, expected, label):
@@ -93,7 +102,7 @@ def gate(d, image_name=None, asset_bom=None):
                    and all(p.get('Name') and p.get('Version') for p in x['Packages'])
                    for x in results), 'OS package scan missing'
     require_packages(results, 'rustbinary', RUST_TARGETS.get(image_name, set()), 'Rust')
-    require_packages(results, 'gobinary', GO_TARGETS.get(image_name, set()), 'Go')
+    require_packages(results, 'gobinary', GO_TARGETS.get(image_name, set()) | (xray_slots() if image_name == 'xr' else set()), 'Go')
     if image_name == 'ad':
         require_embedded_npm(results, 'AdGuard frontend npm')
     blocked, unfixed, secrets, medium = [], [], [], 0

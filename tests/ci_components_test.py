@@ -183,6 +183,20 @@ class ComponentsTest(unittest.TestCase):
         self.assertEqual(sorted(f[0] for f in hysteria['findings']), ['CVE-NOW', 'GHSA-low', 'GHSA-nofix'])
         self.assertIn('note  GHSA-nofix HIGH (GitHub)', components.report(rows, blocked))
 
+    def test_every_xray_build_in_the_images_is_checked_against_xray_advisories(self):
+        # Slot cores stay old on purpose, but a fixed advisory against them must block like the current core.
+        current = components.numbers(components.pins()['Xray'])
+        fixed = '.'.join(map(str, current[:3]))
+        api = Api(advisories={'XTLS/Xray-core': [advisory('GHSA-slot', 'critical', '< ' + fixed, fixed, 'CVE-SLOT')]},
+                  releases={'XTLS/Xray-core': [('v99.0.0', False)]})
+        rows, blocked = self.run_check(api)
+        names = {b[0] for b in blocked if b[2] == 'CVE-SLOT'}
+        self.assertEqual(names, {'Xray (slot 2)', 'Xray (slot 3)'})
+        newer = {row['name'] for row in rows if row['newer']}
+        self.assertTrue({'Xray', 'Xray (MASQUE)'} <= newer and not {'Xray (slot 2)', 'Xray (slot 3)'} & newer)
+        masque = next(row for row in rows if row['name'] == 'Xray (MASQUE)')
+        self.assertEqual(masque['sources'], ['GitHub'])
+
     def test_newer_release_is_reported_but_does_not_block(self):
         api = Api(releases={'apernet/hysteria': [('app/v9.0.0', False), ('app/v9.9.9-rc1', True), ('v99.0.0', False)],
                             'SagerNet/sing-box': [('v99.0.0-alpha.1', True), (components.pins()['sing-box'], False)]})

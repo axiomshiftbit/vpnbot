@@ -86,6 +86,23 @@ class ScanGateTest(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, 'Rust package scan missing'):
                 self.run_gate(data)
 
+    def test_xray_image_requires_every_pinned_slot_core(self):
+        slots = scan.xray_slots()
+        self.assertEqual(slots, {'usr/bin/xray-2', 'usr/bin/xray-3'})
+        go = [{'Name': 'stdlib', 'Version': 'v1.26.0'}, {'Name': 'github.com/xtls/xray-core', 'Relationship': 'root'}]
+        data = report()
+        with patch.dict('os.environ', {'IMAGE_NAME': 'xr'}):
+            for target in sorted(scan.GO_TARGETS['xr']):
+                data['Results'].append({'Class': 'lang-pkgs', 'Type': 'gobinary', 'Target': target, 'Packages': go})
+            with self.assertRaisesRegex(AssertionError, 'usr/bin/xray-2, usr/bin/xray-3'):
+                self.run_gate(data)
+            for target in sorted(slots):
+                data['Results'].append({'Class': 'lang-pkgs', 'Type': 'gobinary', 'Target': target, 'Packages': go})
+            self.assertEqual(self.run_gate(data)[0], 0)
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / '.env').write_text('XRAY_VERSION=v1\nXRAY_VERSION_2=\nXRAY_VERSION_3=v3\n')
+            self.assertEqual(scan.xray_slots(Path(root)), {'usr/bin/xray-3'})
+
     def test_trusttunnel_rust_vulnerability_reaches_gate(self):
         data = report()
         for target in ('/usr/local/libexec/trusttunnel_endpoint', '/usr/local/bin/setup_wizard'):

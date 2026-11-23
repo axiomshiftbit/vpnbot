@@ -69,6 +69,11 @@ COMPONENTS = [
     dict(name='Caddy', pin='CADDY_VERSION', cpe='caddyserver:caddy', repo='caddyserver/caddy'),
     dict(name='Xray', pin='XRAY_VERSION', repo='XTLS/Xray-core'),
     dict(name='Xray (fork)', pin='XRAY_FORK_VERSION', repo='Jolymmiles/Xray-core'),
+    # Older cores kept in the xr image (selectable on the main server and nodes): advisories
+    # apply to them as to the current core; only the comparison with the latest release is skipped.
+    dict(name='Xray (slot 2)', pin='XRAY_VERSION_2', repo='XTLS/Xray-core', stale=True),
+    dict(name='Xray (slot 3)', pin='XRAY_VERSION_3', repo='XTLS/Xray-core', stale=True),
+    dict(name='Xray (MASQUE)', pin='MASQUE_XRAY_VERSION', repo='XTLS/Xray-core'),
     dict(name='Hysteria', pin='HYSTERIA_VERSION', repo='apernet/hysteria', tag_prefix='app/'),
     dict(name='TeleMT', pin='TELEMT_VERSION', repo='telemt/telemt'),
     dict(name='TrustTunnel', pin='dockerfile/trusttunnel.dockerfile:TT_REF', repo='TrustTunnel/TrustTunnel'),
@@ -87,7 +92,6 @@ COMPONENTS = [
     dict(name='snolc', pin='dockerfile/snolc.dockerfile:SNOLC_VERSION', release='owenewans/snolc'),
     # Только свежесть: у этих проектов нет ни CPE в NVD, ни объявлений GitHub,
     # либо это инструменты сборки, не попадающие в образ.
-    dict(name='Xray (MASQUE)', pin='MASQUE_XRAY_VERSION', release='XTLS/Xray-core'),
     dict(name='wgcf', pin='WGCF_VERSION', release='ViRb3/wgcf'),
     dict(name='dnslookup', pin='DNSLOOKUP_VERSION', release='ameshkov/dnslookup'),
     dict(name='xcaddy', pin='XCADDY_VERSION', release='caddyserver/xcaddy'),
@@ -107,10 +111,7 @@ COMPONENTS = [
 ]
 
 # Закреплённые значения, которые сознательно не сверяются с последним выпуском.
-UNCHECKED = {
-    'XRAY_VERSION_2': 'слот ядра намеренно держит предыдущую версию',
-    'XRAY_VERSION_3': 'слот ядра намеренно держит старую версию',
-}
+UNCHECKED = {}
 FRESHNESS_ONLY = ('toolchain', 'release', 'git', 'alpine')
 
 
@@ -463,7 +464,7 @@ def check(root=ROOT, token=None, freshness=True):
             findings += [(ident, level, fixable, 'GitLab') for ident, level, fixable in noted]
         if item.get('nginx'):
             findings += [(ident, level, fixable, 'nginx.org') for ident, level, fixable in nginx_findings(version)]
-        if freshness and (item.get('repo') or item.get('fresh')):
+        if freshness and (item.get('repo') or item.get('fresh')) and not item.get('stale'):
             newer = newer_than(item, latest_release(item.get('repo') or item['fresh'], item.get('tag_prefix', ''), token,
                                                     version if item.get('branch') else None), version)
         sources = [s for s, key in (('NVD', 'cpe'), ('GitHub', 'repo'), ('GitLab', 'gitlab'), ('nginx.org', 'nginx')) if item.get(key)]
