@@ -17,6 +17,8 @@ def connect(port, password, command, destination):
     # The Trojan inbound listens on TCP loopback only, including for UDP.
     sock = socket.create_connection(('127.0.0.1', port), timeout=10)
     try:
+        # Trojan authenticates with hex(SHA-224(password)) by protocol; the core expects exactly this.
+        # The password is a 256-bit HMAC derived for this probe, not a human password.
         digest = hashlib.sha224(password).hexdigest().encode('ascii')
         sock.sendall(digest + b'\r\n' + command + destination + b'\r\n')
         return sock
@@ -25,11 +27,18 @@ def connect(port, password, command, destination):
         raise
 
 
+def tls_context():
+    # Cloudflare serves TLS 1.2 and 1.3; never negotiate an older protocol, whatever the container's defaults.
+    context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
 def check_trace(port, password):
     host = TRACE_HOST.encode('ascii')
     destination = b'\x03' + bytes([len(host)]) + host + struct.pack('!H', 443)
     with connect(port, password, b'\x01', destination) as raw:
-        with ssl.create_default_context().wrap_socket(raw, server_hostname=TRACE_HOST) as sock:
+        with tls_context().wrap_socket(raw, server_hostname=TRACE_HOST) as sock:
             sock.sendall(b'GET /cdn-cgi/trace HTTP/1.1\r\nHost: ' + host + b'\r\nConnection: close\r\n\r\n')
             with http.client.HTTPResponse(sock) as response:
                 response.begin()
