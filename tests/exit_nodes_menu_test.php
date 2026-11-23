@@ -40,6 +40,7 @@ class ExitMenuBot extends Bot
         $this->confXray = $c;
         return true;
     }
+    public function validateXrayConfig(array $config, string $binary = 'xray'): bool { return $this->restartOk; }
     public function withLock(string $name, callable $fn, int $timeout = 0, $busy = null) { return $fn(); }
     protected function xdriveResolve(string $host): array { return $this->resolved[$host] ?? []; }
     public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null') { $this->ssh[] = [$service, $cmd]; $this->sshFailed = false; return $this->probeAnswer; }
@@ -442,6 +443,25 @@ $check($sets->exitRulesetRefresh($url, ['on' => 1]) === '' && ($sets->exitRulese
 $tools = count($sets->tools);
 $check($sets->exitRulesetRefresh($url, ['on' => 1]) === '' && count($sets->validated) === 1, 'то же содержимое ядро повторно не проверяет');
 $check(count($sets->tools) === $tools && ($sets->exitRulesetCache($url)['entries'] ?? null) === ['domain:video.example'], 'тот же файл не распаковывается заново');
+// A legacy MRS cache was shared by URL. Its parser identifies the only valid behavior.
+$mrs = 'https://sets.example/dual.mrs';
+file_put_contents($sets->exitRulesetFile($mrs), json_encode(['key' => $mrs, 'parser' => '3:mrs:ipcidr', 'entries' => ['192.0.2.0/24']]));
+$setConfig = static fn($behavior) => ['routes' => [], 'rulesets' => [$mrs => ['on' => 1, 'behavior' => $behavior]]];
+$check($sets->exitNodeEntries($setConfig('ipcidr')) === ['192.0.2.0/24' => 1] && $sets->exitNodeEntries($setConfig('domain')) === [], 'один URL MRS не смешивает домены и IP старого кэша');
+$shared = new class extends ExitMenuBot {
+    public bool $online = true;
+    protected function exitRulesetDownload(string $url): ?string { return $this->online ? 'fixture' : null; }
+    public function exitRulesetConvert(string $binary, string $format, string $behavior, bool &$unsupported = false, bool $strict = false): ?array {
+        return $behavior === 'ipcidr' ? ['192.0.2.0/24'] : ['full:set.example'];
+    }
+};
+foreach (['domain', 'ipcidr'] as $mode) $check($shared->exitRulesetRefresh($mrs, ['behavior' => $mode]) === '', 'разбор MRS ' . $mode);
+$shared->online = false;
+$check($shared->exitRulesetRefresh($mrs, ['behavior' => 'domain']) === 'download', 'отказ источника MRS');
+$parts = Closure::bind(fn($list) => $this->nodeRoutesParts($list), $shared, Bot::class);
+$check($shared->exitNodeEntries($setConfig('domain')) === ['full:set.example' => 1]
+    && $parts($setConfig('ipcidr')) === ['ip' => ['192.0.2.0/24']]
+    && $parts($setConfig('domain')) === ['domain' => ['full:set.example']], 'узел выхода и списки ноды сохраняют свой разбор после сбоя');
 $cached = $sets->exitRulesetCache($url); $cached['parser'] = '0:srs:domain';
 file_put_contents($sets->exitRulesetFile($url), json_encode($cached));
 $check($sets->exitRulesetRefresh($url, ['on' => 1]) === '' && count($sets->tools) === $tools + 1 && str_starts_with($sets->exitRulesetCache($url)['parser'] ?? '', Bot::EXIT_RULESET_PARSER . ':'),

@@ -140,7 +140,8 @@ $full = Closure::bind(fn(array $config) => $this->controllerBlockedIps($config),
 $first = $digestOf($config);
 $check($first === hash('sha256', implode("\n", $full($config))) && count($dat->tools) === 2, 'digest matches the expanded list');
 $dat->tools = [];
-$check($digestOf($config) === $first && $dat->tools === [], 'cached digest skips the expansion');
+$cacheOwnedByRoot = fileowner(sys_get_temp_dir() . '/vpnbot-controller-ips.json') === 0;
+$check($digestOf($config) === $first && count($dat->tools) === ($cacheOwnedByRoot ? 0 : 1), 'only a root-owned cache skips the expansion');
 $cacheFile = sys_get_temp_dir() . '/vpnbot-controller-ips.json';
 if (@chown($cacheFile, 65534)) {
     // Running as root: a cache file of another owner is ignored, never trusted.

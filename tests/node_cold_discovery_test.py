@@ -13,13 +13,15 @@ REQUIRED=['node-importer-connected_settled_node','node-importer-common_importer_
           'node-importer-restored_controller_pinned_rpc','node-importer-old_external_profile_payload_after',
           'node-importer-external_profile_not_regenerated','old host pin rejects the reinstalled node',
           'restored controller passes traffic after reinstall','previously exported external peer profile works after reinstall and restore',
+          'confirmed block rejects previously reachable destination', 'confirmed SSH lists select block, WARP and direct for TCP and UDP',
+          'controller rejects explicit block of the probe domain', 'watchdog rolls back after real confirmation deadline',
           'original disposable node restored']
 
 class NodeColdDiscoveryTest(unittest.TestCase):
     def output(self,names=REQUIRED):
         return ''.join('PASS '+x+'\n' for x in list(names)+['unit-control-'+str(i) for i in range(25)]).encode()
     def test_complete_counts_and_named_native_postconditions(self):
-        self.assertEqual(len(module.parse_checks(self.output())),34)
+        self.assertEqual(len(module.parse_checks(self.output())),len(REQUIRED)+25)
     def test_missing_importer_cannot_pass_on_unrelated_checks(self):
         with self.assertRaises(RuntimeError):module.parse_checks(self.output(REQUIRED[1:]))
     def test_old_profile_after_reinstall_is_mandatory(self):

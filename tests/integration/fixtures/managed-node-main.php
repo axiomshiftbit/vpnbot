@@ -3,6 +3,7 @@
 require '/lab/app/bot.php';
 umask(0077);
 class NativeManagedBot extends Bot {
+    public string $testAddress = '11.77.0.128';
     public int $testProbePort = 0;
     public function __construct() {
         $this->pac = '/work/pac.json'; $this->htpasswd = '/work/webapp/.htpasswd';
@@ -11,7 +12,7 @@ class NativeManagedBot extends Bot {
         $this->language = 'ru'; require '/lab/app/i18n.php'; $this->i18n = $i;
     }
     public function getPacConf() { return json_decode(file_get_contents($this->pac), true, 64, JSON_THROW_ON_ERROR); }
-    public function setPacConf(array $p) { return file_put_contents($this->pac, json_encode($p, JSON_THROW_ON_ERROR)) !== false; }
+    public function setPacConf(array $p) { return parent::setPacConf($p); }
     public function getXray() {
         return is_file('/work/core.json') ? json_decode(file_get_contents('/work/core.json'), true) :
             ['log' => ['loglevel' => 'none'], 'inbounds' => [], 'outbounds' => [['tag' => 'direct', 'protocol' => 'freedom']], 'routing' => ['rules' => []]];
@@ -42,7 +43,7 @@ class NativeManagedBot extends Bot {
         return false;
     }
     public function exitProbe(string $id, bool $full = true): array {
-        $curl = curl_init('http://11.77.0.128:18089/probe');
+        $curl = curl_init('http://' . $this->testAddress . ':18089/probe');
         curl_setopt_array($curl, [CURLOPT_PROXY => 'socks5h://127.0.0.1:'.($this->testProbePort ?: $this->exitProbePort($id)),
             CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 4, CURLOPT_NOPROXY => '']);
         $body = curl_exec($curl);
@@ -51,6 +52,14 @@ class NativeManagedBot extends Bot {
         }
         curl_close($curl);
         return ['ok' => $body === "managed-main-pass\n"];
+    }
+    // The isolated controller resolves the health domain differently from the node's real probe target.
+    protected function nodeRoutesProbeAddresses(string $host): array { return ['198.51.100.200']; }
+    public function validateXrayConfig(array $config, string $binary = 'xray'): bool {
+        $process = proc_open(['/lab/x31', 'run', '-test', '-format', 'json', '-config', 'stdin:'],
+            [0 => ['pipe', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']], $pipes);
+        fwrite($pipes[0], json_encode($config, JSON_THROW_ON_ERROR)); fclose($pipes[0]);
+        return proc_close($process) === 0;
     }
     public function update($chat, $message_id, $text, $button = false, $reply = false, $mode = 'HTML') {
         file_put_contents('/work/screen.json', json_encode([$text, $button ?: []], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
@@ -104,6 +113,34 @@ try {
             $options['xray']['encryption'] = ['auth' => 'mlkem768', 'mode' => 'random'];
             $bot->managedNodeSubmit('aabbccdd', 'configure', $options);
             verify(!empty($bot->managedNodes()['aabbccdd']['job']), 'main saves asynchronous node job');
+            break;
+        case 'lists-apply':
+            $bot->testAddress = '11.77.0.200';
+            verify($bot->exitProbe('aabbccdd')['ok'], 'list destination initially carries real node traffic');
+            $bot->saveNodeRoutes("domain:blocked.test\n1.0.0.0/24\n11.77.0.200", 'aabbccdd', 'block');
+            $bot->saveNodeRoutes("full:tunnel.test\nkeyword:video\nregexp:^cdn[0-9]+\\.test$\n11.77.0.0/24\n2606:4700::/48", 'aabbccdd', 'warp');
+            verify($bot->exitProbe('aabbccdd')['ok'] && empty($bot->managedNodes()['aabbccdd']['job']), 'editing both lists leaves live traffic unchanged');
+            $bot->nodeRoutesApply('aabbccdd', 'block');
+            verify(!empty($bot->managedNodes()['aabbccdd']['job']), 'controller submits both destination lists over SSH');
+            break;
+        case 'lists-confirmed':
+            $n = $bot->managedNodes()['aabbccdd'];
+            $running = $bot->transport('rpc', ['action' => 'status']);
+            verify($n['lists_sent'] && !$running['pending'] && $n['status']['generation'] === $running['generation'], 'node confirms the submitted lists');
+            $bot->testAddress = '11.77.0.200';
+            verify(!$bot->exitProbe('aabbccdd')['ok'], 'confirmed block rejects previously reachable destination');
+            $bot->testAddress = '11.77.0.128';
+            verify($bot->exitProbe('aabbccdd')['ok'], 'allowed destination stays reachable with WARP disabled');
+            file_put_contents('/work/confirmed-routes.json', json_encode($running['options']['policy']['routes'], JSON_THROW_ON_ERROR));
+            break;
+        case 'lists-health':
+            $bot->saveNodeRoutes('full:www.gstatic.com', 'aabbccdd', 'block');
+            $bot->nodeRoutesApply('aabbccdd', 'block');
+            verify(empty($bot->managedNodes()['aabbccdd']['job']) && str_contains($bot->screen(), 'www.gstatic.com'), 'controller rejects explicit block of the probe domain');
+            $bot->nodeRoutesToggle('aabbccdd', 'block', Bot::exitEntryKey('full:www.gstatic.com'), 'D', 0);
+            $bot->saveNodeRoutes('11.77.0.128', 'aabbccdd', 'block');
+            $bot->nodeRoutesApply('aabbccdd', 'block');
+            verify(!empty($bot->managedNodes()['aabbccdd']['job']), 'controller submits candidate when node and controller probe addresses differ');
             break;
         case 'vpn-sources':
             // The card screen: list input -> draft -> Apply, as an administrator does it.

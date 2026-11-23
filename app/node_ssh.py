@@ -554,6 +554,9 @@ def main():
             result = client.request(value['value'])
         elif value['action'] == 'saved' and value['value'] is None:
             result = client.saved()
+        elif value['action'] == 'saved-routes' and value['value'] is None:
+            policy = client.saved()['snapshot']['options'].get('policy', {})
+            result = {'routes': policy.get('routes', {})}
         elif value['action'] == 'retire' and value['value'] is None:
             client.retire()
             result = {'retired': True}
@@ -568,7 +571,7 @@ def main():
             result = {'saved': True}
         else:
             raise ValueError('action')
-        sys.stdout.buffer.write(encode({'ok': True, 'result': result}, POLICY_FRAME if value['action'] in ('rpc','saved','rebind','reconnect') else LIMIT))
+        sys.stdout.buffer.write(encode({'ok': True, 'result': result}, POLICY_FRAME if value['action'] in ('rpc','saved','saved-routes','rebind','reconnect') else LIMIT))
 
 
 if __name__ == '__main__':

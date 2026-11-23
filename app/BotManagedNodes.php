@@ -23,6 +23,7 @@ trait BotManagedNodes
     use BotManagedNodeTools;
     use BotManagedNodePresets;
     public string $managedNodeRoot = '/ssh/nodes';
+    private array $applyingNodeRoutes = [];
     private int $managedNodeCronAt = 0;
 
     private function managedNodeLocked(string $id, callable $callback): void
@@ -155,7 +156,7 @@ trait BotManagedNodes
             ($action === 'import' && isset($value['snapshot']->options->policy))
             || ($action === 'rpc' && ($value['action'] ?? '') === 'submit' && (isset($value['request']['value']['policy']) || isset($value['request']['value']['options']['policy'])))
         );
-        $limit = in_array($action,['rpc','saved','rebind','reconnect'],true) ? 4 * 1024 * 1024 + 4096 : 65536;
+        $limit = in_array($action,['rpc','saved','saved-routes','rebind','reconnect'],true) ? 4 * 1024 * 1024 + 4096 : 65536;
         if ($large) $body = '#' . $body;
         if (strlen($body) > ($large ? 4 * 1024 * 1024 + 4096 : 65536)) throw new RuntimeException('Node request too large');
         $process = proc_open(['python3', '-I', __DIR__ . '/node_ssh.py'],
@@ -232,7 +233,7 @@ trait BotManagedNodes
             }
         }
         if ($this->exitAddressProblem($parsed['address']) !== '') throw new RuntimeException('Node endpoint is not allowed');
-        return $this->applyExitNodes(function (array &$p) use ($id, $profile, $options) {
+        $edit = function (array &$p) use ($id, $profile, $options) {
             if (!isset($this->managedNodes($p)[$id])) return 'exit not found';
             if (!isset($p['exits'][$id]) && count($this->exitNodes($p)) >= self::EXIT_MAX) return 'exit too many';
             $node = $p['exits'][$id] ?? ['name' => $p['managed_nodes'][$id]['name'], 'fallback' => 'block', 'created' => time()] + self::exitNodeDefaults();
@@ -247,7 +248,14 @@ trait BotManagedNodes
             $node['sub'] = '';
             $p['exits'][$id] = $node;
             return '';
-        }, ($profile['channel'] ?? '') === 'wireguard');
+        };
+        // restartXray rereads the compact PAC before the new snapshot can be confirmed.
+        if (isset($options['policy']['routes'])) $this->applyingNodeRoutes[$id] = $options['policy']['routes'];
+        try {
+            return $this->applyExitNodes($edit, ($profile['channel'] ?? '') === 'wireguard');
+        } finally {
+            unset($this->applyingNodeRoutes[$id]);
+        }
     }
 
     private function managedNodeRestoreClient(string $id, ?array $before): void
@@ -280,13 +288,12 @@ trait BotManagedNodes
         $this->managedNodeLocked($id, fn() => $this->managedNodeSubmitLocked($id, $operation, $value, $expectedGeneration));
     }
 
-    private function managedNodeSubmitLocked(string $id, string $operation, $value, ?string $expectedGeneration = null): void
+    private function managedNodeSubmitLocked(string $id, string $operation, $value, ?string $expectedGeneration = null, bool $applyLists = true): void
     {
         $node = $this->managedNodes()[$id] ?? null;
         if (!$node || !$node['connected'] || $node['job']) throw new RuntimeException('Node is not ready');
         $listsSent = null;
-        if ($operation === 'configure') {
-            // Every configure carries the node's current Block and WARP lists.
+        if ($operation === 'configure' && $applyLists) {
             $value['policy'] = $this->nodeRoutesPolicy($node, is_array($value['policy'] ?? null) ? $value['policy'] : null);
             $listsSent = self::nodeRoutesDigest($this->nodeRoutesSource($node));
         }
@@ -306,7 +313,13 @@ trait BotManagedNodes
         if (!$exit) throw new RuntimeException('Node route is missing');
         $generation = $expectedGeneration ?? ($operation === 'configure' ? ($node['draft_generation'] ?? $node['status']['generation'] ?? '') : ($node['status']['generation'] ?? ''));
         if (!preg_match('~^[a-f0-9]{32}$~D', $generation)) throw new RuntimeException('Refresh the node before changing it');
-        $job = $this->managedNodeRpc($id, ['action' => 'submit', 'request' => ['operation' => $operation, 'value' => $value, 'generation' => $generation]]);
+        $request = ['action' => 'submit', 'request' => ['operation' => $operation, 'value' => $value, 'generation' => $generation]];
+        if ($operation === 'configure' && isset($value['policy'])) {
+            // Match the bounded JSON sent by the SSH helper, including escaped Unicode.
+            if (count($value['policy']['controller_ips'] ?? []) > 200000
+                || strlen(json_encode($request, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES)) > 4 * 1024 * 1024) throw new NodeRoutesException('frame');
+        }
+        $job = $this->managedNodeRpc($id, $request);
         if (!preg_match('~^[a-f0-9]{32}$~D', (string) ($job['job'] ?? ''))) throw new RuntimeException('Invalid node job');
         $before = array_intersect_key($exit, array_flip(['link', 'managed_profile', 'policy']));
         $draft = $operation === 'configure' ? array_intersect_key($node, array_flip(['draft', 'draft_generation'])) : [];

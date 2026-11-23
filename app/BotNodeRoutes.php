@@ -71,10 +71,10 @@ trait BotNodeRoutes
         foreach ($list['rulesets'] as $url => $set) {
             if (!is_array($set) || empty($set['on'])) continue;
             // The node has no copy of the set: refresh it at most daily when applying; a failed refresh keeps the last entries.
-            $cache = $this->exitRulesetCache((string) $url);
+            $cache = $this->exitRulesetView((string) $url, $set);
             if (!($cache['entries'] ?? []) || time() - (int) ($cache['time'] ?? 0) >= 86400) {
                 $this->exitRulesetRefresh((string) $url, ['behavior' => ($set['behavior'] ?? 'domain') === 'ipcidr' ? 'ipcidr' : 'domain']);
-                $cache = $this->exitRulesetCache((string) $url);
+                $cache = $this->exitRulesetView((string) $url, $set);
             }
             $items = $cache['entries'] ?? [];
             if (!$items) throw new NodeRoutesException('set');
@@ -166,6 +166,7 @@ trait BotNodeRoutes
             'dat' => $this->t('Категория geosite/geoip/ext недоступна: нет файла .dat или категории. Проверьте источники .dat основного бота.', 'A geosite/geoip/ext category is unavailable: the .dat file or category is missing. Check the main bot’s .dat sources.'),
             'entry' => $this->t('В списке есть запись, которую нельзя передать ноде. Удалите её.', 'The list has an entry that cannot be sent to the node. Delete it.'),
             'size' => $this->t('Списки вместе больше 3 МБ. Уменьшите их.', 'The lists exceed 3 MB together. Make them smaller.'),
+            'frame' => $this->t('Превышен лимит ноды. Допускается до 200 000 запретов IP основного сервера и до 4 МиБ на всё задание вместе со списками.', 'Node limit exceeded. Up to 200,000 controller IP blocks and 4 MiB for the complete request including the lists are supported.'),
             'probe' => $this->t('«Блокировка» задевает www.gstatic.com: через него основной бот проверяет ноду, и каждое применение откатится. Уберите запись, которая его блокирует.',
                 'Block covers www.gstatic.com: the main bot checks the node through it, so every apply would roll back. Remove the entry that blocks it.'),
             default => '',
@@ -199,6 +200,9 @@ trait BotNodeRoutes
         } elseif ($kind === 'warp' && (($node['draft'] ?? $status['options'] ?? [])['warp_mode'] ?? 'off') === 'off') {
             $text[] = $this->t('⚠️ WARP ноды выключен: записи этого списка идут напрямую. Включите его в «⚙️ Xray и подключение» → «WARP ноды».',
                 '⚠️ Node WARP is off: entries of this list go directly. Enable it in ⚙️ Xray and connection → Node WARP.');
+        }
+        if ($kind === 'warp' && ($status['options']['warp_mode'] ?? 'off') !== 'off' && (int) ($status['options']['family'] ?? 4) === 4) {
+            $text[] = $this->t('В режиме ForceIPv4 адреса IPv6 из списка WARP блокируются.', 'In ForceIPv4 mode IPv6 destinations in the WARP list are blocked.');
         }
         if ($this->nodeRoutesPending($node)) $text[] = $this->t('Есть изменения, которые ещё не применены на ноде.', 'Some changes are not applied on the node yet.');
         if ($notice !== '') $text[] = '<b>' . self::esc($notice) . '</b>';
@@ -319,11 +323,6 @@ trait BotNodeRoutes
             if ($text === null || !mb_check_encoding($text, 'UTF-8')) { $this->nodeRoutesMenu($id, $kind, 0, $this->t('Файл не прочитан (нужен текст UTF-8 до 2 МБ)', 'File not read (UTF-8 text up to 2 MB is needed)')); return; }
         }
         [$routes, $sets, $bad] = $this->exitImportParse(self::nodeRoutesImportText($text));
-        // The node core rejects the whole configuration for one broken pattern; check new patterns with the same core.
-        $patterns = array_values(array_filter(array_map('strval', array_keys($routes)), static fn($entry) => str_starts_with(strtolower($entry), 'regexp:')));
-        if ($patterns && !$this->exitRulesetCoreAccepts($patterns)) {
-            foreach ($patterns as $pattern) if (!$this->exitRulesetCoreAccepts([$pattern])) { unset($routes[$pattern]); $bad++; }
-        }
         if (!$routes && !$sets) { $this->nodeRoutesMenu($id, $kind, 0, $this->t('Записей не найдено', 'No entries found') . ($bad ? $this->t(", неверных строк: $bad", ", invalid lines: $bad") : '')); return; }
         $added = $skipped = $setsAdded = 0;
         try {

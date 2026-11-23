@@ -20,7 +20,7 @@ import node_policy
 
 def fixture():
     routes = {'block': {'domain': ['domain:blocked.test'], 'ip': ['1.0.0.0/24']},
-              'warp': {'domain': ['full:tunnel.test', 'keyword:video', 'regexp:^cdn[0-9]+\\.test$'], 'ip': ['11.77.0.0/24']}}
+              'warp': {'domain': ['full:tunnel.test', 'keyword:video', 'regexp:^cdn[0-9]+\\.test$'], 'ip': ['11.77.0.0/24', '2606:4700::/48']}}
     value = {'options': OPTIONS4 | {'policy': {'routes': routes}}, 'identity': IDENTITY, 'peers': [PEER]}
     return value
 
@@ -100,6 +100,21 @@ class NodePolicy(unittest.TestCase):
         with self.assertRaises(ValueError):
             node_state.policy_size(dict(value, unknown='x' * 70000))
 
+    def test_compiled_size_and_controller_ip_limits_are_independent(self):
+        import node_state
+        entry = 'full:' + 'a' * (1016 - len('full:'))
+        entries = [entry] * (node_policy.ROUTE_BYTES // 1024)
+        policy = {'routes': {'block': {'domain': entries}}, 'revision': 'a' * 32, 'controller_ips': ['192.0.2.1'] * 200000}
+        self.assertEqual(node_policy.validate(policy), policy)
+        request = {'operation': 'configure', 'value': {'policy': policy}}
+        with self.assertRaises(ValueError):
+            node_state.encode(request, node_state.policy_size(request))
+        with self.assertRaises(ValueError):
+            node_policy.validate(policy | {'controller_ips': policy['controller_ips'] + ['192.0.2.2']})
+        entries.append('full:x')
+        with self.assertRaises(ValueError):
+            node_policy.validate(policy)
+
     def test_warp_list_without_the_warp_core_goes_direct(self):
         # Without WARP on the node a WARP entry must not silently become a block.
         value = fixture()
@@ -123,7 +138,11 @@ class NodePolicy(unittest.TestCase):
 
     @unittest.skipUnless(os.environ.get('VLESS_TEST_XRAY'), 'requires Xray')
     def test_data_plane(self):
+        self.check_data_plane(fixture()['options']['policy']['routes'], os.environ['VLESS_TEST_XRAY'])
+
+    def check_data_plane(self, routes, xray):
         value = fixture()
+        value['options']['policy']['routes'] = routes
         revision = 'b' * 32
         value['options']['policy'].update(controller_ips=['11.77.1.0/24'], revision=revision)
         main = node.core_config(value['options'], HOST, IDENTITY, [PEER], node_warp.wireguard(profile()))
@@ -161,7 +180,7 @@ class NodePolicy(unittest.TestCase):
                                'servers':['127.0.0.1']}
                 path = directory / (name+'.json')
                 path.write_text(json.dumps(core))
-                proc = subprocess.Popen([os.environ['VLESS_TEST_XRAY'],'run','-c',str(path)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+                proc = subprocess.Popen([xray,'run','-c',str(path)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
                 stack.callback(proc.wait,5)
                 stack.callback(proc.terminate)
                 for _ in range(80):

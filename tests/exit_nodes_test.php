@@ -16,6 +16,11 @@ class ExitBot extends Bot
         require __DIR__ . '/../app/i18n.php';
         $this->i18n = $i;
     }
+    public array $savedRoutes = [];
+    protected function managedNodeTransport(string $id, string $action, $value = null): array {
+        if ($action === 'saved-routes') return ['routes' => $this->savedRoutes[$id] ?? []];
+        throw new RuntimeException('unexpected transport action');
+    }
     public function getPacConf() { return $this->confPac; }
     public function setPacConf(array $conf) { $this->confPac = $conf; return true; }
     public function getXray() { return $this->confXray; }
@@ -89,6 +94,43 @@ $c['inbounds'][0]['settings']['clients'][0]['exit'] = ['a1b2c3d4'];
 $c['inbounds'][0]['settings']['clients'][2]['exit'] = ['a1b2c3d4']; // off
 $c['inbounds'][0]['settings']['clients'][3]['exit'] = ['a1b2c3d4']; // служебная учётка узла
 $withUsers = $c;
+$guardedPac = $pac;
+$guardedPac['exits']['a1b2c3d4']['fallback'] = 'direct';
+$guardedPac['exits']['a1b2c3d4']['policy']['routes']['block'] = ['domain' => ['keyword:private', 'domain:blocked.example'], 'ip' => ['192.0.2.0/24']];
+$guardedPac['exits']['a1b2c3d4']['routes'] = ['domain:list.test' => 1, '192.0.2.0/24' => 1, '198.51.100.0/24' => 1];
+$guardedPac['exits']['a1b2c3d4']['quic'] = 'pass';
+$guarded = $withUsers;
+$bot->ensureExitNodes($guarded, $guardedPac);
+$guardRules = array_column($guarded['routing']['rules'], null, 'ruleTag');
+$fallback = $guarded['routing']['balancers'][0]['fallbackTag'];
+if (($argv[1] ?? '') === '--fallback-fixture') {
+    // Pass only generated routing fields to the real-core test.
+    $hops = array_values(array_filter($guarded['outbounds'], static fn($o) => $o['protocol'] === 'loopback' || $o['tag'] === $fallback));
+    $listeners = array_values(array_filter($guarded['inbounds'], static fn($i) => $i['tag'] === $fallback));
+    foreach ($hops as &$o) unset($o['settings']['servers'][0]['password']);
+    foreach ($listeners as &$i) unset($i['settings']['clients'][0]['password']);
+    echo json_encode(['outbounds' => $hops, 'inbounds' => $listeners,
+        'rules' => array_values(array_filter($guarded['routing']['rules'], static fn($r) => isset($r['balancerTag']) || str_contains($r['ruleTag'] ?? '', ':fallback-'))),
+        'balancers' => $guarded['routing']['balancers']], JSON_THROW_ON_ERROR);
+    exit;
+}
+$check($fallback === Bot::EXIT_TAG . 'fallback-a1b2c3d4'
+    && ($guardRules['vpnbot:exit:fallback-a1b2c3d4:domain']['domain'] ?? []) === ['private', 'domain:blocked.example']
+    && ($guardRules['vpnbot:exit:fallback-a1b2c3d4:ip']['ip'] ?? []) === ['192.0.2.0/24']
+    && ($guardRules['vpnbot:exit:fallback-a1b2c3d4:resolved']['outboundTag'] ?? '') === 'direct', 'прямой резерв сохраняет блок домена и конечного IP');
+$onDisk = $guardedPac;
+$approved = $guardedPac['exits']['a1b2c3d4']['policy']['routes'];
+$bot->savedRoutes['a1b2c3d4'] = $approved;
+$onDisk['exits']['a1b2c3d4']['policy'] = ['routes_digest' => hash('sha256', json_encode($approved, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE))];
+$onDisk['managed_nodes']['a1b2c3d4']['lists']['block']['routes'] = ['full:draft.test' => 1];
+$reloaded = $withUsers;
+$bot->ensureExitNodes($reloaded, $onDisk);
+$check($reloaded['routing'] === $guarded['routing'], 'подтверждённый снимок восстанавливает резерв независимо от черновика');
+$missing = $guardedPac;
+$missing['exits']['a1b2c3d4']['policy'] = ['routes_digest' => str_repeat('9', 64)];
+$missingConfig = $withUsers;
+$bot->ensureExitNodes($missingConfig, $missing);
+$check($missingConfig['routing']['balancers'][0]['fallbackTag'] === 'block', 'при утрате подтверждённого снимка резерв закрыт');
 $bot->ensureExitNodes($c, $pac);
 $order = $ruleTags($c);
 $check($order === ['vpnbot:exit:a1b2c3d4:probe', '-', 'vpnbot:routes:block:domain', 'vpnbot:exit:a1b2c3d4:quic-domain', 'vpnbot:exit:a1b2c3d4:quic-ip',

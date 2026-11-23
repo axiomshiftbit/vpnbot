@@ -28,6 +28,8 @@ def parse_checks(stdout):
               'node-importer-external_profile_not_regenerated','old host pin rejects the reinstalled node',
               'restored controller passes traffic after reinstall',
               'previously exported external peer profile works after reinstall and restore',
+              'confirmed block rejects previously reachable destination', 'confirmed SSH lists select block, WARP and direct for TCP and UDP',
+              'controller rejects explicit block of the probe domain', 'watchdog rolls back after real confirmation deadline',
               'original disposable node restored'}
     if not required.issubset({c['name'] for c in checks}) or len(checks)<30 or not all(c['passed'] for c in checks):
         raise RuntimeError('incomplete cold restore checks')

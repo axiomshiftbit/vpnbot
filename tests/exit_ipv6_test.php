@@ -83,9 +83,9 @@ $check(!array_filter($c['routing']['rules'], static fn($r) => ($r['ruleTag'] ?? 
 $bot->answerText = "probe=204 0.1\nip=2001:4860::1\nloc=XX\n";
 $check($bot->exitProbe($id, false)['error'] === 'ipv6 source', 'Проверка обнаруживает ошибочный исходящий IPv6');
 $bot->sets = ['https://sets.example/youtube.srs' => ['entries' => ['domain:srs.example']],
-    'https://sets.example/networks.mrs' => ['entries' => ['2001:4860:1::/48']]];
+    "https://sets.example/networks.mrs\nipcidr" => ['entries' => ['2001:4860:1::/48']]];
 $withSets = $p;
-$withSets['exits'][$id]['rulesets'] = ['https://sets.example/youtube.srs' => ['on' => 1], 'https://sets.example/networks.mrs' => ['on' => 1]];
+$withSets['exits'][$id]['rulesets'] = ['https://sets.example/youtube.srs' => ['on' => 1], 'https://sets.example/networks.mrs' => ['on' => 1, 'behavior' => 'ipcidr']];
 $c = $base; $bot->ensureExitNodes($c, $withSets);
 $selected = array_values(array_filter($c['routing']['rules'], static fn($r) => ($r['user'] ?? []) === ['alice']));
 $check(in_array('domain:srs.example', $selected[0]['domain'], true) && in_array('2001:4860:1::/48', $selected[1]['ip'], true), 'SRS и MRS выбирают тот же строгий IPv6-выход');
@@ -99,7 +99,7 @@ $check(($c['routing']['rules'][0]['ruleTag'] ?? '') === 'vpnbot:exit:unavailable
 $same = $c; $bot->ensureExitNodes($c, $withSets); $bot->ensureWgGuard($c);
 $check($same === $c, 'Повторная сборка аварийного запрета идемпотентна');
 $bot->sets = ['https://sets.example/youtube.srs' => ['entries' => ['domain:srs.example']],
-    'https://sets.example/networks.mrs' => ['entries' => ['2001:4860:1::/48']]];
+    "https://sets.example/networks.mrs\nipcidr" => ['entries' => ['2001:4860:1::/48']]];
 $bot->ensureExitNodes($c, $withSets); $bot->ensureWgGuard($c);
 $check(!array_filter($c['routing']['rules'], static fn($r) => str_starts_with($r['ruleTag'] ?? '', 'vpnbot:exit:unavailable:')),
     'После восстановления кэша аварийный запрет снимается');

@@ -105,6 +105,27 @@ $bot->pacState['managed_nodes'][$id]['job'] = null;
 $bot->nodeRoutesMenu($id, 'block');
 $check(in_array("/nlApply $id block", $cb($bot), true), 'lists stay pending until confirmation');
 
+// An edit made after submission stays pending when the earlier generation is confirmed.
+$race = new RoutesFixtureBot();
+$race->pacState['managed_nodes'][$id]['job'] = null;
+$race->pacState['managed_nodes'][$id]['status']['shared_routes'] = true;
+$race->saveNodeRoutes('full:first.example', $id, 'block');
+$race->nodeRoutesApply($id, 'block');
+$sent = $race->pacState['managed_nodes'][$id]['job']['lists_sent'];
+$race->saveNodeRoutes('full:second.example', $id, 'block');
+$race->managedNodePoll($id);
+$race->nodeRoutesMenu($id, 'block');
+$check($race->pacState['managed_nodes'][$id]['lists_sent'] === $sent && in_array("/nlApply $id block", $cb($race), true), 'confirmation preserves a later edit');
+
+$limits = new RoutesFixtureBot();
+$limits->pacState['managed_nodes'][$id]['job'] = null;
+$limits->pacState['managed_nodes'][$id]['status']['shared_routes'] = true;
+$lines = [];
+for ($i = 0; $i <= 2000; $i++) $lines[] = "full:r$i.example";
+for ($i = 0; $i <= 20; $i++) $lines[] = "set: https://lists.example/r$i.srs";
+$limits->saveNodeRoutes(implode("\n", $lines), $id, 'block');
+$list = $limits->pacState['managed_nodes'][$id]['lists']['block'];
+$check(count($list['routes']) === 2000 && count($list['rulesets']) === 20, 'source list entry and set count limits');
 // An unavailable set must not become a smaller list.
 $broken = new RoutesFixtureBot();
 $broken->pacState['managed_nodes'][$id]['job'] = null;
@@ -158,6 +179,9 @@ $csv->saveNodeRoutes("regexp:([a-z\nregexp:^cdn[0-9]+\\.example$", $id, 'warp');
 $check(array_keys($csv->pacState['managed_nodes'][$id]['lists']['warp']['routes']) === ['regexp:^cdn[0-9]+\\.example$']
     && str_contains(end($csv->screens)[0], 'пропущено'), 'invalid regexp rejected at save');
 // Blocking the probe host would roll back every apply: refuse it with a clear reason.
+$exitList = ['routes' => [], 'fallback' => 'direct'];
+[$accepted, $ignored] = $csv->exitMergeRoutes($exitList, ['regexp:([a-z' => 1, 'domain:kept.example' => 1]);
+$check($accepted === 1 && $ignored === 1 && $exitList['routes'] === ['domain:kept.example' => 1], 'exit import validates patterns with the selected core');
 foreach (["domain:gstatic.com", "keyword:gstatic", "regexp:^www\\.gst", "198.51.100.128/25"] as $entry) {
     $probe = new RoutesFixtureBot();
     $probe->pacState['managed_nodes'][$id]['job'] = null;
@@ -230,6 +254,24 @@ $guardBot->xrayState['routing']['rules'] = [];
 $guardBot->managedNodeSubmit($id,'configure',$job['value']);
 $check(!isset($guardBot->submitted[2]['value']['policy']), 'cleared controller list removes the empty policy');
 echo "PASS controller IP synchronization, revision and removal\n";
+
+// IP synchronization must keep the rules of the running generation, even when
+// an admin has removed a block or added a WARP entry without pressing Apply.
+$sync = new GuardFixtureBot();
+$confirmedRoutes = ['block' => ['domain' => ['full:blocked.example']], 'warp' => ['ip' => ['192.0.2.0/24']]];
+$sync->remoteStatus['shared_routes'] = $sync->remoteStatus['controller_ip_guard'] = true;
+$sync->remoteStatus['pending'] = null;
+$sync->remoteStatus['options']['policy'] = ['routes' => $confirmedRoutes];
+$sync->pacState['managed_nodes'][$id]['job'] = null;
+$sync->pacState['managed_nodes'][$id]['lists'] = ['block' => ['routes'=>[], 'rulesets'=>[]],
+    'warp' => ['routes'=>['full:draft.example'=>1], 'rulesets'=>[]]];
+$sync->pacState['managed_nodes'][$id]['lists_sent'] = str_repeat('a', 64);
+$sync->xrayState['routing']['rules'] = [['ruleTag'=>'vpnbot:routes:block:ip', 'ip'=>['198.51.100.7']]];
+$sync->checkManagedNodes();
+$sent = $sync->submitted[0]['value']['policy'] ?? [];
+$check(($sent['routes'] ?? null) === $confirmedRoutes && ($sent['controller_ips'] ?? []) === ['198.51.100.7'],
+    'automatic IP sync preserves confirmed routes and sends only the IP change');
+$check(!isset($sync->pacState['managed_nodes'][$id]['job']['lists_sent']), 'an automatic job cannot acknowledge list edits');
 
 foreach ([true, false] as $healthy) {
     $rejoined = new GuardFixtureBot();

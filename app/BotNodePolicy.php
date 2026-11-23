@@ -147,8 +147,12 @@ trait BotNodePolicy
             $config = $this->getXray();
             if (!is_array($config) || !isset($config['routing']['rules'])) return;
             if (self::policyIpsDigest($options['policy'] ?? []) !== $this->controllerBlockedIpsDigest($config)) {
-                // Submission expands the current list and assigns a new revision.
-                $this->managedNodeSubmitLocked($id, 'configure', $options, $node['status']['generation']);
+                // The PAC contains only digests. Take the applied rules from the node:
+                // an IP refresh must neither publish local edits nor mark them as applied.
+                $running = $this->managedNodeRpc($id, ['action' => 'status']);
+                if (!empty($running['pending']) || !is_array($running['options'] ?? null)
+                    || ($running['generation'] ?? null) !== $node['status']['generation']) return;
+                $this->managedNodeSubmitLocked($id, 'configure', $running['options'], $running['generation'], false);
                 return;
             }
             // A restored node can accept a different policy identity, even with no shared IP blocks.

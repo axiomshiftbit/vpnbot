@@ -4,6 +4,7 @@
 Run on the test machine with an existing vpnbot-managed-node-lab container.
 All links live in two disposable container namespaces; host firewall is untouched.
 """
+import json
 import os
 from pathlib import Path
 import shutil
@@ -110,6 +111,9 @@ try:
     # makes it an on-link neighbour, which the node's guard rightly blocks.
     run(['nsenter', '-t', node_pid, '-n', 'ip', 'address', 'del', '11.77.0.128/32', 'dev', 'lo'], check=True)
     run(['nsenter', '-t', node_pid, '-n', 'ip', 'route', 'replace', '11.77.0.128/32', 'via', '11.77.0.3', 'dev', 'mn-node'], check=True)
+    if '--cold-restore' in sys.argv:
+        run(['nsenter', '-t', main_pid, '-n', 'ip', 'addr', 'add', '11.77.0.200/32', 'dev', 'mn-main'], check=True)
+        run(['nsenter', '-t', node_pid, '-n', 'ip', 'route', 'replace', '11.77.0.200/32', 'via', '11.77.0.3', 'dev', 'mn-node'], check=True)
     pin = run(['docker', 'exec', outer, 'cat', '/etc/ssh/ssh_host_ed25519_key.pub'], check=True).stdout
     (work/'work/host.pub').write_bytes(b' '.join(pin.split()[:2]))
     prepared = True
@@ -138,7 +142,7 @@ class Probe(BaseHTTPRequestHandler):
   self.send_header('Content-Length',str(len(body)))
   self.end_headers();self.wfile.write(body)
  def log_message(self,*args): pass
-server=FixtureServer(('11.77.0.128',18089),Probe)
+server=FixtureServer(('0.0.0.0',18089),Probe)
 Path('/work/probe.ready').touch()
 server.serve_forever()
 '''
@@ -174,6 +178,19 @@ server.serve_forever()
             step('awg-enable')
             poll()
             step('awg-traffic')
+        step('lists-apply')
+        poll()
+        step('lists-confirmed')
+        # Replay only the routing fields read over pinned SSH in the two isolated real Xray cores.
+        sys.path.insert(0, str(lab/'tests'))
+        from node_policy_test import NodePolicy
+        routes = json.loads((work/'work/confirmed-routes.json').read_text())
+        NodePolicy().check_data_plane(routes, str(lab/'x31'))
+        print('PASS confirmed SSH lists select block, WARP and direct for TCP and UDP', flush=True)
+        step('lists-health')
+        poll('await-rollback')
+        poll('rolled-back', attempts=240)
+        step('lists-confirmed')
         step('peer-add')
         poll()
         step('peer-export')

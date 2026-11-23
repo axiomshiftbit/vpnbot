@@ -36,6 +36,15 @@ class ExitToolsBot extends Bot
     public function setPacConf(array $conf) { $this->confPac = $conf; return true; }
     public function getXray() { return $this->confXray; }
     public int $restarts = 0;
+    public function validateXrayConfig(array $config, string $binary = 'xray'): bool
+    {
+        $core = getenv('VLESS_TEST_XRAY');
+        if (!$core) return true;
+        $process = proc_open([$core, 'run', '-test', '-format', 'json', '-config', 'stdin:'],
+            [0 => ['pipe', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']], $pipes);
+        fwrite($pipes[0], json_encode($config, JSON_THROW_ON_ERROR)); fclose($pipes[0]);
+        return proc_close($process) === 0;
+    }
     public function restartXray($c, $norestart = false) { $this->restarts++; $this->ensureExitNodes($c, $this->confPac); $this->confXray = $c; return true; }
     public function withLock(string $name, callable $fn, int $timeout = 0, $busy = null) { return $fn(); }
     public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null')

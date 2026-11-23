@@ -350,7 +350,7 @@ trait BotExitNodes
         $entries = array_filter($node['routes'], static fn($on) => !empty($on));
         foreach ($node['rulesets'] as $url => $set) {
             if (!is_array($set) || empty($set['on'])) continue;
-            foreach ($this->exitRulesetCache((string) $url)['entries'] ?? [] as $entry) $entries[$entry] = 1;
+            foreach ($this->exitRulesetView((string) $url, $set)['entries'] ?? [] as $entry) $entries[$entry] = 1;
         }
         return $entries;
     }
@@ -367,7 +367,7 @@ trait BotExitNodes
         $problems = [];
         foreach ($node['rulesets'] as $url => $set) {
             if (!is_array($set) || empty($set['on'])) continue;
-            $cached = $this->exitRulesetCache((string) $url)['entries'] ?? [];
+            $cached = $this->exitRulesetView((string) $url, $set)['entries'] ?? [];
             if (!is_array($cached) || !$cached) $problems[] = (string) $url;
         }
         foreach (array_keys($entries ?? $this->exitNodeEntries($node)) as $entry) {
@@ -439,6 +439,21 @@ trait BotExitNodes
     {
         $data = @json_decode((string) @file_get_contents($this->exitRulesetFile($key)), true);
         return is_array($data) && ($data['key'] ?? null) === $key ? $data : [];
+    }
+
+    private static function exitRulesetKey(string $url, array $set): string
+    {
+        return self::ruleSetFormat($url) === 'mrs' ? $url . "\n" . ($set['behavior'] ?? 'domain') : $url;
+    }
+
+    private function exitRulesetView(string $url, array $set): array
+    {
+        $key = self::exitRulesetKey($url, $set);
+        $cache = $this->exitRulesetCache($key);
+        if ($cache || $key === $url) return $cache;
+        // Before MRS caches were split the parser stamp identified the last successful conversion.
+        $legacy = $this->exitRulesetCache($url);
+        return str_ends_with($legacy['parser'] ?? '', ':mrs:' . ($set['behavior'] ?? 'domain')) ? $legacy : [];
     }
 
     // Выход «напрямую» для запасного пути: первым его не ставим — первый
@@ -627,7 +642,8 @@ trait BotExitNodes
                 }
             }
             if (empty($node['enabled'])) continue;
-            if ($outbound === null && $node['fallback'] !== 'block') continue;
+            $broken = $outbound === null;
+            if ($broken && $node['fallback'] !== 'block' && !$policy) continue;
             // Повреждённая ссылка строгой ноды не должна снимать её маршруты.
             $outbound ??= ['protocol' => 'blackhole'];
             if (($node['managed_profile']['channel'] ?? '') === 'amnezia' && in_array($outbound['protocol'], ['vless', 'trojan'], true)) {
@@ -666,6 +682,8 @@ trait BotExitNodes
                 'protocol' => 'socks', 'settings' => ['auth' => 'noauth', 'udp' => false]];
             $groupTarget = $groupProbe = null;
             if ($node['kind'] === 'group') {
+                $fallback = $node['fallback'] === 'direct'
+                    ? $this->exitGuardedFallback($c, $probe, $id, $nodes, $node['members'], $index - 1) : 'block';
                 $members = [];
                 foreach ($node['members'] as $member) {
                     $candidate = $nodes[$member] ?? [];
@@ -676,15 +694,16 @@ trait BotExitNodes
                 $this->ensureDirectOutbound($c);
                 if ($members) {
                     $balanced = array_merge($balanced, $members);
-                    $c['routing']['balancers'][] = ['tag' => $tag, 'selector' => $members, 'strategy' => ['type' => 'leastPing'], 'fallbackTag' => $node['fallback']];
+                    $c['routing']['balancers'][] = ['tag' => $tag, 'selector' => $members, 'strategy' => ['type' => 'leastPing'], 'fallbackTag' => $fallback];
                     $c['routing']['balancers'][] = ['tag' => $tag . '-probe', 'selector' => $members, 'strategy' => ['type' => 'leastPing'], 'fallbackTag' => 'block'];
                 }
-                $groupTarget = $members ? ['balancerTag' => $tag] : ['outboundTag' => $node['fallback']];
+                $groupTarget = $members ? ['balancerTag' => $tag] : ['outboundTag' => $fallback];
                 $groupProbe = $members ? ['balancerTag' => $tag . '-probe'] : ['outboundTag' => 'block'];
                 if ($node['choice'] !== 'auto') {
                     $selected = self::EXIT_TAG . $node['choice'];
                     $selected = in_array($selected, $members, true) ? $selected : ($node['choice'] === 'direct' && $node['fallback'] === 'direct' ? 'direct' : 'block');
-                    $groupTarget = $groupProbe = ['outboundTag' => $selected];
+                    $groupProbe = ['outboundTag' => $selected];
+                    $groupTarget = ['outboundTag' => $selected === 'direct' ? $fallback : $selected];
                 }
             }
             $probe[] = ['type' => 'field', 'ruleTag' => self::EXIT_RULE . $id . ':probe',
@@ -741,10 +760,15 @@ trait BotExitNodes
             $x = $this->listToXrayRules($entries);
             if (!$x['domain'] && !$x['ip']) continue;
             $target = $groupTarget ?? ['outboundTag' => $tag];
-            if ($node['kind'] === 'remote' && $outbound['protocol'] !== 'blackhole') {
-                $c['routing']['balancers'][] = ['tag' => $tag, 'selector' => [$tag], 'strategy' => ['type' => 'random'], 'fallbackTag' => $node['fallback']];
-                $target = ['balancerTag' => $tag];
-                $balanced[] = $tag;
+            if ($node['kind'] === 'remote' && ($broken || $outbound['protocol'] !== 'blackhole')) {
+                $fallback = $node['fallback'] === 'direct' ? $this->exitGuardedFallback($c, $probe, $id, $nodes, [$id], $index - 1) : 'block';
+                if ($broken) {
+                    $target = ['outboundTag' => $fallback];
+                } else {
+                    $c['routing']['balancers'][] = ['tag' => $tag, 'selector' => [$tag], 'strategy' => ['type' => 'random'], 'fallbackTag' => $fallback];
+                    $target = ['balancerTag' => $tag];
+                    $balanced[] = $tag;
+                }
             }
             // QUIC к доменам узла режем: браузер сразу переходит на TCP, и тот
             // идёт через узел (QUIC внутри TCP-туннеля к тому же медленнее).
@@ -873,15 +897,72 @@ trait BotExitNodes
     {
         $tag = self::EXIT_TAG . 'group-member-' . $slot;
         $port = self::EXIT_PROBE_PORT + 2 * self::EXIT_MAX + $slot;
+        $this->exitLocalTrojanHop($c, $tag, $port, 'vpnbot/group-member/' . $member);
+        $hop = $this->exitResolvedHop($c, $rules, 'member-' . $slot, ['outboundTag' => $member]);
+        $rules[] = ['type' => 'field', 'ruleTag' => self::EXIT_RULE . 'member-' . $slot,
+            'inboundTag' => [$tag], 'outboundTag' => $hop];
+        return $tag;
+    }
+
+    private function exitLocalTrojanHop(array &$c, string $tag, int $port, string $context): void
+    {
         $secret = (string) ($this->key ?? '');
-        $login = $secret !== '' ? hash_hmac('sha256', 'vpnbot/group-member/' . $member, $secret) : bin2hex(random_bytes(32));
+        $login = $secret !== '' ? hash_hmac('sha256', $context, $secret) : bin2hex(random_bytes(32));
         $c['inbounds'][] = ['tag' => $tag, 'listen' => '127.0.0.1', 'port' => $port, 'protocol' => 'trojan',
             'settings' => ['clients' => [['password' => $login]]]];
         $c['outbounds'][] = ['tag' => $tag, 'protocol' => 'trojan',
             'settings' => ['servers' => [['address' => '127.0.0.1', 'port' => $port, 'password' => $login]]]];
-        $hop = $this->exitResolvedHop($c, $rules, 'member-' . $slot, ['outboundTag' => $member]);
-        $rules[] = ['type' => 'field', 'ruleTag' => self::EXIT_RULE . 'member-' . $slot,
-            'inboundTag' => [$tag], 'outboundTag' => $hop];
+    }
+
+    /** Apply only the selected exits' confirmed blocks to traffic using the direct fallback. */
+    private function exitGuardedFallback(array &$c, array &$rules, string $id, array $nodes, array $members, int $slot): string
+    {
+        $domains = $ips = [];
+        $managed = false;
+        foreach ($members as $member) {
+            $policy = $nodes[$member]['policy'] ?? [];
+            if (!$policy) continue;
+            $managed = true;
+            $routes = $policy['routes'] ?? $this->applyingNodeRoutes[$member] ?? null;
+            if (isset($policy['routes_digest'])) {
+                if ($policy['routes_digest'] === self::nodeRoutesDigest([])) continue;
+                if ($routes === null) {
+                    try { $routes = $this->managedNodeTransport((string) $member, 'saved-routes')['routes'] ?? null; }
+                    catch (Throwable $error) { return 'block'; }
+                }
+                if (!is_array($routes) || self::nodeRoutesDigest($routes) !== $policy['routes_digest']) return 'block';
+            }
+            $blocks = [$routes['block'] ?? []];
+            foreach ($policy['bindings']['all'] ?? [] as $row) {
+                if (($row['action'] ?? '') === 'block') $blocks[] = $policy['lists'][$row['list']] ?? [];
+            }
+            foreach ($blocks as $block) {
+                foreach ($block['domain'] ?? [] as $domain) $domains[str_starts_with($domain, 'keyword:') ? substr($domain, 8) : $domain] = true;
+                foreach ($block['ip'] ?? [] as $ip) $ips[$ip] = true;
+            }
+        }
+        if ($managed) foreach ($c['routing']['rules'] as $rule) {
+            if (($rule['ruleTag'] ?? '') === 'vpnbot:routes:block:ip') foreach ($rule['ip'] as $ip) $ips[$ip] = true;
+        }
+        if (!$domains && !$ips) return 'direct';
+        $name = 'fallback-' . $id;
+        $tag = self::EXIT_TAG . $name;
+        if ($domains && $ips) {
+            // ForceIP needs an inbound connection. A second bare loopback loses it in Xray.
+            $this->exitLocalTrojanHop($c, $tag, self::EXIT_PROBE_PORT + 3 * self::EXIT_MAX + $slot, 'vpnbot/fallback/' . $id);
+        } elseif ($domains) {
+            $c['outbounds'][] = ['tag' => $tag, 'protocol' => 'loopback', 'settings' => ['inboundTag' => $tag]];
+        }
+        $source = ['type' => 'field', 'inboundTag' => [$tag]];
+        if ($domains) $rules[] = $source + ['ruleTag' => self::EXIT_RULE . "$name:domain", 'domain' => array_map('strval', array_keys($domains)), 'outboundTag' => 'block'];
+        $target = 'direct';
+        if ($ips) {
+            $rules[] = ['type' => 'field', 'ruleTag' => self::EXIT_RULE . "$name:ip", 'inboundTag' => [self::EXIT_RESOLVE_TAG . $name],
+                'ip' => array_keys($ips), 'outboundTag' => 'block'];
+            $target = $this->exitResolvedHop($c, $rules, $name, ['outboundTag' => 'direct']);
+            if (!$domains) return $target;
+        }
+        $rules[] = $source + ['ruleTag' => self::EXIT_RULE . "$name:allow", 'outboundTag' => $target];
         return $tag;
     }
 
@@ -1382,7 +1463,8 @@ trait BotExitNodes
     /** Обновить набор правил; при отказе прежний разобранный набор остаётся. */
     public function exitRulesetRefresh(string $url, array $set): string
     {
-        $cache = $this->exitRulesetCache($url);
+        $key = self::exitRulesetKey($url, $set);
+        $cache = $this->exitRulesetView($url, $set);
         $format = self::ruleSetFormat($url);
         $behavior = (string) ($set['behavior'] ?? 'domain');
         $parser = self::EXIT_RULESET_PARSER . ":$format:$behavior";
@@ -1404,17 +1486,18 @@ trait BotExitNodes
         // сбой скачивания или инструмента не обесценивают последний кэш.
         if ($unsupported && $format === 'srs' && ($cache['parser'] ?? '') !== $parser
             && hash('sha256', $binary) === ($cache['hash'] ?? '') && !empty($cache['entries'])) {
-            @copy($this->exitRulesetFile($url), $this->exitRulesetFile($url) . '.previous');
+            @copy($this->exitRulesetFile($key), $this->exitRulesetFile($key) . '.previous');
             $cache['entries'] = [];
             $cache['hash'] = '';
             $cache['parser'] = '';
         }
-        $cache = ['key' => $url, 'time' => time(), 'error' => $error]
+        $cache = ['key' => $key, 'time' => time(), 'error' => $error]
             + ($error === '' ? ['entries' => $entries, 'hash' => hash('sha256', $binary), 'parser' => $parser]
                 : ['entries' => $cache['entries'] ?? [], 'hash' => $cache['hash'] ?? '', 'parser' => $cache['parser'] ?? '']);
         @mkdir($this->exitRulesetDir(), 0700, true);
-        $file = $this->exitRulesetFile($url);
-        if (@file_put_contents("$file.tmp", json_encode($cache, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) !== false) @rename("$file.tmp", $file);
+        $file = $this->exitRulesetFile($key);
+        $tmp = @tempnam(dirname($file), '.ruleset-');
+        if ($tmp !== false && (@file_put_contents($tmp, json_encode($cache, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) === false || !@rename($tmp, $file))) @unlink($tmp);
         return $error;
     }
 
@@ -1423,7 +1506,7 @@ trait BotExitNodes
         $x = $this->listToXrayRules(array_fill_keys($entries, 1));
         $rules = [];
         foreach (['domain', 'ip'] as $field) if ($x[$field]) $rules[] = ['type' => 'field', $field => $x[$field], 'outboundTag' => 'direct'];
-        return $this->validateXrayConfig(['outbounds' => [['protocol' => 'freedom', 'tag' => 'direct']], 'routing' => ['rules' => $rules]]);
+        return $this->validateXrayConfig(['outbounds' => [['protocol' => 'freedom', 'tag' => 'direct']], 'routing' => ['rules' => $rules]], self::XRAY_BINARIES[$this->xrayCoreSelection()]);
     }
 
     /** Обновить наборы узла, которым пора (или все при $force); true — записи изменились. */
@@ -1434,7 +1517,7 @@ trait BotExitNodes
         $changed = false;
         foreach ($node['rulesets'] as $url => $set) {
             if (!is_array($set) || empty($set['on'])) continue;
-            $cache = $this->exitRulesetCache((string) $url);
+            $cache = $this->exitRulesetView((string) $url, $set);
             // Неудачная попытка повторяется через час, а не через сутки.
             $interval = ($cache['error'] ?? '') !== '' ? 3600 : max(3600, (int) ($set['interval'] ?? 86400));
             if (!$force && $cache && time() - (int) ($cache['time'] ?? 0) < $interval) continue;
@@ -1443,7 +1526,7 @@ trait BotExitNodes
             $mark = static fn(array $c) => ($c['hash'] ?? '') . '|' . ($c['parser'] ?? '');
             $before = $mark($cache);
             $this->exitRulesetRefresh((string) $url, $set);
-            if ($mark($this->exitRulesetCache((string) $url)) !== $before) $changed = true;
+            if ($mark($this->exitRulesetView((string) $url, $set)) !== $before) $changed = true;
         }
         return $changed;
     }
@@ -1662,7 +1745,7 @@ trait BotExitNodes
             $this->t("Маршрутов: $routes · наборов правил: $sets · пользователей: $users", "Routes: $routes · rule sets: $sets · users: $users"),
             $node['kind'] === 'group' ? $this->t('Трафик группы учитывается у её узлов.', 'Group traffic is counted at its member nodes.') : $this->exitTrafficLine($id),
             $this->t('QUIC к доменам узла: ', 'QUIC to node domains: ') . ($node['quic'] === 'block' ? $this->t('блокируется (браузер сразу идёт по TCP через узел)', 'blocked (the browser goes over TCP through the node right away)') : $this->t('пропускается', 'allowed')),
-            !self::exitDirectFallback($node) ? $this->t('При отказе: блокировать, без запасного выхода', 'On failure: block, no fallback') : $this->t('При отказе узла: маршруты по спискам идут напрямую с этого сервера', 'If the node fails: list-based routes go direct from this server'),
+            !self::exitDirectFallback($node) ? $this->t('При отказе: блокировать, без запасного выхода', 'On failure: block, no fallback') : $this->t('При отказе узла маршруты по спискам идут напрямую с этого сервера. Подтверждённая «Блокировка» сохраняется.', 'If the node fails, list-based routes go direct from this server. Confirmed Block rules still apply.'),
             $this->t('Новым пользователям: ', 'For new users: ') . ($node['auto'] ? $this->t('включается сразу', 'enabled at once') : $this->t('не включается', 'not enabled')));
         if ($node['kind'] === 'remote' && !isset($this->managedNodes()[$id])) $text[] = $this->exitSubLine($node);
         if ($node['kind'] === 'group') $text[] = $this->t('Выбор: ', 'Selection: ') . self::esc($this->exitChoiceLabel($node, $this->exitNodes()));
@@ -2278,6 +2361,8 @@ trait BotExitNodes
         $added = $skipped = 0;
         $unready = [];
         $seen = [];
+        // Validate accepted regexps with the selected Xray core before they can enter any stored route list.
+        $patterns = [];
         foreach (array_keys($node['routes']) as $key) if (($canon = $this->routeEntryCanonKey((string) $key)) !== '') $seen[$canon] = true;
         foreach ($entries as $entry => $on) {
             $entry = trim((string) $entry);
@@ -2287,9 +2372,23 @@ trait BotExitNodes
             if (count($node['routes']) >= 2000) { $skipped++; continue; }
             // Строгому узлу запись без .dat закрыла бы весь трафик его пользователей.
             if ($on && ($node['fallback'] ?? '') === 'block' && !$this->exitRouteEntryReady($entry)) { $unready[] = $entry; continue; }
+            if ($c['kind'] === 'regexp') $patterns[] = $entry;
             $node['routes'][$entry] = $on ? 1 : 0;
             $seen[$canon] = true;
             $added++;
+        }
+        // Bisect rejected batches so one bad expression in a large import needs only logarithmically many core checks.
+        $batches = $patterns ? [$patterns] : [];
+        while ($batches) {
+            $batch = array_pop($batches);
+            if ($this->exitRulesetCoreAccepts($batch)) continue;
+            if (count($batch) > 1) {
+                array_push($batches, ...array_chunk($batch, (int) ceil(count($batch) / 2)));
+                continue;
+            }
+            unset($node['routes'][$batch[0]]);
+            $added--;
+            $skipped++;
         }
         return [$added, $skipped, $unready];
     }
@@ -2475,7 +2574,7 @@ trait BotExitNodes
             [$added, $skipped, $unready] = $this->exitMergeRoutes($node, $routes);
             foreach ($sets as $url => $set) {
                 if (!is_array($set) || isset($node['rulesets'][$url]) || count($node['rulesets']) >= 20) continue;
-                if (!empty($set['on']) && $node['fallback'] === 'block' && !($this->exitRulesetCache((string) $url)['entries'] ?? [])) { $unready[] = (string) $url; continue; }
+                if (!empty($set['on']) && $node['fallback'] === 'block' && !($this->exitRulesetView((string) $url, $set)['entries'] ?? [])) { $unready[] = (string) $url; continue; }
                 $node['rulesets'][$url] = ['on' => empty($set['on']) ? 0 : 1, 'behavior' => ($set['behavior'] ?? 'domain') === 'ipcidr' ? 'ipcidr' : 'domain',
                     'interval' => max(3600, (int) ($set['interval'] ?? 86400))];
                 $newSets[$url] = $node['rulesets'][$url];
@@ -2532,8 +2631,14 @@ trait BotExitNodes
     // набор не нужен больше ни одному узлу.
     private function exitRulesetForget(string $url, ?array $p = null): void
     {
+        $p ??= $this->getPacConf();
         foreach ($this->exitNodes($p) as $node) if (isset($node['rulesets'][$url])) return;
-        @unlink($this->exitRulesetFile($url));
+        foreach ($p['managed_nodes'] ?? [] as $node) foreach ($node['lists'] ?? [] as $list) {
+            if (isset($list['rulesets'][$url])) return;
+        }
+        foreach (array_unique([$url, self::exitRulesetKey($url, ['behavior' => 'domain']), self::exitRulesetKey($url, ['behavior' => 'ipcidr'])]) as $key) {
+            @unlink($this->exitRulesetFile($key));
+        }
     }
 
     private function exitFindEntry(array $node, string $key, string $field = 'routes'): ?string
@@ -2590,7 +2695,7 @@ trait BotExitNodes
         $data = [];
         foreach ($node['rulesets'] as $url => $set) {
             if (!is_array($set)) continue;
-            $cache = $this->exitRulesetCache((string) $url);
+            $cache = $this->exitRulesetView((string) $url, $set);
             $state = !$cache ? $this->t('⏳ не скачан', '⏳ not downloaded') : (($cache['error'] ?? '') !== '' ? '⚠️ ' . $this->exitErrorText((string) $cache['error']) : $this->t('записей: ', 'entries: ') . count($cache['entries'] ?? []));
             $shown = mb_strlen((string) $url) > 90 ? mb_substr((string) $url, 0, 60) . '…' . mb_substr((string) $url, -25) : (string) $url;
             $text[] = "\n" . (!empty($set['on']) ? '✅' : '⏸') . ' <code>' . self::esc($shown) . '</code> — ' . self::esc($state)
@@ -2723,7 +2828,7 @@ trait BotExitNodes
             foreach ($new as $url => $set) {
                 if (isset($node['rulesets'][$url]) || count($node['rulesets']) >= 20) continue;
                 // Строгий узел с нескачанным набором закрыл бы весь трафик своих пользователей.
-                if ($node['fallback'] === 'block' && !($this->exitRulesetCache((string) $url)['entries'] ?? [])) { $unready[] = (string) $url; continue; }
+                if ($node['fallback'] === 'block' && !($this->exitRulesetView((string) $url, $set)['entries'] ?? [])) { $unready[] = (string) $url; continue; }
                 $node['rulesets'][$url] = $set;
                 $added++;
             }
@@ -2747,7 +2852,7 @@ trait BotExitNodes
             if ($free <= 0) break;
             if (!is_array($set) || isset($node['rulesets'][$url])) continue;
             $free--;
-            if (!empty($set['on']) && ($force || !$this->exitRulesetCache((string) $url))) $this->exitRulesetRefresh((string) $url, $set);
+            if (!empty($set['on']) && ($force || !$this->exitRulesetView((string) $url, $set))) $this->exitRulesetRefresh((string) $url, $set);
         }
     }
 
@@ -2757,7 +2862,7 @@ trait BotExitNodes
         // Включаемый набор строгого узла скачиваем заранее: без кэша правка отклоняется.
         $node = $this->exitNodes()[$id] ?? null;
         $url = $node === null || $delete ? null : $this->exitFindEntry($node, $key, 'rulesets');
-        if ($url !== null && empty($node['rulesets'][$url]['on']) && $this->exitStrict($id) && !($this->exitRulesetCache($url)['entries'] ?? [])) {
+        if ($url !== null && empty($node['rulesets'][$url]['on']) && $this->exitStrict($id) && !($this->exitRulesetView($url, $node['rulesets'][$url])['entries'] ?? [])) {
             $this->exitRulesetRefresh($url, $node['rulesets'][$url]);
         }
         $error = $this->exitEditNode($id, function (array &$node) use ($key, $delete, &$removed) {
