@@ -19,17 +19,10 @@ import node_policy
 
 
 def fixture():
-    scope = node_policy.peer_scope(PEER['id'])
-    bot = 'bot-' + 'a' * 20
-    lists = {'never': {'domain': ['domain:blocked.test'], 'ip': ['1.0.0.0/24']},
-             'tunnel': {'domain': ['full:tunnel.test', 'keyword:video', 'regexp:^cdn[0-9]+\\.test$']},
-             'direct': {'domain': ['full:direct.test']}, 'net': {'ip': ['11.77.0.0/24']},
-             'personal': {'domain': ['full:personal.test']}}
-    choices = [{'list': key, 'action': action} for key, action in
-               [('tunnel','warp'), ('direct','direct'), ('net','warp'), ('personal','block')]]
-    policy = {'lists': lists, 'bindings': {'all': [{'list':'never','action':'block'}], scope: choices, bot: choices}}
-    value = {'options': OPTIONS4 | {'policy': policy}, 'identity': IDENTITY, 'peers':[PEER]}
-    return value, bot
+    routes = {'block': {'domain': ['domain:blocked.test'], 'ip': ['1.0.0.0/24']},
+              'warp': {'domain': ['full:tunnel.test', 'keyword:video', 'regexp:^cdn[0-9]+\\.test$'], 'ip': ['11.77.0.0/24']}}
+    value = {'options': OPTIONS4 | {'policy': {'routes': routes}}, 'identity': IDENTITY, 'peers': [PEER]}
+    return value
 
 
 class Echo(socketserver.BaseRequestHandler):
@@ -68,102 +61,69 @@ def request(port, login, address, udp):
 
 class NodePolicy(unittest.TestCase):
     def test_closed_schema(self):
-        value, _ = fixture()
-        policy = value['options']['policy']
+        policy = fixture()['options']['policy']
         self.assertEqual(node_policy.validate(policy), policy)
-        for wrong in ({'lists':{},'bindings':{'all':[{'action':'block','list':'missing'}]}},
-                      policy | {'bindings':{'all':[{'action':'direct','list':'never'}]}},
-                      policy | {'lists':{'bad':{'ip':['1.2.3.999']}}}):
-            with self.assertRaises(ValueError):
+        for wrong in ({'routes': {'direct': {'domain': ['full:a.test']}}},
+                      {'routes': {'block': {}}},
+                      {'routes': {'block': {'ip': ['1.2.3.999']}}},
+                      {'routes': {'warp': {'domain': ['a.test']}}},
+                      {'routes': {}, 'controller_ips': ['11.77.1.0/24']},
+                      {'routes': {}, 'extra': 1}):
+            with self.subTest(wrong=wrong), self.assertRaises(ValueError):
                 node_policy.validate(wrong)
 
-    def test_large_named_list_snapshot_and_queue(self):
+    def test_named_lists_of_older_controllers_keep_only_shared_blocks(self):
+        legacy = {'revision': 'a' * 32, 'controller_ips': ['11.77.1.0/24'],
+                  'lists': {'ads': {'domain': ['full:ads.test']}, 'net': {'ip': ['1.0.0.0/24']}, 'tv': {'domain': ['full:tv.test']}},
+                  'bindings': {'all': [{'list': 'ads', 'action': 'block'}, {'list': 'net', 'action': 'block'}],
+                               'bot-' + 'a' * 20: [{'list': 'tv', 'action': 'warp'}]}}
+        self.assertEqual(node_policy.validate(legacy), {'revision': 'a' * 32, 'controller_ips': ['11.77.1.0/24'],
+                         'routes': {'block': {'domain': ['full:ads.test'], 'ip': ['1.0.0.0/24']}}})
+        self.assertEqual(node_policy.validate({'lists': {}, 'bindings': {}}), {'routes': {}})
+
+    def test_large_routes_snapshot_and_queue(self):
         import node_state
         from node_state_test import VALUE
-        value, bot = fixture()
-        value['options']['policy']['lists']['large'] = {'domain':[f'full:ads{i}.example.test' for i in range(5000)]}
-        value['options']['policy']['bindings'][bot].append({'action':'block','list':'large'})
+        value = fixture()
+        value['options']['policy']['routes']['block']['domain'] += [f'full:ads{i}.example.test' for i in range(5000)]
         value['options']['warp_mode'] = 'off'
-        value.update(schema=1,images=VALUE['images'],tls={})
+        value.update(schema=1, images=VALUE['images'], tls={})
         value['identity'] = dict(value['identity'])
         value['identity'].pop('warp_uuid')
         self.assertEqual(node.settings(value['options']), value['options'])
-        op = {'operation':'configure','value':value['options']}
-        self.assertGreater(len(node_state.encode(op,node_state.policy_size(op))),65536)
+        op = {'operation': 'configure', 'value': value['options']}
+        self.assertGreater(len(node_state.encode(op, node_state.policy_size(op))), 65536)
         with tempfile.TemporaryDirectory() as temp:
             store = node_state.Store(Path(temp))
             generation = store.create(value)
             self.assertEqual(store.load(generation)['options']['policy'], value['options']['policy'])
         with self.assertRaises(ValueError):
-            node_state.policy_size(dict(value, unknown='x'*70000))
+            node_state.policy_size(dict(value, unknown='x' * 70000))
 
-    def test_dedicated_login_without_rows_keeps_its_exit(self):
-        # Another subject has rows, this one has none: its dedicated WARP login
-        # must never fall through to the core's first outbound (direct).
-        value, bot = fixture()
-        policy = value['options']['policy']
-        other = 'bot-' + 'b' * 20
-        policy['bindings'] = {other: policy['bindings'][bot], bot: []}
-        for strict in (False, True):
-            with self.subTest(strict=strict):
-                value['options']['warp_mode'] = 'off'
-                main = node.core_config(value['options'], HOST, IDENTITY, [PEER], None)
-                core = {'inbounds': [{'tag': 'warp-handoff', 'settings': {'clients': []}}], 'outbounds': [], 'routing': {'rules': []}} if strict else None
-                if strict:
-                    main['outbounds'].append({'tag': 'warp', 'protocol': 'trojan', 'settings': {'servers': [{'address': '127.0.0.1', 'port': 1, 'password': 'x'}]}})
-                node_policy.compile_policy(main, core, value)
-                for role, expected in (('direct', 'direct'), ('warp', 'warp' if strict else 'block')):
-                    email = f'vpnbot/{bot}/{role}'
-                    first = next((r for r in main['routing']['rules'] if email in r.get('user', [])), None)
-                    self.assertIsNotNone(first, email)
-                    self.assertEqual(set(first) - {'type', 'inboundTag', 'user', 'outboundTag'}, set(), email)
-                    self.assertEqual(first['outboundTag'], expected, email)
-
-    @unittest.skipUnless(os.environ.get('VLESS_TEST_XRAY'), 'requires Xray')
-    def test_direct_ip_with_missing_default_warp(self):
-        value, bot = fixture()
-        policy = value['options']['policy']
-        policy['bindings'][bot] = [{'list': 'net', 'action': 'direct'}]
+    def test_warp_list_without_the_warp_core_goes_direct(self):
+        # Without WARP on the node a WARP entry must not silently become a block.
+        value = fixture()
         value['options']['warp_mode'] = 'off'
         main = node.core_config(value['options'], HOST, IDENTITY, [PEER], None)
         node_policy.compile_policy(main, None, value)
-        login = node_policy.relay_login(IDENTITY['uuid'], bot, 'warp')
-        with ExitStack() as stack:
-            echo = stack.enter_context(socketserver.ThreadingTCPServer(('127.0.0.1', 0), Echo))
-            echo.label = b'direct'
-            threading.Thread(target=echo.serve_forever, daemon=True).start()
-            stack.callback(echo.shutdown)
-            port = free_port()
-            inbound = main['inbounds'][0]
-            inbound.update(listen='127.0.0.1', port=port, streamSettings={'network':'tcp'})
-            for client in inbound['settings']['clients']:
-                client.pop('flow', None)
-            direct = next(o for o in main['outbounds'] if o['tag'] == 'direct')
-            direct.clear()
-            direct.update(tag='direct', protocol='freedom', settings={
-                'redirect': f'127.0.0.1:{echo.server_address[1]}',
-                'finalRules': [{'action': 'allow', 'ip': ['127.0.0.1/32']}]})
-            path = Path(stack.enter_context(tempfile.TemporaryDirectory())) / 'core.json'
-            path.write_text(json.dumps(main))
-            proc = subprocess.Popen([os.environ['VLESS_TEST_XRAY'], 'run', '-c', str(path)],
-                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            stack.callback(proc.wait, 5)
-            stack.callback(proc.terminate)
-            for _ in range(80):
-                if proc.poll() is not None:
-                    self.fail('Xray startup failed')
-                try:
-                    socket.create_connection(('127.0.0.1', port), .1).close()
-                    break
-                except OSError:
-                    time.sleep(.025)
-            self.assertEqual(request(port, login, '11.77.0.8', False), b'directx')
-            self.assertFalse(request(port, login, '1.1.1.1', False))
-            self.assertFalse(request(port, login, 'other.test', False))
+        rules = main['routing']['rules']
+        blocked = [r for r in rules if r.get('outboundTag') == 'block' and 'domain' in r]
+        self.assertTrue(any('domain:blocked.test' in r['domain'] for r in blocked))
+        self.assertFalse(any(d in r['domain'] for r in blocked for d in ('full:tunnel.test', 'video')))
+        self.assertFalse(any('warp' in str(r.get('outboundTag', '')) for r in rules))
+
+    def test_empty_routes_leave_the_core_untouched(self):
+        value = fixture()
+        value['options']['policy'] = {'routes': {}}
+        value['options']['warp_mode'] = 'off'
+        main = node.core_config(value['options'], HOST, IDENTITY, [PEER], None)
+        before = json.dumps(main, sort_keys=True)
+        node_policy.compile_policy(main, None, value)
+        self.assertEqual(json.dumps(main, sort_keys=True), before)
 
     @unittest.skipUnless(os.environ.get('VLESS_TEST_XRAY'), 'requires Xray')
     def test_data_plane(self):
-        value, bot = fixture()
+        value = fixture()
         revision = 'b' * 32
         value['options']['policy'].update(controller_ips=['11.77.1.0/24'], revision=revision)
         main = node.core_config(value['options'], HOST, IDENTITY, [PEER], node_warp.wireguard(profile()))
@@ -212,7 +172,6 @@ class NodePolicy(unittest.TestCase):
                         break
                     except OSError:
                         time.sleep(.025)
-            actor = node_policy.relay_login(IDENTITY['uuid'],bot,'direct',revision)
             ordinary = node_policy.relay_login(IDENTITY['uuid'],'controller','direct',revision)
             tunnel = node_policy.relay_login(IDENTITY['uuid'],'controller','warp',revision)
             health = node_policy.relay_login(IDENTITY['uuid'],'controller','health',revision)
@@ -226,14 +185,15 @@ class NodePolicy(unittest.TestCase):
                 self.assertFalse(request(port,tunnel,'guard.test',udp))
                 self.assertEqual(request(port,tunnel,'other.test',udp),b'warpx')
                 self.assertFalse(request(port,old,'other.test',udp))
-                self.assertFalse(request(port,actor,'11.77.1.0',udp))
+                self.assertFalse(request(port,ordinary,'11.77.1.0',udp))
                 self.assertEqual(request(port,PEER['id'],'11.77.1.0',udp),b'directx')
-                for login in (actor, PEER['id']):
-                    for dest, expected in [('personal.test',None),('ads.blocked.test',None),('1.0.0.1',None),
+                # The shared routes apply to every source: the controller and external peers.
+                for login in (ordinary, PEER['id']):
+                    for dest, expected in [('personal.test',b'directx'),('ads.blocked.test',None),('1.0.0.1',None),
                                            ('tunnel.test',None),('video.test',b'warpx'),('cdn7.test',b'warpx'),
                                            ('direct.test',b'directx'),('11.77.0.8',b'warpx'),('subnet.test',b'warpx'),
                                            ('other.test',b'directx'),('2606:4700::1111',None)]:
-                        with self.subTest(udp=udp,subject=login==actor,dest=dest):
+                        with self.subTest(udp=udp,subject=login==ordinary,dest=dest):
                             self.assertEqual(request(port,login,dest,udp) or None,expected)
                 self.assertEqual(request(port,IDENTITY['uuid'],'personal.test',udp),b'directx')
                 self.assertFalse(request(port,IDENTITY['uuid'],'1.0.0.1',udp))

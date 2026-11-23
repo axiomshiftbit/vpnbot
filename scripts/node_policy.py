@@ -1,10 +1,14 @@
-"""Compile named destination lists for authenticated managed-node clients."""
+"""Shared destination routing of a managed node: Block and WARP lists for all its traffic."""
 from copy import deepcopy
 import hashlib
 import hmac
 import ipaddress
 import re
 import uuid
+
+ROUTE_KINDS = ('block', 'warp')
+# Bound the work before routes expand across every authenticated subject.
+ROUTE_BYTES = 3 * 1024 * 1024
 
 
 def peer_scope(identity):
@@ -18,21 +22,37 @@ def relay_login(identity, scope, mode, revision=None):
     return str(uuid.UUID(bytes=hmac.digest(identity.encode(), message, 'sha256')[:16], version=4))
 
 
+def migrate(value):
+    """Named lists and personal bindings (before shared routes): keep only the shared blocks."""
+    lists = value.get('lists') if isinstance(value.get('lists'), dict) else {}
+    block = {'domain': [], 'ip': []}
+    for row in (value.get('bindings') or {}).get('all', []) if isinstance(value.get('bindings'), dict) else []:
+        parts = lists.get(row.get('list')) if isinstance(row, dict) and row.get('action') == 'block' else None
+        for kind in ('domain', 'ip'):
+            for item in (parts or {}).get(kind, []) if isinstance(parts, dict) else []:
+                if item not in block[kind]:
+                    block[kind].append(item)
+    result = {key: value[key] for key in ('revision', 'controller_ips') if key in value}
+    result['routes'] = {'block': {kind: entries for kind, entries in block.items() if entries}} if any(block.values()) else {}
+    return result
+
+
 def validate(value):
-    if not isinstance(value, dict) or set(value) - {'revision', 'controller_ips'} != {'lists', 'bindings'}:
+    if isinstance(value, dict) and 'bindings' in value:
+        value = migrate(value)
+    if not isinstance(value, dict) or set(value) - {'revision', 'controller_ips'} != {'routes'}:
         raise ValueError('invalid routing policy')
     if 'revision' in value and not re.fullmatch(r'[a-f0-9]{32}', value['revision']):
         raise ValueError('invalid policy revision')
-    lists, bindings = value['lists'], value['bindings']
-    if not isinstance(lists, dict) or len(lists) > 128 or not isinstance(bindings, dict) or len(bindings) > 256:
-        raise ValueError('invalid routing policy size')
-    for name, parts in lists.items():
-        if not re.fullmatch(r'[\w .-]{1,64}', name) or not isinstance(parts, dict) or set(parts) - {'domain', 'ip'}:
-            raise ValueError('invalid named list')
-        if not any(parts.values()):
-            raise ValueError('empty named list')
+    routes = value['routes']
+    if not isinstance(routes, dict) or set(routes) - set(ROUTE_KINDS):
+        raise ValueError('invalid routing lists')
+    size = 0
+    for name, parts in routes.items():
+        if not isinstance(parts, dict) or set(parts) - {'domain', 'ip'} or not any(parts.values()):
+            raise ValueError('invalid routing list')
         for kind, entries in parts.items():
-            if not isinstance(entries, list):
+            if not isinstance(entries, list) or len(entries) > 200000:
                 raise ValueError('invalid list entries')
             for item in entries:
                 if not isinstance(item, str) or not 1 <= len(item) <= 1024 or any(ord(ch) < 32 for ch in item):
@@ -41,6 +61,7 @@ def validate(value):
                     ipaddress.ip_network(item, strict=False)
                 elif not re.fullmatch(r'(full|domain|keyword|regexp):.+', item):
                     raise ValueError('invalid domain matcher')
+                size += len(item.encode()) + 8
     controller_ips = value.get('controller_ips', [])
     if not isinstance(controller_ips, list) or len(controller_ips) > 200000:
         raise ValueError('invalid controller IP list')
@@ -50,55 +71,39 @@ def validate(value):
         if not isinstance(item, str) or len(item) > 64:
             raise ValueError('invalid controller CIDR')
         ipaddress.ip_network(item, strict=False)
-    # Bound work before expanding lists across authenticated routes. Multiple
-    # users can share the same large list; a wire-size check alone misses it.
-    weight = {name: sum(len(item.encode()) + 8 for entries in parts.values() for item in entries)
-              for name, parts in lists.items()}
-    controller_cost = sum(len(item) + 8 for item in controller_ips)
-    total_cost = controller_cost * 5
-    for scope, rows in bindings.items():
-        if not re.fullmatch(r'all|(?:peer|bot)-[a-f0-9]{20}', scope) or not isinstance(rows, list) or not len(rows) <= 128:
-            raise ValueError('invalid policy subject')
-        seen = set()
-        for row in rows:
-            if not isinstance(row, dict) or set(row) != {'list', 'action'} or row['list'] not in lists or row['list'] in seen:
-                raise ValueError('invalid list assignment')
-            seen.add(row['list'])
-            if row['action'] not in (('block',) if scope == 'all' else ('block', 'direct', 'warp')):
-                raise ValueError('invalid routing action')
-    for scope, rows in bindings.items():
-        assigned = rows if scope == 'all' else bindings.get('all', []) + rows
-        domain_choices = sum(1 for row in rows if row['action'] != 'block' and lists[row['list']].get('domain'))
-        contexts = domain_choices + 2 if scope.startswith('bot-') else 2 if scope == 'all' else 1
-        size = sum(weight[row['list']] + 256 for row in assigned)
-        ip_size = sum(weight[row['list']] for row in assigned if lists[row['list']].get('ip'))
-        if scope.startswith('bot-'):
-            ip_size += controller_cost
-            size += controller_cost
-        total_cost += contexts * (size + ip_size * domain_choices)
-    if total_cost > 12 * 1024 * 1024:
+    if size > ROUTE_BYTES:
         raise ValueError('compiled destination policy too large')
     return value
 
 
 def accounts(value):
+    """Revision-bound logins of the controller when it delegates its own IP blocks."""
     policy = value['options']['policy']
-    scopes = [scope for scope in policy['bindings'] if scope.startswith('bot-')]
-    if policy.get('controller_ips'):
-        scopes.append('controller')
-    for scope in scopes:
-        for role, mode in [('direct', 'direct'), ('warp', 'warp'), *[
-                (f'row-{i}', row['action']) for i, row in enumerate(policy['bindings'].get(scope, []))
-                if row['action'] != 'block' and value['options']['policy']['lists'][row['list']].get('domain')]]:
-            yield scope, role, mode, relay_login(value['identity']['uuid'], scope, role, value['options']['policy'].get('revision'))
+    if not policy.get('controller_ips'):
+        return
+    for role in ('direct', 'warp'):
+        yield 'controller', role, role, relay_login(value['identity']['uuid'], 'controller', role, policy.get('revision'))
+
+
+def shared(policy, strict):
+    """Internal named lists: blocks first, then WARP (only with the node's WARP core)."""
+    routes = policy.get('routes', {})
+    lists, rows = {}, []
+    for kind in ROUTE_KINDS:
+        parts = routes.get(kind, {})
+        if any(parts.values()) and (kind == 'block' or strict):
+            lists[kind] = parts
+            rows.append({'list': kind, 'action': kind})
+    return lists, ({'all': rows} if rows else {})
 
 
 def compile_policy(main, strict, value):
     policy = value['options'].get('policy')
-    if not policy or not (any(policy['bindings'].values()) or policy.get('controller_ips')):
+    if not policy:
         return
-    bindings = policy['bindings']
-    lists = policy['lists']
+    lists, bindings = shared(policy, strict)
+    if not bindings and not policy.get('controller_ips'):
+        return
     original = main['inbounds'][0]['settings']['clients'][0]
     incoming = [i['tag'] for i in main['inbounds'] if i['tag'] in ('node', 'node-wg4', 'node-wg6')]
     wg = [tag for tag in incoming if tag != 'node']
@@ -109,23 +114,13 @@ def compile_policy(main, strict, value):
         client['password' if 'password' in original else 'id'] = login
         main['inbounds'][0]['settings']['clients'].append(client)
         subjects.append((scope, mode, ['node'], email, role))
-    for peer in value['peers']:
-        scope = peer_scope(peer['id'])
-        if scope not in bindings or not peer['enabled']:
-            continue
-        if peer.get('channel') == 'wireguard':
-            if wg:
-                slot = value['identity']['external'][peer['id']]['slot']
-                subjects.append((scope, 'direct', wg, f'external-wg-{slot}', None))
-        else:
-            subjects.append((scope, 'direct', ['node'], peer['name'], None))
     if policy.get('controller_ips'):
         subjects.append(('controller', 'direct', ['node'], 'controller', None))
         if strict:
             subjects.append(('controller', 'warp', ['node'], 'vpnbot/warp', None))
         if wg:
             subjects.append(('controller', 'direct', wg, 'controller-wg', None))
-    if bindings.get('all'):
+    if bindings:
         subjects += [('all', 'warp', ['node'], 'vpnbot/warp', None), ('all', 'direct', incoming, None, None)]
 
     rules = main.setdefault('routing', {}).setdefault('rules', [])
@@ -149,12 +144,8 @@ def compile_policy(main, strict, value):
         selection.extend([field | {'network': 'tcp', 'domain': ['full:www.gstatic.com'], 'port': '443', 'outboundTag': 'direct'},
                           field | {'outboundTag': 'block'}])
     for index, (scope, default, incoming_tags, email, role) in enumerate(subjects):
-        personal = bindings.get(scope, []) if scope != 'all' else []
-        if role and role.startswith('row-'):
-            cutoff = int(role[4:])
-            personal = [row for i, row in enumerate(personal) if row['action'] == 'block' or i < cutoff]
-        rows = bindings.get('all', []) + personal
-        controller_ips = policy.get('controller_ips', []) if scope == 'controller' or scope.startswith('bot-') else []
+        rows = bindings.get('all', [])
+        controller_ips = policy.get('controller_ips', []) if scope == 'controller' else []
         # A dedicated relay login always gets its default exit. Without a rule
         # it would fall through to the core's first outbound (direct).
         if not rows and not controller_ips and not role:

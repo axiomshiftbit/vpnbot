@@ -958,32 +958,19 @@ class Bot
             case preg_match('~^/nodeRefresh ([a-f0-9]{8})$~', $this->input['callback'], $m):
                 $this->managedNodeRefresh($m[1]);
                 break;
-            case preg_match('~^/nodeAd(Open|Close)? ([a-f0-9]{8})$~D', $this->input['callback'], $m):
-                match ($m[1] ?? '') {
-                    'Open' => $this->nodeAdguardOpen($m[2]), 'Close' => $this->nodeAdguardClose($m[2]), default => $this->nodeAdguardMenu($m[2]),
+            case preg_match('~^/nlist ([a-f0-9]{8}) (block|warp)(?: (\d{1,4}))?$~D', $this->input['callback'], $m):
+                $this->nodeRoutesMenu($m[1], $m[2], (int) ($m[3] ?? 0));
+                break;
+            case preg_match('~^/nl(E|D|S|X) ([a-f0-9]{8}) (block|warp) ([a-f0-9]{10}) (\d{1,4})$~D', $this->input['callback'], $m):
+                $this->nodeRoutesToggle($m[2], $m[3], $m[4], $m[1], (int) $m[5]);
+                break;
+            case preg_match('~^/nl(Add|Imp|Exp|Clr|ClrYes|Apply) ([a-f0-9]{8}) (block|warp)$~D', $this->input['callback'], $m):
+                match ($m[1]) {
+                    'Add', 'Imp' => $this->nodeRoutesPrompt($m[2], $m[3], $m[1] === 'Imp'),
+                    'Exp' => $this->nodeRoutesExport($m[2], $m[3]),
+                    'Clr', 'ClrYes' => $this->nodeRoutesClear($m[2], $m[3], $m[1] === 'ClrYes'),
+                    'Apply' => $this->nodeRoutesApply($m[2], $m[3]),
                 };
-                break;
-            case preg_match('~^/nodeAdClients ([a-f0-9]{8}) (fill|deny)$~D', $this->input['callback'], $m):
-                $this->nodeAdguardClients($m[1], $m[2] === 'fill');
-                break;
-            case preg_match('~^/np ([a-f0-9]{8}) (all|(?:bot|peer)-[a-f0-9]{20})(?: (\d{1,3}))?$~D', $this->input['callback'], $m):
-                $this->nodePolicyMenu($m[1], $m[2], (int)($m[3] ?? 0));
-                break;
-            case preg_match('~^/xm ([a-f0-9]{8}) ([a-f0-9]{20}) (\d{1,6})$~D', $this->input['callback'], $m):
-                $this->exitMainMenu($m[1], $m[2], (int)$m[3]);
-                break;
-            case preg_match('~^/xmSet ([a-f0-9]{8}) ([a-f0-9]{20}) ([a-f0-9]{10}) ([01]) (\d{1,6})$~D', $this->input['callback'], $m):
-                $this->exitMainSelect($m[1], $m[2], $m[3], (bool)$m[4], (int)$m[5]);
-                break;
-            case preg_match('~^/npSet ([a-f0-9]{8}) (all|(?:bot|peer)-[a-f0-9]{20}) ([a-f0-9]{10}) (off|block|warp|direct)$~D', $this->input['callback'], $m):
-                $this->nodePolicyAssign($m[1], $m[2], $m[3], $m[4]);
-                break;
-            case preg_match('~^/npClean ([a-f0-9]{8}) ([a-f0-9]{10})$~D', $this->input['callback'], $m):
-                $this->nodePolicyClean($m[1], $m[2]);
-                break;
-            case preg_match('~^/np(Edit|Test|Sync) ([a-f0-9]{8}) (all|(?:bot|peer)-[a-f0-9]{20})$~D', $this->input['callback'], $m):
-                if ($m[1] === 'Sync') $this->nodePolicySync($m[2], $m[3]);
-                else $this->nodePolicyPrompt($m[2], $m[3], $m[1] === 'Test');
                 break;
             case preg_match('~^/nodeSettings ([a-f0-9]{8})(?: ([a-z]+))?$~D', $this->input['callback'], $m):
                 $this->managedNodeSettingsMenu($m[1], $m[2] ?? 'root');
@@ -1096,9 +1083,6 @@ class Bot
             case preg_match('~^/exitMember ([a-f0-9]{8}) ([a-f0-9]{8})$~', $this->input['callback'], $m):
                 $this->exitGroupMember($m[1], $m[2]);
                 break;
-            case preg_match('~^/exitGroupWarp ([0-9a-f]{8}) ([0-9a-f]{8}) (first|pause|resume)$~D', $this->input['callback'], $m):
-                $this->exitGroupWarpOrder($m[1], $m[2], $m[3]);
-                break;
             case preg_match('~^/exitChoice ([a-f0-9]{8}) (auto|direct|[a-f0-9]{8})$~', $this->input['callback'], $m):
                 $this->exitGroupChoice($m[1], $m[2]);
                 break;
@@ -1160,9 +1144,6 @@ class Bot
                 break;
             case preg_match('~^/exitU ([a-f0-9]{8}) ([a-f0-9]{10}) (\d{1,5})$~', $this->input['callback'], $m):
                 $this->exitUserToggle($m[1], $m[2], (int) $m[3]);
-                break;
-            case preg_match('~^/exitWarp ([a-f0-9]{8}) ([a-f0-9]{20}) ([01]) ([nu]) (\d{1,6})$~D', $this->input['callback'], $m):
-                $this->exitWarpSelect($m[1], $m[2], $m[3] === '1', $m[4], (int) $m[5]);
                 break;
             case preg_match('~^/exitWarpCheck ([a-f0-9]{8})$~D', $this->input['callback'], $m):
                 $this->exitDiagnosticsMenu($m[1], $this->exitWarpProbe($m[1]) ? $this->t('Cloudflare подтвердил выход через WARP.', 'Cloudflare confirmed WARP egress.')
@@ -4263,8 +4244,7 @@ class Bot
         $strictRelay = $fullUsers = [];
         foreach ($c['inbounds'][0]['settings']['clients'] ?? [] as $client) {
             if (!is_array($client)) continue;
-            $nodeWarp = array_intersect(self::exitClientNodes($client), (array) ($client['exit_warp'] ?? []));
-            if ((self::exitFullId($client) !== '-' || $nodeWarp) && empty($client['off']) && is_string($client['email'] ?? null) && $client['email'] !== '') {
+            if (self::exitFullId($client) !== '-' && empty($client['off']) && is_string($client['email'] ?? null) && $client['email'] !== '') {
                 $fullUsers[] = self::exitExactUser($client['email']);
             }
             if (!empty($client['exit_relay']) && !empty($client['exit_ipv6']) && empty($client['off']) && !empty($client['email'])) $strictRelay[] = $client['email'];
@@ -7854,17 +7834,6 @@ NFT;
         // чтобы перезапуск Xray при каждой правке узлов его не обнулял.
         $exits = [];
         $nodes = $this->exitNodes();
-        // Personal rules use separate authenticated outbounds. Attribute each
-        // counter once to the channel requested by the controller for this row.
-        $policyChannels = [];
-        foreach ($counters as $key => $bytes) {
-            if (!preg_match('~^outbound>>>' . self::EXIT_TAG . 'subject-([0-9a-f]{8})-(bot-[0-9a-f]{20})-(direct|warp|row-([0-9]{1,3}))>>>traffic>>>(uplink|downlink)$~D', $key, $match)) continue;
-            [, $nodeId, $scope, $role, $row, $direction] = $match;
-            $channel = $row === '' ? $role : ($nodes[$nodeId]['policy']['bindings'][$scope][(int)$row]['action'] ?? 'direct');
-            $prefix = 'outbound>>>' . self::EXIT_TAG . ($channel === 'warp' ? 'warp-' : '') . $nodeId . '>>>traffic>>>' . $direction;
-            $policyChannels[$prefix] = ($policyChannels[$prefix] ?? 0) + $bytes;
-        }
-        foreach ($policyChannels as $key => $bytes) $counters[$key] = ($counters[$key] ?? 0) + $bytes;
         foreach (array_keys($nodes) as $id) {
             $id = (string) $id;
             $name = 'outbound>>>' . self::EXIT_TAG . $id . '>>>traffic>>>';
@@ -12493,6 +12462,7 @@ NFT;
 
     public function setPacConf(array $conf)
     {
+        $conf = self::compactNodePolicies($conf);
         // Пишем во временный файл и атомарно переименовываем: параллельные
         // вебхук-воркеры пишут pac.json часто (после selectWG), а getPacConf
         // читает без лока — rename() атомарен, поэтому читатель всегда видит
@@ -28935,9 +28905,6 @@ DNS-over-HTTPS with IP:
             }
         }
         $client = &$c['inbounds'][0]['settings']['clients'][$i];
-        if (($client['email'] ?? '') !== $name) {
-            $client['node_policy_identity'] = ['source' => ManagedProtocol::xraySource($client), 'scope' => self::nodePolicyBotScope($client)];
-        }
         $client['email'] = $name;
         unset($client);
         if ($this->restartXray($c) === false) throw new RuntimeException($this->t('Не удалось применить настройки Xray', 'Could not apply Xray settings'));
@@ -30882,11 +30849,9 @@ DNS-over-HTTPS with IP:
     // warp_up() в start_wp.sh: wg-quick up успешен и при недоступном endpoint,
     // и бот сообщал «включено» при неработающем туннеле. Без рукопожатия
     // интерфейс убирается, чтобы сторож не принял его за готовый туннель.
-    private const WARP_UP = '{ sh /warp_fixup.sh && wg-quick up /etc/warp/wgcf-profile.conf || exit 1; '
-        . 'i=0; while [ "$i" -lt 15 ]; do '
-        . 'hs=$(wg show wgcf-profile latest-handshakes 2>/dev/null | awk \'{print $2}\' | sort -n | tail -1); '
-        . '[ -n "$hs" ] && [ "$hs" -gt 0 ] 2>/dev/null && exit 0; sleep 1; i=$((i + 1)); done; '
-        . 'wg-quick down /etc/warp/wgcf-profile.conf 2>/dev/null; exit 1; }';
+    // Fixups, tunnel, real handshake and the endpoint port fallback: one
+    // implementation shared with the container watchdog (warp_fixup.sh up).
+    private const WARP_UP = '{ sh /warp_fixup.sh up || exit 1; }';
 
     // Разбудить сторож в контейнере wp: он запускает SOCKS сразу, а не на
     // следующем проходе через минуту. В старом контейнере файл просто не читают.
@@ -33970,9 +33935,8 @@ DNS-over-HTTPS with IP:
             default => $_GET['t'],
         };
         $compatibilityError = $ruleSetReq ? '' : $this->subscriptionCompatibilityError($xr, $pac, $targetFormat);
-        $nodeWarp = $connectionOnly ? null : $this->exitWarpSubscriptionPolicy($client, $pac);
         $replacement = false;
-        if ($nodeWarp === null && !$connectionOnly && !$ruleSetReq && $targetFormat === 'si' && ($compatibilityError !== '' || ($pac['transport'] ?? '') === 'xhttp')
+        if (!$connectionOnly && !$ruleSetReq && $targetFormat === 'si' && ($compatibilityError !== '' || ($pac['transport'] ?? '') === 'xhttp')
             && (!$isDeepLink || in_array($_GET['r'], ['si', 'k', 'w'], true))) {
             $candidate = $tpl;
             foreach ($candidate['outbounds'] ?? [] as $n => $node) if (($node['tag'] ?? '') === '~outbound~' || ($node['tag'] ?? '') === ($pac['outbound'] ?: 'proxy')) {
@@ -34447,17 +34411,6 @@ DNS-over-HTTPS with IP:
         // удалось (сеть/лимит), теги останутся пустыми: пусть warp-прокси в
         // конфиге будет нерабочим, чем рабочим, но конфликтующим с сервером.
         $json = json_encode($c);
-        if ($nodeWarp !== null && $_GET['t'] === 'cl' && str_contains($json, '~warp_private_key~')) {
-            // Reference the primary by name so that relay changes also reach this group.
-            foreach ($c['proxies'] as $k => $proxy) {
-                if (($proxy['private-key'] ?? '') !== '~warp_private_key~') continue;
-                $c['proxy-groups'][] = ['name' => $proxy['name'], 'type' => 'select', 'proxies' => [$outbound]];
-                unset($c['proxies'][$k]);
-            }
-            $c['proxies'] = array_values($c['proxies']);
-            $index = array_search($outbound, array_column($c['proxies'], 'name'), true);
-            $json = json_encode($c);
-        }
         $warp = str_contains($json, '~warp_private_key~')
             ? ($this->warpClientProfile($client['email'] ?? '') ?: [])
             : [];
@@ -34591,10 +34544,7 @@ DNS-over-HTTPS with IP:
                 $this->applyAwgRelay($c, $pac['relays'][$_GET['relay']]);
             }
         }
-        if (!$ruleSetReq && $nodeWarp !== null) {
-            $this->exitWarpSubscriptionRoutes($c, (string) $_GET['t'], $outbound, $nodeWarp);
-        }
-        if (!$ruleSetReq && $nodeWarp === null) $this->appendXrayProtocols($c, $client, (string) $_GET['t'], (int) $index, $relayCfg, !$replacement);
+        if (!$ruleSetReq) $this->appendXrayProtocols($c, $client, (string) $_GET['t'], (int) $index, $relayCfg, !$replacement);
         if (!empty($return)) {
             if ($_GET['t'] == 'cl' && !$mihomoJson) {
                 return yaml_emit($c);

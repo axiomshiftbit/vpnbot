@@ -1,65 +1,180 @@
 <?php
 require __DIR__ . '/managed_nodes_test.php';
 
-$bot = new ManagedFixtureBot();
+// Shared Block and WARP lists of a managed node.
+class RoutesFixtureBot extends ManagedFixtureBot
+{
+    public array $submitted = []; public array $files = []; public array $refreshed = []; public array $sets = []; public array $dat = [];
+    protected function managedNodeRpc(string $id, array $request): array {
+        if ($request['action'] === 'submit') $this->submitted[] = $request['request'];
+        return parent::managedNodeRpc($id, $request);
+    }
+    public function exitRulesetCache(string $key): array { return isset($this->sets[$key]) ? ['key' => $key, 'time' => time(), 'entries' => $this->sets[$key]] : []; }
+    public function exitRulesetRefresh(string $url, array $set): string { $this->refreshed[] = $url; return 'download'; }
+    protected function nodePolicyDat(array $entry): array { return $this->dat[$entry['value'] ?? ''] ?? throw new RuntimeException('no dat'); }
+    public function sendFile($chat, $file, $caption = false, $to = false) { $this->files[] = $file; return ['ok' => true]; }
+    public function compactNodePoliciesForTest(array $pac): array { return self::compactNodePolicies($pac); }
+    // The controller core judges patterns; PCRE stands in for it here.
+    public function exitRulesetCoreAccepts(array $entries): bool { foreach ($entries as $e) if (str_starts_with($e, 'regexp:') && @preg_match('~' . substr($e, 7) . '~', '') === false) return false; return true; }
+    protected function nodeRoutesProbeAddresses(string $host): array { return ['198.51.100.200']; }
+}
 $id = 'aabbccdd';
-$other = 'bbccddaa';
-$bot->pacState['managed_nodes'][$id]['status']['named_policy'] = true;
+$check = static function ($ok, $text) { if (!$ok) throw new RuntimeException('FAIL ' . $text); };
+$bot = new RoutesFixtureBot();
+$node = &$bot->pacState['managed_nodes'][$id];
+$node['job'] = null;
+$node['status']['shared_routes'] = true;
+unset($node);
+$cb = static fn(RoutesFixtureBot $b) => array_column(array_merge(...end($b->screens)[1]), 'callback_data');
+
+// Card buttons and an empty list.
+$bot->managedNodeMenu($id);
+$check(in_array("/nlist $id block 0", $cb($bot), true) && in_array("/nlist $id warp 0", $cb($bot), true), 'card opens both lists');
+$check(!preg_grep('~^/(np|nad|nodeAd)~', $cb($bot)), 'card has no removed node menus');
+$bot->nodeRoutesMenu($id, 'block');
+$check(!in_array("/nlApply $id block", $cb($bot), true), 'nothing to apply for an untouched list');
+
+// Main-bot CSV export, route export lines and sets in one import.
+$bot->saveNodeRoutes("full:ads.example;1\ndomain:off.example;0\n203.0.113.0/24\n# off: keyword:tracker\nset: https://lists.example/block.srs\nfull:bad..example;1", $id, 'block');
+$lists = $bot->pacState['managed_nodes'][$id]['lists'];
+$check($lists['block']['routes'] === ['full:ads.example' => 1, 'domain:off.example' => 0, '203.0.113.0/24' => 1, 'keyword:tracker' => 0],
+    'CSV and route lines keep their state');
+$check(($lists['block']['rulesets']['https://lists.example/block.srs']['on'] ?? 0) === 1 && $lists['warp']['routes'] === [], 'set imported into its list only');
+$check(str_contains(end($bot->screens)[0], 'пропущено'), 'invalid line reported');
+$bot->saveNodeRoutes("full:ads.example\nfull:ADS.example", $id, 'block');
+$check(count($bot->pacState['managed_nodes'][$id]['lists']['block']['routes']) === 4, 'duplicates skipped');
+$check(in_array("/nlApply $id block", $cb($bot), true), 'edited list offers apply');
+
+// Toggle and delete by key; a stale key changes nothing.
+$key = Bot::exitEntryKey('domain:off.example');
+$bot->nodeRoutesToggle($id, 'block', $key, 'E', 0);
+$check($bot->pacState['managed_nodes'][$id]['lists']['block']['routes']['domain:off.example'] === 1, 'toggle on');
+$bot->nodeRoutesToggle($id, 'block', $key, 'D', 0);
+$bot->nodeRoutesToggle($id, 'block', $key, 'D', 0);
+$check(!isset($bot->pacState['managed_nodes'][$id]['lists']['block']['routes']['domain:off.example']), 'delete and stale delete');
+
+// Export is importable back, including into the other list.
+$bot->nodeRoutesExport($id, 'block');
+$file = end($bot->files);
+$check($file instanceof CURLStringFile && str_contains($file->data, '# off: keyword:tracker') && str_contains($file->data, 'set: '), 'export file');
+$copy = new RoutesFixtureBot();
+$copy->pacState['managed_nodes'][$id]['status']['shared_routes'] = true;
+$copy->saveNodeRoutes($file->data, $id, 'warp');
+$check($copy->pacState['managed_nodes'][$id]['lists']['warp']['routes'] === array_diff_key($bot->pacState['managed_nodes'][$id]['lists']['block']['routes'], [])
+    && isset($copy->pacState['managed_nodes'][$id]['lists']['warp']['rulesets']['https://lists.example/block.srs']), 'export round trip');
+
+// Apply: enabled entries, a cached set and dat categories are expanded for the node.
+$bot->saveNodeRoutes("geosite:media\n198.51.100.7", $id, 'warp');
+$bot->sets['https://lists.example/block.srs'] = ['domain:set.example', '192.0.2.0/24'];
+$bot->dat['media'] = ['domain:media.example'];
+$bot->nodeRoutesApply($id, 'block');
+$routes = end($bot->submitted)['value']['policy']['routes'] ?? [];
+$check(end($bot->submitted)['operation'] === 'configure' && end($bot->submitted)['generation'] === $bot->remoteStatus['generation'], 'apply submits a configure job');
+sort($routes['block']['domain']);
+$check($routes['block']['domain'] === ['domain:set.example', 'full:ads.example'], 'block domains with the set');
+$check($routes['block']['ip'] === ['203.0.113.0/24', '192.0.2.0/24'] && !str_contains(json_encode($routes), 'tracker'), 'disabled entries stay home');
+ksort($routes['warp']);
+$check($routes['warp'] === ['domain' => ['domain:media.example'], 'ip' => ['198.51.100.7']], 'warp list and dat expansion');
+$saved = $bot->pacState['managed_nodes'][$id]['job']['lists_sent'] ?? '';
+$check($saved === hash('sha256', json_encode($bot->pacState['managed_nodes'][$id]['lists'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)), 'job remembers the sent lists');
 $bot->pacState['managed_nodes'][$id]['job'] = null;
-$bot->pacState['managed_nodes'][$other] = $bot->pacState['managed_nodes'][$id];
-$bot->pacState['managed_nodes'][$other]['name'] = 'second';
-$check = static function ($ok, $text) { if (!$ok) throw new RuntimeException($text); };
-$version = static fn() => hash('sha256', serialize($bot->pacState['node_policy_lists'] ?? []));
-$bot->saveNodePolicyList("Реклама\nfull:ads.example\n203.0.113.0/24", $id, 'all', $version());
-$key = Bot::exitEntryKey('Реклама');
-$check(isset($bot->pacState['node_policy_lists']['Реклама']), 'catalog created');
-foreach ([$other,$id] as $node) $bot->nodePolicyAssign($node, 'all', $key, 'off');
-$bot->nodePolicyAssign($id, 'all', $key, 'off');
-$check(count($bot->pacState['managed_nodes'][$id]['draft']['policy']['bindings']['all']) === 1, 'stale tap');
-$old = $version();
-$bot->saveNodePolicyList("Реклама\nfull:new.example", $id, 'all', $old);
-$bot->saveNodePolicyList("Реклама\nfull:stale.example", $other, 'all', $old);
-$check($bot->pacState['node_policy_lists']['Реклама']['domain'] === ['full:new.example'], 'stale catalog edit');
-$bot->nodePolicySync($other,'all');
-$check($bot->pacState['managed_nodes'][$other]['draft']['policy']['lists']['Реклама']['domain'] === ['full:new.example'], 'sync');
-$check($bot->pacState['managed_nodes'][$id]['draft']['policy']['lists']['Реклама']['domain'] === ['full:ads.example'], 'generation pinned');
-$bot->saveNodePolicyList('Реклама',$id,'all',$version());
-$check(isset($bot->pacState['node_policy_lists']['Реклама']), 'assigned list protected');
-$bot->saveNodePolicyTest('new.example',$other,'all');
-$check(str_contains(end($bot->screens)[0], 'Реклама → block'), 'preview');
-foreach ([$id,$other] as $node) $bot->nodePolicyAssign($node,'all',$key,'block');
-$bot->saveNodePolicyList('Реклама',$id,'all',$version());
-$check(!isset($bot->pacState['node_policy_lists']['Реклама']), 'unbound list removed');
-echo "PASS named list catalog, ordered assignments and preview\n";
+$bot->nodeRoutesMenu($id, 'block');
+$check(in_array("/nlApply $id block", $cb($bot), true), 'lists stay pending until confirmation');
 
-$bot->saveNodePolicyList("Сайты\nfull:one.example", $id, 'all', $version());
-$user = ['id'=>'11111111-1111-4111-8111-111111111111', 'email'=>'alice', 'exit_full'=>$id];
-$bot->xrayState['inbounds'] = [['tag'=>'vpn', 'settings'=>['clients'=>[$user]]]];
-$key = Bot::exitFullKey($user);
-$list = Bot::exitEntryKey('Сайты');
-$bot->exitMainSelect($id,$key,$list,false,0);
-$bot->exitMainSelect($id,$key,$list,false,0);
-$check($bot->xrayState['inbounds'][0]['settings']['clients'][0]['exit_main'] === ['Сайты'], 'selection and stale tap');
-$bot->saveNodePolicyList('Сайты',$id,'all',$version());
-$check(isset($bot->pacState['node_policy_lists']['Сайты']), 'controller binding protects shared list');
-$bot->corePass = false;
-$bot->saveNodePolicyList("Сайты\nfull:two.example", $id, 'all', $version());
-$check($bot->pacState['node_policy_lists']['Сайты']['domain'] === ['full:one.example'], 'rename contents rollback');
-$bot->corePass = true;
-$bot->saveNodePolicyList("Сайты\nfull:two.example", $id, 'all', $version());
-$compiled = $bot->xrayState;
-$bot->ensureExitNodes($compiled, $bot->pacState);
-$check($compiled === $bot->xrayState && $compiled['dns']['servers'][0]['domains'] === ['full:two.example'], 'idempotent catalog refresh');
-$bot->saveNodePolicyTest('two.example',$id,'bot-'.$key);
-$check(str_contains(end($bot->screens)[0], 'Основной сервер · Сайты'), 'node preview shows controller exception');
-$bot->pacState['blocklist'] = ['full:two.example'=>1];
-$bot->saveNodePolicyTest('two.example',$id,'bot-'.$key);
-$check(str_contains(end($bot->screens)[0], 'Блокировка основного сервера'), 'controller deny overrides exception in preview');
-$bot->exitMainSelect($id,$key,$list,true,0);
-$check(!isset($bot->xrayState['dns'], $bot->xrayState['_vpnbot_main_implicit_dns']), 'restore implicit main resolver');
-$check(!isset($bot->xrayState['inbounds'][0]['settings']['clients'][0]['exit_main']), 'clear last exception');
-echo "PASS controller list assignment, stale edit, catalog update and rollback\n";
+// An unavailable set must not become a smaller list.
+$broken = new RoutesFixtureBot();
+$broken->pacState['managed_nodes'][$id]['job'] = null;
+$broken->pacState['managed_nodes'][$id]['status']['shared_routes'] = true;
+$broken->saveNodeRoutes("full:a.example\nset: https://lists.example/missing.srs", $id, 'block');
+$broken->nodeRoutesApply($id, 'block');
+$check(!$broken->submitted && $broken->refreshed === ['https://lists.example/missing.srs'] && str_contains(end($broken->screens)[0], 'Набор .srs/.mrs недоступен'), 'missing set is fetched and blocks apply');
+$check($bot->refreshed === [], 'a fresh cached set is not downloaded again');
 
+// Older node code: only blocks, in the earlier format; no node policy support at all: no policy.
+$old = new RoutesFixtureBot();
+$old->pacState['managed_nodes'][$id]['job'] = null;
+$old->pacState['managed_nodes'][$id]['status']['named_policy'] = true;
+$old->saveNodeRoutes("full:a.example\n10.0.0.0/8", $id, 'block');
+$old->saveNodeRoutes("full:w.example", $id, 'warp');
+$old->nodeRoutesMenu($id, 'warp');
+$check(str_contains(end($old->screens)[0], 'Обновите код ноды'), 'warp list warns about old node code');
+$old->nodeRoutesApply($id, 'block');
+$policy = end($old->submitted)['value']['policy'];
+$check($policy === ['lists' => ['block' => ['domain' => ['full:a.example'], 'ip' => ['10.0.0.0/8']]], 'bindings' => ['all' => [['list' => 'block', 'action' => 'block']]]], 'legacy block policy');
+$none = new RoutesFixtureBot();
+$none->pacState['managed_nodes'][$id]['job'] = null;
+$none->managedNodeSubmit($id, 'configure', $none->remoteStatus['options'] + ['policy' => ['lists' => [], 'bindings' => []]]);
+$check(!isset(end($none->submitted)['value']['policy']), 'node without policy support gets no policy');
+
+// Shared blocks from the earlier per-node policy become the Block list.
+$migrated = new RoutesFixtureBot();
+$migrated->pacState['managed_nodes'][$id]['status']['options']['policy'] = ['lists' => ['ads' => ['domain' => ['full:old.example'], 'ip' => ['10.1.0.0/16']], 'p' => ['domain' => ['full:personal.example']]],
+    'bindings' => ['all' => [['list' => 'ads', 'action' => 'block']], 'bot-0123456789abcdef0123' => [['list' => 'p', 'action' => 'warp']]]];
+$migrated->nodeRoutesMenu($id, 'block');
+$check(str_contains(json_encode(end($migrated->screens)[1], JSON_UNESCAPED_UNICODE), 'full:old.example') && !str_contains(json_encode(end($migrated->screens)), 'personal.example'), 'legacy shared blocks shown');
+
+// Clear asks first.
+$bot->nodeRoutesClear($id, 'warp', false);
+$check(isset($bot->pacState['managed_nodes'][$id]['lists']['warp']['routes']['198.51.100.7']), 'clear asks first');
+$bot->pacState['managed_nodes'][$id]['job'] = null;
+$bot->nodeRoutesClear($id, 'warp', true);
+$check($bot->pacState['managed_nodes'][$id]['lists']['warp']['routes'] === [], 'clear');
+foreach ($bot->screens as [, $rows]) foreach ($rows as $row) foreach ($row as $button) $check(strlen($button['callback_data']) <= 64, 'callback fits Telegram');
+
+// pac.json keeps only a digest of the expanded lists.
+$compact = $bot->compactNodePoliciesForTest(['exits' => [$id => ['policy' => ['routes' => ['block' => ['domain' => ['full:x.example']]]]]]]);
+$check(!isset($compact['exits'][$id]['policy']['routes']) && preg_match('~^[a-f0-9]{64}$~', $compact['exits'][$id]['policy']['routes_digest']), 'expanded routes compacted');
+// Audit fixes. A disabled entry of an older main-bot export ("entry;") stays disabled.
+$csv = new RoutesFixtureBot();
+$csv->pacState['managed_nodes'][$id]['status']['shared_routes'] = true;
+$csv->saveNodeRoutes("full:off.example;\nfull:on.example;1", $id, 'block');
+$check($csv->pacState['managed_nodes'][$id]['lists']['block']['routes'] === ['full:off.example' => 0, 'full:on.example' => 1], 'empty CSV flag means disabled');
+// A pattern the core rejects never reaches the list; valid ones in the same batch do.
+$csv->saveNodeRoutes("regexp:([a-z\nregexp:^cdn[0-9]+\\.example$", $id, 'warp');
+$check(array_keys($csv->pacState['managed_nodes'][$id]['lists']['warp']['routes']) === ['regexp:^cdn[0-9]+\\.example$']
+    && str_contains(end($csv->screens)[0], 'пропущено'), 'invalid regexp rejected at save');
+// Blocking the probe host would roll back every apply: refuse it with a clear reason.
+foreach (["domain:gstatic.com", "keyword:gstatic", "regexp:^www\\.gst", "198.51.100.128/25"] as $entry) {
+    $probe = new RoutesFixtureBot();
+    $probe->pacState['managed_nodes'][$id]['job'] = null;
+    $probe->pacState['managed_nodes'][$id]['status']['shared_routes'] = true;
+    $probe->saveNodeRoutes($entry, $id, 'block');
+    $probe->nodeRoutesApply($id, 'block');
+    $check(!$probe->submitted && str_contains(end($probe->screens)[0], 'www.gstatic.com'), "probe host block refused: $entry");
+    // The WARP list may carry it: the probe then checks the node WARP.
+    $probe->nodeRoutesClear($id, 'block', true);
+    $probe->saveNodeRoutes($entry, $id, 'warp');
+    $probe->nodeRoutesApply($id, 'warp');
+    $check(count($probe->submitted) === 1, "probe host allowed in WARP: $entry");
+}
+// The settings screen names a list failure instead of SSH.
+$draft = new RoutesFixtureBot();
+$draft->pacState['managed_nodes'][$id]['job'] = null;
+$draft->pacState['managed_nodes'][$id]['status']['shared_routes'] = true;
+$draft->saveNodeRoutes("set: https://lists.example/missing.srs", $id, 'warp');
+$draft->pacState['managed_nodes'][$id]['draft'] = ['mask' => 'new.example.test'] + $draft->pacState['managed_nodes'][$id]['status']['options'];
+$draft->pacState['managed_nodes'][$id]['draft_generation'] = $draft->remoteStatus['generation'];
+$draft->managedNodeApply($id);
+$check(!$draft->submitted && str_contains(end($draft->screens)[0], 'Набор .srs/.mrs недоступен') && isset($draft->pacState['managed_nodes'][$id]['draft']), 'settings apply names the list failure');
+// A restored snapshot is not the controller copy of the lists.
+$restored = new RoutesFixtureBot();
+$restored->pacState['managed_nodes'][$id]['status']['shared_routes'] = true;
+$restored->pacState['managed_nodes'][$id]['lists'] = ['block' => ['routes' => ['full:a.example' => 1], 'rulesets' => []], 'warp' => ['routes' => [], 'rulesets' => []]];
+$restored->pacState['managed_nodes'][$id]['lists_sent'] = hash('sha256', json_encode($restored->pacState['managed_nodes'][$id]['lists'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+$restored->pacState['managed_nodes'][$id]['job']['operation'] = 'restore';
+$restored->checkManagedNodes();
+$restored->nodeRoutesMenu($id, 'block');
+$check($restored->pacState['managed_nodes'][$id]['job'] === null && in_array("/nlApply $id block", $cb($restored), true), 'restore marks the lists as not applied');
+
+$legacyPac = ['node_policy_lists' => ['ads' => ['domain' => ['full:old.example']]], 'managed_nodes' => [$id => ['status' => ['options' => ['policy' => [
+    'lists' => ['ads' => ['domain' => ['full:old.example']]], 'bindings' => ['all' => [['list' => 'ads', 'action' => 'block']]]]]]]]];
+$moved = $bot->compactNodePoliciesForTest($legacyPac);
+$check(!isset($moved['node_policy_lists']) && $moved['managed_nodes'][$id]['lists']['block']['routes'] === ['full:old.example' => 1]
+    && $moved['managed_nodes'][$id]['lists']['warp'] === ['routes' => [], 'rulesets' => []], 'pac migration keeps shared blocks');
+$check($bot->compactNodePoliciesForTest($moved) === $moved, 'pac migration is idempotent');
+echo "PASS node Block and WARP lists\n";
+
+$policy = ['revision'=>str_repeat('a',32), 'lists'=>['media'=>['domain'=>['full:media.example']]], 'bindings'=>['all'=>[['list'=>'media','action'=>'block']]]];
 // A changed controller list is applied through the normal generation-checked job.
 class GuardFixtureBot extends ManagedFixtureBot
 {
@@ -109,63 +224,6 @@ foreach ([true, false] as $healthy) {
         'reconcile a restored remote revision through a traffic check');
 }
 
-class RenamedPolicyFixtureBot extends ManagedFixtureBot
-{
-    protected function userXrLocked($i) {}
-    public function adguardXrayClients() {}
-}
-
-$subject = ['id'=>'11111111-1111-4111-8111-111111111111', 'email'=>'alice', 'exit_full'=>$id];
-$scope = 'bot-' . Bot::exitFullKey($subject);
-$lists = ['media'=>['domain'=>['full:media.example']]];
-$policy = ['revision'=>str_repeat('a',32), 'lists'=>$lists, 'bindings'=>[$scope=>[['list'=>'media','action'=>'block']]]];
-$renamed = new RenamedPolicyFixtureBot();
-$renamed->pacState['managed_nodes'][$id]['job'] = null;
-$renamed->pacState['managed_nodes'][$id]['status']['named_policy'] = true;
-$renamed->pacState['managed_nodes'][$id]['status']['options']['policy'] = $policy;
-$renamed->pacState['exits'][$id]['policy'] = $policy;
-$renamed->xrayState['inbounds'] = [['tag'=>'vpn','settings'=>['clients'=>[$subject]]]];
-foreach (['alice-new', 'alice-final'] as $name) {
-    $renamed->renXrUs($name,0);
-    $renamed->nodePolicyMenu($id,$scope);
-    $check(str_contains(end($renamed->screens)[0], $name), 'renamed client keeps its existing node subject');
-}
-// Re-import the saved client and create a different client under the old name.
-$clients = json_decode(json_encode($renamed->xrayState['inbounds'][0]['settings']['clients']), true);
-$copy = $clients[0];
-$copy['id'] = '22222222-2222-4222-8222-222222222222';
-$copy['email'] = 'alice';
-$clients[] = $copy;
-$renamed->xrayState['inbounds'][0]['settings']['clients'] = $clients;
-$compiled = $renamed->xrayState;
-$renamed->ensureExitNodes($compiled, $renamed->pacState);
-$denies = array_values(array_filter($compiled['routing']['rules'], static fn($r) =>
-    ($r['domain'] ?? []) === ['full:media.example'] && ($r['outboundTag'] ?? '') === 'block'));
-$check(count($denies) === 1 && $denies[0]['user'] === ['alice-final'], 'restored policy belongs to the renamed identity only');
-$renamed->pacState['blocklist'] = ['full:blocked.example'=>1];
-$renamed->saveNodePolicyTest('blocked.example',$id,$scope);
-$check(str_contains(end($renamed->screens)[0], 'Блокировка основного сервера'), 'main deny preview without an exception');
-
-$key = Bot::exitEntryKey('media');
-$node = &$renamed->pacState['managed_nodes'][$id];
-$renamed->pacState['node_policy_lists'] = $lists;
-$node['status']['options']['policy']['controller_ips'] = ['192.0.2.0/24'];
-$renamed->nodePolicyAssign($id,$scope,$key,'off');
-$renamed->nodePolicySync($id,$scope);
-$check(!isset($node['draft']), 'a stale button and unchanged refresh leave the node ready for automatic updates');
-$node['status']['options']['policy']['bindings'] = ['all'=>[['list'=>'media','action'=>'block']]];
-$renamed->nodePolicyAssign($id,'all',$key,'block');
-$check($node['draft']['policy']['controller_ips'] === ['192.0.2.0/24'], 'unbinding the last list keeps the shared IPs in the draft');
-unset($node['draft'], $node['draft_generation']);
-$node['status']['options']['policy']['bindings'] = [];
-$renamed->saveNodePolicyList('media',$id,'all',hash('sha256',serialize($lists)));
-$rows = end($renamed->screens)[1];
-$check(!in_array('○ media',array_column(array_merge(...$rows),'text'),true), 'removing an unused list survives a stale copy on the node');
-$renamed->nodePolicySync($id,'all');
-$check($node['draft']['policy']['lists'] === [] && $node['draft']['policy']['controller_ips'] === ['192.0.2.0/24'],
-    'refresh removes a stale cached list and preserves the shared IPs');
-unset($node);
-
 foreach ([true,false] as $healthy) {
     $rejoined = new GuardFixtureBot();
     $rejoined->probePass = $healthy;
@@ -183,35 +241,5 @@ foreach ([true,false] as $healthy) {
         'reconcile named policy without a controller IP list and roll back on failure');
 }
 
-$restored = new ManagedFixtureBot();
-$restored->pacState['managed_nodes'][$id]['job'] = null;
-$restored->pacState['managed_nodes'][$id]['status']['named_policy'] = true;
-$restored->pacState['managed_nodes'][$id]['status']['options']['policy'] = $policy;
-$restored->xrayState['inbounds'] = [['tag'=>'vpn','settings'=>['clients'=>[$subject]]]];
-$restored->exitMainSelect($id,Bot::exitFullKey($subject),Bot::exitEntryKey('media'),false,0);
-$check($restored->pacState['node_policy_lists'] === $lists, 'a controller assignment pins a list discovered in a restored node');
-unset($restored->pacState['managed_nodes'][$id]['status']['options']['policy']);
-$compiled = $restored->xrayState;
-$restored->ensureExitNodes($compiled,$restored->pacState);
-$check($compiled['dns']['servers'][0]['domains'] === ['full:media.example'], 'controller exception survives removal of its remote copy');
-
-$node = &$restored->pacState['managed_nodes'][$id];
-$node['status']['options']['policy'] = $policy;
-$restored->xrayState['inbounds'][0]['settings']['clients'] = [];
-$restored->nodePolicyMenu($id,'all');
-$rows = end($restored->screens)[1];
-$callbacks = array_column(array_merge(...$rows),'callback_data');
-$clean = array_values(array_filter($callbacks, static fn($c) => str_starts_with($c, "/npClean $id ")));
-$check(count($clean) === 1, 'allow explicit draft cleanup of a deleted client');
-$fingerprint = explode(' ', $clean[0])[2];
-$elsewhere = $subject;
-unset($elsewhere['exit_full']);
-$restored->xrayState['inbounds'][0]['settings']['clients'] = [$elsewhere];
-$restored->nodePolicyClean($id,$fingerprint);
-$check(!isset($node['draft']), 'stale cleanup keeps an existing client, including one routed elsewhere');
-$restored->xrayState['inbounds'][0]['settings']['clients'] = [];
-$node['status']['options']['policy']['bindings']['all'] = [['list'=>'media','action'=>'block']];
-$restored->nodePolicyClean($id,$fingerprint);
-$check(!isset($node['draft']['policy']['bindings'][$scope]) && isset($node['status']['options']['policy']['bindings'][$scope])
-    && $node['draft']['policy']['lists'] === $lists, 'cleanup is a draft and preserves lists shared by another subject');
-unset($node);
+echo "PASS reconcile a restored legacy node policy
+";

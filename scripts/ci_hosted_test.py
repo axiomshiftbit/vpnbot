@@ -350,7 +350,7 @@ def cleanup():
         command('docker', 'network', 'rm', network)
     for network in ('vpnbot-audit_default', 'vpnbot-audit_xray', 'vpnbot-protocol-test', 'vpnbot-warp-udp-test'):
         subprocess.run(['docker', 'network', 'rm', network], capture_output=True)
-    for volume in ('vpnbot-audit_adguard', 'vpnbot-audit_warp', 'vpnbot-audit_node-adguard-ui'):
+    for volume in ('vpnbot-audit_adguard', 'vpnbot-audit_warp'):
         subprocess.run(['docker', 'volume', 'rm', volume], capture_output=True)
     shutil.rmtree(ROOT)
     print('Disposable data and one-run keys removed')

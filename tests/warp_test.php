@@ -63,10 +63,10 @@ warpAssert((bool) preg_match('~if link_ready; then\s*\n\s*socks_start~', $startW
     'на старте прокси поднимается только при живом туннеле');
 warpAssert(strpos($startWp, 'link_up || echo') !== false,
     'код возврата поднятия туннеля на старте проверяется');
-warpAssert((bool) preg_match('~warp_up\(\)[^}]*wg-quick up "\$WGCF_CONF" \|\| return 1~s', $startWp),
-    'warp_up() возвращает ошибку, если wg-quick не отработал');
-warpAssert(strpos($startWp, 'latest-handshakes') !== false && strpos($startWp, 'warp_up()') !== false,
-    'warp_up() ждёт настоящего рукопожатия: wg-quick up успешен и при мёртвом endpoint');
+warpAssert((bool) preg_match('~warp_up\(\) \{\s*\n\s*WGCF_CONF="\$WGCF_CONF" sh "\$\{WARP_FIXUP:-/warp_fixup\.sh\}" up\s*\n\}~', $startWp),
+    'warp_up() — общий подъём из warp_fixup.sh up (тот же, что у кнопок бота)');
+warpAssert((bool) preg_match('~wg-quick up "\$WGCF_CONF" \|\| return 1~', $fixup) && strpos($fixup, 'latest-handshakes') !== false,
+    'warp_fixup.sh up возвращает ошибку без wg-quick и ждёт настоящего рукопожатия: wg-quick up успешен и при мёртвом endpoint');
 // Именно окно bounce'а и было главной утечкой.
 warpAssert(
     (bool) preg_match('~restarting tunnel[^\n]*\n(?:\s*#[^\n]*\n)*\s*socks_stop\n\s*link_down\n\s*if link_up; then~', $startWp)

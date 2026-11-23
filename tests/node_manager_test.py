@@ -50,24 +50,17 @@ class NodeManager(unittest.TestCase):
         self.backend = Backend()
         self.manager = manager.Manager(self.store, self.backend)
 
-    def test_dns_filter_only_acquires_its_image_and_tracks_peer_rotation(self):
-        peer = {'id':'44444444-4444-4444-8444-444444444444','name':'peer','enabled':True}
-        self.manager.execute({'operation':'peers','value':[peer]})
-        self.store.confirm(self.store.pending()['nonce'])
-        options = VALUE['options'] | {'adguard':{'enabled':True,'controller':False,'peers':[peer['id']]}}
-        def ensure_images(value):
-            value['images']['ad'] = VALUE['images']['xr'].replace('vpnbot-xr@','vpnbot-ad@')
-        self.backend.ensure_images = ensure_images
-        self.manager.execute({'operation':'configure','value':options})
-        self.store.confirm(self.store.pending()['nonce'])
-        self.assertIn('ad',self.store.load()['images'])
-        self.manager.execute({'operation':'rotate','value':peer['id']})
+    def test_legacy_dns_filter_settings_are_dropped(self):
+        # AdGuard Home was removed from nodes; an older controller may still send its switch.
+        acquired = []
+        self.backend.ensure_images = lambda value: acquired.append(sorted(value['images']))
+        options = VALUE['options'] | {'adguard': {'enabled': True, 'controller': False, 'peers': []}}
+        self.manager.execute({'operation': 'configure', 'value': options})
         self.store.confirm(self.store.pending()['nonce'])
         active = self.store.load()
-        self.assertEqual(active['options']['adguard']['peers'], [active['peers'][0]['id']])
-        self.manager.execute({'operation':'peers','value':[]})
-        self.store.confirm(self.store.pending()['nonce'])
-        self.assertEqual(self.store.load()['options']['adguard']['peers'], [])
+        self.assertNotIn('adguard', active['options'])
+        self.assertNotIn('ad', active['images'])
+        self.assertFalse(any('ad' in images for images in acquired))
 
     def test_unknown_rpc_fields_and_commands_rejected(self):
         for request in ({'action': 'shell', 'command': 'id'}, {'action': 'ping', 'args': []},

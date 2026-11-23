@@ -34,3 +34,54 @@ sed -i '/^ListenPort[[:space:]]*=/d; /^\[Interface\]/a ListenPort = 51820' "$WGC
 # warp_probe.sh судит о здоровье туннеля, когда curl в образе отсутствует.
 grep -q '^PersistentKeepalive' "$WGCF_CONF" || \
     sed -i '/^\[Peer\]/a PersistentKeepalive = 25' "$WGCF_CONF"
+
+# Режим up: поднять туннель и дождаться РЕАЛЬНОГО рукопожатия (`wg-quick up`
+# успешен и без ответа endpoint). Одна реализация для сторожа start_wp.sh и
+# кнопок бота. Cloudflare принимает WARP WireGuard на нескольких UDP-портах;
+# некоторые сети (например, у хостера) режут 2408 — тогда профиль переводится
+# на следующий отвечающий порт и остаётся на нём.
+[ "${1:-}" = up ] || exit 0
+set +e
+WGCF_IF="$(basename "$WGCF_CONF" .conf)"
+handshake() {
+    wg-quick up "$WGCF_CONF" || return 1
+    # Служебный порт WireGuard отделён от SOCKS relay и не опубликован.
+    if ! wg set "$WGCF_IF" listen-port 51820; then
+        wg-quick down "$WGCF_CONF" 2>/dev/null || true
+        return 1
+    fi
+    i=0
+    while [ "$i" -lt 15 ]; do
+        hs=$(wg show "$WGCF_IF" latest-handshakes 2>/dev/null | awk '{print $2}' | sort -n | tail -1)
+        if [ -n "$hs" ] && [ "$hs" -gt 0 ] 2>/dev/null; then
+            return 0
+        fi
+        sleep 1
+        i=$((i + 1))
+    done
+    # Интерфейс создаётся до handshake: не оставляем его после неудачи,
+    # иначе сторож принял бы его за готовый туннель.
+    wg-quick down "$WGCF_CONF" 2>/dev/null || true
+    return 1
+}
+current=$(sed -n 's/^Endpoint *= *.*:\([0-9][0-9]*\)[[:space:]]*$/\1/p' "$WGCF_CONF" | head -n 1)
+handshake && exit 0
+[ -n "$current" ] || exit 1
+for port in 2408 500 1701 4500; do
+    [ "$port" = "$current" ] && continue
+    # В профиле закрытый ключ: временная копия только для root.
+    tmp="$WGCF_CONF.port.$$"
+    if ! (umask 077; sed -E "s/^(Endpoint *= *.+):[0-9]+[[:space:]]*$/\1:$port/" "$WGCF_CONF" > "$tmp") || [ ! -s "$tmp" ]; then
+        rm -f "$tmp"
+        exit 1
+    fi
+    cat "$tmp" > "$WGCF_CONF"
+    rm -f "$tmp"
+    echo "[warp] no handshake on UDP $current, trying endpoint port $port"
+    if handshake; then
+        echo "[warp] endpoint port $port answers"
+        exit 0
+    fi
+    current=$port
+done
+exit 1

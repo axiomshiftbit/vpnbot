@@ -18,23 +18,6 @@ class ManagedPeerFixture extends ManagedFixtureBot {
 $id = 'aabbccdd'; $uuid = '22222222-2222-4222-8222-222222222222'; $key = Bot::exitEntryKey($uuid);
 $checks = 0;
 $check = static function ($ok, $name) use (&$checks) { $checks++; if (!$ok) throw new RuntimeException('FAIL '.$name); };
-$test = new ManagedPeerFixture();
-$state =& $test->pacState['managed_nodes'][$id];
-$state['status']['adguard_filter'] = true;
-$state['status']['options']['adguard'] = ['enabled'=>true,'controller'=>false,'peers'=>[$uuid]];
-$test->managedNodePeerAction($id, $key, 'rotate', true);
-$rpc = end($test->requests)['request'] ?? [];
-$check(($rpc['operation'] ?? '') === 'rotate' && $rpc['value'] === $uuid, 'rotate keeps the selected DNS client on the remote node');
-$test = new ManagedPeerFixture();
-$state =& $test->pacState['managed_nodes'][$id];
-$state['status']['adguard_filter'] = true;
-$state['status']['options']['adguard'] = ['enabled'=>true,'controller'=>false,'peers'=>[]];
-$state['draft_generation'] = $state['status']['generation'];
-$state['draft'] = ['mask'=>'pending.example.test'] + $state['status']['options'];
-$test->nodeAdguardClients($id, true);
-$state = $test->pacState['managed_nodes'][$id];
-$check(!$test->requests && $state['draft']['mask'] === 'pending.example.test' && $state['draft']['adguard']['controller']
-    && $state['draft']['adguard']['peers'] === [$uuid], 'filling allowed clients preserves a pending settings draft');
 foreach (['ru', 'en'] as $language) {
     $bot = new ManagedPeerFixture(); $bot->language = $language;
     $bot->managedNodePeersMenu($id); $bot->managedNodePeerMenu($id, $key);

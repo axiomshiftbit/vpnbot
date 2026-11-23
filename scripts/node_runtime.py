@@ -9,6 +9,7 @@ import socket
 import ssl
 import ipaddress
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -23,13 +24,15 @@ import node_wg
 import node_awg
 import node_warp
 import node_policy
-import node_adguard
 
 
 CONTAINER = 'vpnbot-node-xray'
 COVER_CONTAINER = 'vpnbot-node-cover'
 AWG_CONTAINER = 'vpnbot-node-amnezia'
 WARP_CONTAINER = 'vpnbot-node-warp'
+# AdGuard Home ran on nodes before 23.11.2026; its leftovers are removed on the next apply.
+LEGACY_DNS_CONTAINER = 'vpnbot-node-adguard'
+LEGACY_DNS_NETWORKS = ('vpnbot-node-adguard-node', 'vpnbot-node-adguard-warp')
 LABEL = 'org.vpnbot.managed-node'
 
 
@@ -238,8 +241,6 @@ class Runtime:
 
     def ensure_images(self, value):
         needed = []
-        if value['options'].get('adguard', {}).get('enabled'):
-            needed.append('ad')
         if value['options'].get('cover'):
             needed.append('ng')
         if value['options'].get('warp_mode', 'off') != 'off':
@@ -295,7 +296,7 @@ class Runtime:
             command(['docker', 'pull', image], timeout=300)
 
     def container(self, name=CONTAINER):
-        if name not in (CONTAINER, COVER_CONTAINER, AWG_CONTAINER, WARP_CONTAINER, node_adguard.CONTAINER):
+        if name not in (CONTAINER, COVER_CONTAINER, AWG_CONTAINER, WARP_CONTAINER, LEGACY_DNS_CONTAINER):
             raise ValueError('unsupported container')
         result = command(['docker', 'inspect', '--format', '{{json .}}', name], required=False)
         if result.returncode:
@@ -307,9 +308,21 @@ class Runtime:
 
     def stop(self):
         # Check ownership of every name before removing any container.
-        existing = [name for name in (CONTAINER, COVER_CONTAINER, AWG_CONTAINER, WARP_CONTAINER, node_adguard.CONTAINER) if self.container(name) is not None]
+        existing = [name for name in (CONTAINER, COVER_CONTAINER, AWG_CONTAINER, WARP_CONTAINER, LEGACY_DNS_CONTAINER) if self.container(name) is not None]
         for name in existing:
             command(['docker', 'rm', '-f', name])
+        self.remove_legacy_dns_filter()
+
+    def remove_legacy_dns_filter(self):
+        """AdGuard Home was removed from nodes: drop its node-owned bridges and data once."""
+        listing = command(['docker', 'network', 'ls', '--format', '{{.Name}}'], required=False)
+        names = listing.stdout.decode().splitlines() if not listing.returncode else []
+        for name in LEGACY_DNS_NETWORKS:
+            if name in names:
+                command(['docker', 'network', 'rm', name], required=False)
+        legacy = self.store.root/'adguard'
+        if legacy.is_dir() and not legacy.is_symlink():
+            shutil.rmtree(legacy)
 
     def write_runtime(self, directory, files):
         state.trusted(directory)
@@ -331,9 +344,6 @@ class Runtime:
             raise ValueError('MASQUE WARP requires Xray 26.10.10 or newer')
         warp = node_warp.outbound(mode, value['images']['wg'], self.store.root, command) if mode != 'off' else None
         body = config.core_config(value['options'], self.routed_host(), value['identity'], value['peers'], warp)
-        if value['options'].get('adguard', {}).get('enabled'):
-            links = node_adguard.networks(command)
-            node_adguard.route(body, value, links)
         strict = node_warp.isolate_resolver(body, value['identity']['warp_uuid']) if warp is not None else None
         node_policy.compile_policy(body, strict, value)
         if strict:
@@ -413,9 +423,7 @@ class Runtime:
             command(['docker', 'run', '--rm', *self.cover_arguments(generation), '-t', '-c', '/node/nginx.conf'])
         if self.store.load(generation)['options'].get('amnezia', {}).get('enabled'):
             command(['docker', 'run', '--rm', *self.amnezia_arguments(generation), '-n', '-c', '/node/carrier.conf'])
-        options = self.store.load(generation)['options']
-        links = node_adguard.networks(command) if options.get('adguard', {}).get('enabled') else None
-        rules = config.firewall(options, self.routed_host(), links)
+        rules = config.firewall(self.store.load(generation)['options'], self.routed_host())
         command(['nft', '-c', '-f', '-'], data=self.transaction(rules).encode())
 
     def transaction(self, rules):
@@ -429,9 +437,7 @@ class Runtime:
 
     def load_firewall(self, generation=None):
         """Build the guard from a generation with the installed code; check, persist, load atomically."""
-        options = self.store.load(generation)['options']
-        links = node_adguard.networks(command) if options.get('adguard', {}).get('enabled') else None
-        rules = config.firewall(options, self.routed_host(), links)
+        rules = config.firewall(self.store.load(generation)['options'], self.routed_host())
         transaction = self.transaction(rules)
         command(['nft', '-c', '-f', '-'], data=transaction.encode())
         state.atomic(self.guard, rules.encode())
@@ -444,7 +450,7 @@ class Runtime:
         self.container(COVER_CONTAINER)
         self.container(AWG_CONTAINER)
         self.container(WARP_CONTAINER)
-        self.container(node_adguard.CONTAINER)
+        self.container(LEGACY_DNS_CONTAINER)
         self.load_firewall(generation)
         self.stop()
         if value['options'].get('warp_mode', 'off') != 'off':
@@ -466,10 +472,6 @@ class Runtime:
         private_listeners = []
         if options.get('warp_mode', 'off') != 'off':
             private_listeners.append(('127.0.0.1', config.WARP_CORE_PORT))
-        if options.get('adguard', {}).get('enabled'):
-            links = node_adguard.networks(command)
-            node_adguard.start(command, self.store.root, links, value['images']['ad'], LABEL)
-            private_listeners.extend((link['service'], node_adguard.DNS_PORT) for link in links.values())
         core_port = 9444 if options.get('cover') and options['transport'] != 'reality' else 8443
         listeners = [('127.0.0.1' if self.host['public4'] or core_port == 9444 else '::1', core_port)]
         if options.get('cover'):
@@ -482,10 +484,6 @@ class Runtime:
                 strict = self.container(WARP_CONTAINER)
                 if not strict or not strict.get('State', {}).get('Running'):
                     raise RuntimeError('isolated WARP DNS core failed to start')
-            if options.get('adguard', {}).get('enabled'):
-                filter_info = self.container(node_adguard.CONTAINER)
-                if not filter_info or not filter_info.get('State', {}).get('Running'):
-                    raise RuntimeError('node DNS filter failed to start')
             if value['options'].get('amnezia', {}).get('enabled'):
                 helper = self.container(AWG_CONTAINER)
                 if not helper or not helper.get('State', {}).get('Running'):
@@ -503,11 +501,6 @@ class Runtime:
                     if check.returncode:
                         time.sleep(.2)
                         continue
-                if options.get('adguard', {}).get('enabled'):
-                    reply = node_adguard.panel({'method':'GET','path':'/control/status','body':'','type':''},
-                                               self.store.root, filter_info, command)
-                    if reply['status'] != 200 or not json.loads(base64.b64decode(reply['body'])).get('running'):
-                        raise RuntimeError('node DNS filter is not ready')
                 return
             except OSError:
                 time.sleep(.2)
@@ -569,10 +562,6 @@ class Runtime:
         if value['options'].get('warp_mode', 'off') != 'off':
             strict = self.container(WARP_CONTAINER)
             if not strict or not strict.get('State', {}).get('Running'):
-                return False
-        if value['options'].get('adguard', {}).get('enabled'):
-            ad = self.container(node_adguard.CONTAINER)
-            if not ad or not ad.get('State', {}).get('Running'):
                 return False
         cover = self.container(COVER_CONTAINER) if value['options'].get('cover') else None
         running = bool(info and info.get('State', {}).get('Running'))

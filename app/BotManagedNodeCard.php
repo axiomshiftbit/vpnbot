@@ -46,11 +46,11 @@ trait BotManagedNodeCard
     {
         $config = $this->getXray();
         try {
-            $ips = is_array($config) ? $this->controllerBlockedIps($config) : [];
+            $digest = is_array($config) ? $this->controllerBlockedIpsDigest($config) : null;
         } catch (Throwable $error) {
-            $ips = null;
+            $digest = false;
         }
-        if ($ips === []) return '';
+        if ($digest === null) return '';
         $wireguard = ($exit['managed_profile']['channel'] ?? '') === 'wireguard';
         if (empty($node['status']['controller_ip_guard'])) {
             return $this->t('⚠️ Код ноды не применяет запреты IP основного сервера. Для «Весь трафик» адрес проверяет основной сервер, маршруты по спискам доменов идут без этой проверки. Обновите код ноды.',
@@ -62,7 +62,7 @@ trait BotManagedNodeCard
             return $this->t('⛔ Канал WireGuard без VLESS закрыт, пока на основном сервере действуют запреты IP: он не передаёт логин, привязанный к версии списка. Трафик пользователей через ноду блокируется. Переключите связь на VLESS, Trojan или VLESS внутри AmneziaWG.',
                 '⛔ The standalone WireGuard channel is closed while main-server IP blocks are active: it cannot carry a login bound to the list revision. User traffic through the node is blocked. Switch the link to VLESS, Trojan or VLESS inside AmneziaWG.');
         }
-        if ($ips !== null && !empty($exit['policy']['revision']) && ($exit['policy']['controller_ips'] ?? []) === $ips) return '';
+        if (is_string($digest) && !empty($exit['policy']['revision']) && self::policyIpsDigest($exit['policy']) === $digest) return '';
         return $this->t('⏳ Запреты IP основного сервера ещё не подтверждены нодой. До подтверждения адрес для «Весь трафик» проверяет основной сервер, маршруты по спискам доменов идут без этой проверки.', '⏳ The node has not confirmed the main-server IP blocks yet. Until then the main server checks the address for All traffic; domain-list routes skip this check.')
             . (isset($node['draft']) ? ' ' . $this->t('Синхронизацию задерживает черновик настроек: примените или сбросьте его.', 'A settings draft delays synchronization: apply or discard it.') : '');
     }

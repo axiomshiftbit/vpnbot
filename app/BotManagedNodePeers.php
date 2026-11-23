@@ -29,9 +29,6 @@ trait BotManagedNodePeers
         foreach ($this->managedNodePeers($id) as $peer) $data[] = [['text' => ($peer['enabled'] ? '✅ ' : '⏸ ') . $peer['name'],
             'callback_data' => "/nodePeer $id " . self::exitEntryKey($peer['id'])]];
         if (count($data) < 32) $data[] = [['text' => $this->t('➕ Создать подключение', '➕ Create connection'), 'callback_data' => "/nodePeerAdd $id"]];
-        if (count($this->managedNodePeers($id)) < 32 && !empty($node['status']['named_policy'])) {
-            $data[] = [['text' => $this->t('Создать отключённое подключение для настройки правил', 'Create a disabled connection to configure rules'), 'callback_data' => "/nodePeerAdd $id paused"]];
-        }
         $data[] = $this->menuHelpButton('nodepeers', $id);
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/node $id"]];
         if ($notice !== '') $text[] = self::esc($notice);
@@ -63,7 +60,6 @@ trait BotManagedNodePeers
             'callback_data' => "/nodePeerDo $id $key " . ($peer['enabled'] ? 'off' : 'on')]];
         $data[] = [['text' => $this->t('🔑 Сменить ключ', '🔑 Rotate identity'), 'callback_data' => "/nodePeerDo $id $key rotate"],
             ['text' => $this->t('✖ Удалить', '✖ Delete'), 'callback_data' => "/nodePeerDo $id $key delete"]];
-        if (!empty($this->managedNodes()[$id]['status']['named_policy'])) $data[] = [['text' => $this->t('Правила маршрутизации', 'Routing rules'), 'callback_data' => "/np $id " . self::nodePolicyPeerScope($peer['id'])]];
         $data[] = $this->menuHelpButton('nodepeers', $id.'_'.$key);
         $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/nodePeers $id"]];
         if ($notice !== '') $text[] = self::esc($notice);
@@ -105,12 +101,6 @@ trait BotManagedNodePeers
         }
         $peers = [];
         $status = $this->managedNodes()[$id]['status'] ?? [];
-        // A managed DNS grant follows this peer through the node's atomic rotation.
-        if ($action === 'rotate' && (!empty($status['adguard_filter']) || !empty($status['named_policy']))) {
-            try { $this->managedNodeSubmit($id, 'rotate', $peer['id'], (string) ($status['generation'] ?? '')); $this->managedNodeMenu($id); }
-            catch (Throwable $e) { $this->managedNodePeersMenu($id, $this->t('Смена ключа не началась. Обновите состояние ноды.', 'Key rotation did not start. Refresh the node status.')); }
-            return;
-        }
         foreach ($this->managedNodePeers($id, $status) as $item) {
             if ($item['id'] === $peer['id']) {
                 if ($action === 'delete') continue;

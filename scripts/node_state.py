@@ -96,9 +96,9 @@ def snapshot(value):
     for name, image in value['images'].items():
         if not isinstance(image, str) or not re.fullmatch(r'ghcr\.io/axiomshiftbit/vpnbot-'+name+r'@sha256:[a-f0-9]{64}', image):
             raise ValueError('only immutable VPNBot images are accepted')
-        result['images'][name] = image
-    if result['options'].get('adguard', {}).get('enabled') and 'ad' not in result['images']:
-        raise ValueError('DNS filter image is unavailable')
+        # The AdGuard Home image of older snapshots is no longer run on nodes.
+        if name != 'ad':
+            result['images'][name] = image
     if result['options'].get('warp_mode', 'off') != 'off' and ('warp_uuid' not in result['identity'] or 'wg' not in result['images']):
         raise ValueError('WARP identity and helper image are required')
     if not isinstance(value['tls'], dict) or set(value['tls']) not in (set(), {'fullchain.pem', 'privkey.pem'}):

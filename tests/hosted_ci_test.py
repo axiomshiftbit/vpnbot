@@ -131,11 +131,6 @@ class HostedCITests(unittest.TestCase):
             with self.subTest(port=port), self.assertRaisesRegex(ValueError, 'loopback'):
                 bootstrap.validate_compose_inputs({'services': {'php': {'ports': [port]}}})
 
-    def test_node_ui_has_a_disposable_volume(self):
-        bootstrap.validate_compose_inputs({'volumes': {'node-adguard-ui': {'name':'vpnbot-audit_node-adguard-ui'}}})
-        with self.assertRaisesRegex(ValueError, 'volume outside'):
-            bootstrap.validate_compose_inputs({'volumes': {'node-adguard-ui': {'name':'production-node-adguard-ui'}}})
-
     def test_compose_rejects_external_or_host_backed_volumes(self):
         for value in ({'external': True}, {'driver_opts': {'device': '/home', 'o': 'bind'}},
                       {'driver': 'other'}, {'name': 'production-data'}):

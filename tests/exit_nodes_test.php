@@ -175,16 +175,6 @@ $check($resolve['protocol'] === 'loopback' && $resolve['targetStrategy'] === 'Fo
     && $rules["vpnbot:exit:$id:unresolved"]['outboundTag'] === 'block', 'повторная проверка IP ограничена полным назначением');
 $check(in_array('198.51.100.2', $rules['vpnbot:exit:resolved-block']['ip'], true)
     && array_search('vpnbot:exit:resolved-block', $ruleTags($c)) < array_search("vpnbot:exit:$id:resolved", $ruleTags($c)), 'запрет IP исполняется раньше выхода после DNS');
-$named = $q;
-$actor = 'bot-' . Bot::exitFullKey($full['inbounds'][0]['settings']['clients'][0]);
-$named['exits'][$id]['policy'] = ['lists'=>['media'=>['domain'=>['full:media.example']]], 'bindings'=>[$actor=>[['list'=>'media','action'=>'warp']]]];
-$candidate = $full;
-$bot->ensureExitNodes($candidate, $named);
-$selected = array_values(array_filter($candidate['routing']['rules'], static fn($rule) =>
-    in_array('alice', $rule['user'] ?? [], true) && in_array('full:media.example', $rule['domain'] ?? [], true)));
-$check(count($selected) === 1 && str_starts_with($selected[0]['outboundTag'] ?? '', 'vpnbot-exit-resolve-'),
-    'сохранение выбора WARP по имени до обязательной проверки глобального IP-блока');
-
 
 // Ручное разрешение до блок-листа сохраняется только для обычного клиента.
 array_unshift($full['routing']['rules'], ['type' => 'field', 'ruleTag' => 'early-direct', 'outboundTag' => 'direct', 'network' => 'tcp,udp']);
@@ -245,7 +235,7 @@ if (is_string($xray) && $xray !== '' && is_executable($xray)) {
     $check($code === 0, 'ядро принимает конфиг с узлами: ' . implode(' ', array_slice($out, -3)));
 }
 
-// One physical node, two simultaneous egress policies.
+// A node WARP identity only serves its health probe: no user is routed to the node WARP.
 $wid = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 $profile = ['link' => $link, 'outbound' => ExitNodeLink::parse($link)['outbound'], 'warp_uuid' => $wid];
 $node = ['kind'=>'remote', 'link'=>$link, 'managed_profile'=>$profile, 'enabled'=>1, 'fallback'=>'direct',
@@ -254,113 +244,30 @@ $p = ['exits'=>[$id=>$node]];
 $bot->confPac = $p;
 $seed = $base;
 foreach ([0,1] as $i) $seed['inbounds'][0]['settings']['clients'][$i]['exit'] = [$id];
+// A field left by an earlier version must not route anybody to WARP.
 $seed['inbounds'][0]['settings']['clients'][0]['exit_warp'] = [$id];
 $wt = Bot::EXIT_TAG . 'warp-' . $id;
 foreach ([false,true] as $full) {
-    $fixture = $seed;
-    if ($full) foreach ([0,1] as $i) $fixture['inbounds'][0]['settings']['clients'][$i]['exit_full'] = $id;
-    foreach (['ready','disabled','stale','colliding'] as $state) {
-        $policy = $p;
-        if ($state === 'disabled') $policy['exits'][$id]['enabled'] = 0;
-        if ($state === 'stale') unset($policy['exits'][$id]['managed_profile']['warp_uuid']);
-        if ($state === 'colliding') $policy['exits'][$id]['managed_profile']['warp_uuid'] = $uuid;
-        $c = $fixture;
-        $bot->ensureExitNodes($c, $policy);
-        $byTag = array_column($c['outbounds'], null, 'tag');
-        if ($state === 'ready') {
-            $probe = array_column($c['inbounds'], null, 'tag')[$wt];
-            $check($probe['listen'] === '127.0.0.1' && $probe['protocol'] === 'trojan'
-                && $probe['settings']['clients'][0]['password'] === hash_hmac('sha256', 'vpnbot:warp-probe:'.$id, $wid),
-                'authenticated TCP loopback probe uses a separate credential');
-            $check($byTag[$wt]['settings']['vnext'][0]['users'][0]['id'] === $wid
-                && $byTag[Bot::EXIT_TAG.$id]['settings']['vnext'][0]['users'][0]['id'] === $uuid, 'independent node logins');
-            foreach ($c['routing']['balancers'] ?? [] as $balancer) foreach ($balancer['selector'] as $prefix)
-                $check(!str_starts_with($wt, $prefix), 'ordinary balancers exclude WARP');
-        }
-        $rt = Bot::EXIT_RULE . ($full ? "warp-$id:full" : "$id:warp-domain");
-        $rules = array_column($c['routing']['rules'], null, 'ruleTag');
-        $check(($rules[$rt]['outboundTag'] ?? '') === ($state === 'ready' ? $wt : 'block')
-            && $rules[$rt]['user'] === ['alice'], "WARP $state $rt");
-        if ($state === 'ready') {
-            $normal = $rules[Bot::EXIT_RULE.$id.($full ? ':full' : ':domain')];
-            $check($normal['user'] === ['bob'] && ($normal['balancerTag'] ?? $normal['outboundTag']) === Bot::EXIT_TAG.$id, 'other user keeps ordinary node');
-        }
-        $before = $c; $bot->ensureExitNodes($c, $policy);
-        $check($before === $c, 'idempotent WARP routes');
-    }
+    $c = $seed;
+    if ($full) foreach ([0,1] as $i) $c['inbounds'][0]['settings']['clients'][$i]['exit_full'] = $id;
+    $bot->ensureExitNodes($c, $p);
+    $byTag = array_column($c['outbounds'], null, 'tag');
+    $probe = array_column($c['inbounds'], null, 'tag')[$wt];
+    $check($probe['listen'] === '127.0.0.1' && $probe['protocol'] === 'trojan'
+        && $probe['settings']['clients'][0]['password'] === hash_hmac('sha256', 'vpnbot:warp-probe:'.$id, $wid),
+        'authenticated TCP loopback probe uses a separate credential');
+    $check($byTag[$wt]['settings']['vnext'][0]['users'][0]['id'] === $wid
+        && $byTag[Bot::EXIT_TAG.$id]['settings']['vnext'][0]['users'][0]['id'] === $uuid, 'independent node logins');
+    $users = array_filter($c['routing']['rules'], static fn($r) => ($r['outboundTag'] ?? '') === $wt && !empty($r['user']));
+    $check(!$users, 'no user rule selects the node WARP');
+    $normal = array_column($c['routing']['rules'], null, 'ruleTag')[Bot::EXIT_RULE.$id.($full ? ':full' : ':domain')];
+    $check(in_array('alice', $normal['user'], true) && ($normal['balancerTag'] ?? $normal['outboundTag']) === Bot::EXIT_TAG.$id, 'users keep the ordinary node');
+    $before = $c; $bot->ensureExitNodes($c, $p);
+    $check($before === $c, 'idempotent node routes');
 }
-$c = $seed; $bot->ensureExitNodes($c, $p); $bot->ensureWgGuard($c);
-$guards = array_column($c['routing']['rules'], null, 'ruleTag');
-$check($guards['vpnbot:exit:full-guard']['user'] === ['alice'], 'split WARP user cannot use a stale client-side SOCKS shortcut');
-$policy = $bot->exitWarpSubscriptionPolicy($seed['inbounds'][0]['settings']['clients'][0], $p);
-$check($policy['entries'] === $node['routes'] && !$policy['all'], 'split subscription uses assigned entries');
-foreach ([false,true] as $full) foreach (['si','s','cl'] as $type) {
-    $sub = ['outbounds'=>[['tag'=>'deny','protocol'=>'blackhole']], 'rules'=>['DOMAIN,ads.test,REJECT','MATCH,DIRECT'],
-        'route'=>['rules'=>[['action'=>'reject','domain'=>['ads.test']]], 'final'=>'direct'],
-        'routing'=>['rules'=>[['outboundTag'=>'deny','domain'=>['ads.test']]]]];
-    $bot->exitWarpSubscriptionRoutes($sub, $type, 'vpn', $full ? ['all'=>true,'entries'=>[]] : $policy);
-    $rules = match($type) {'si'=>$sub['route']['rules'], 's'=>$sub['routing']['rules'], 'cl'=>$sub['rules']};
-    $check(str_contains(json_encode($rules[0]), 'ads.test'), 'subscription preserves block');
-    $check($full ? match($type) {'si'=>$sub['route']['final']==='vpn','s'=>end($rules)['outboundTag']==='vpn','cl'=>end($rules)==='MATCH,vpn'}
-            : str_contains(json_encode($rules), 'example.org'), "subscription $type pin");
-}
-$check($bot->exitWarpSubscriptionPolicy($seed['inbounds'][0]['settings']['clients'][1], $p) === null, 'unassigned subscription is untouched');
-
-$splitClient = $seed['inbounds'][0]['settings']['clients'][1];
-$splitClient['exit_full'] = $id;
-$splitClient['exit_main'] = ['Банки'];
-$check($bot->exitWarpSubscriptionPolicy($splitClient, $p) === ['all'=>true,'entries'=>[]],
-    'main split subscription leaves the destination decision to the controller');
-
-$lost = $base;
-$splitClient['exit_warp'] = [$id];
-$lost['inbounds'][0]['settings']['clients'] = [$splitClient];
-$bot->ensureExitNodes($lost, ['node_policy_lists'=>['Банки'=>['domain'=>['full:bank.test']]]]);
-$bot->ensureWgGuard($lost);
-$lostRules = array_column($lost['routing']['rules'], null, 'ruleTag');
-$check(!isset($lostRules[Bot::EXIT_UNAVAILABLE . 'warp-missing'])
-    && (bool) array_filter($lostRules, static fn($r)=>str_starts_with($r['ruleTag']??'', 'vpnbot:exit:main-unavailable-')),
-    'missing default WARP node keeps explicit main exceptions and blocks remainder');
-
-// Ordered WARP groups fail closed, recover with hold-down, and skip drained or obsolete members.
 $second = 'deedfac1';
 $gid = 'eeaa7711';
 $group = ['kind'=>'group','enabled'=>1,'members'=>[$id,$second]];
-$members = [$id=>$node,$second=>$node];
-$now = 100000;
-$sample = ['warp_health'=>['time'=>$now,'profile'=>hash('sha256',$wid),'https'=>'ok','udp'=>'ok','recovered'=>0]];
-$st = [$id=>$sample,$second=>$sample];
-$choose = static fn($g,$status) => $bot->exitWarpGroupTarget($g,$members,$status,$now);
-$check($choose($group,$st)===$wt, 'first healthy member');
-$st[$id]['warp_health']['udp']='timeout';
-$check($choose($group,$st)===Bot::EXIT_TAG.'warp-'.$second, 'UDP outage selects the verified backup');
-$st[$second]['warp_health']['https']='unavailable';
-$check($choose($group,$st)==='block', 'two failed transports block the strict group');
-$st[$second]=$sample;
-$st[$id]=$sample;
-$st[$id]['warp_health']['recovered']=$now-1;
-$check($choose($group,$st)===Bot::EXIT_TAG.'warp-'.$second, 'hold down after recovery');
-$st[$id]['warp_health']['recovered']=$now-2*Bot::EXIT_CRON_PERIOD;
-$check($choose($group,$st)===$wt, 'preferred member after sustained recovery');
-$check($choose($group+['warp_drained'=>[$id=>true]],$st)===Bot::EXIT_TAG.'warp-'.$second, 'maintenance excludes the selected member');
-$st[$id]['warp_health']['profile']='different';
-$st[$second]['warp_health']['time']=$now-2*Bot::EXIT_CRON_PERIOD-1;
-$check($choose($group,$st)==='block', 'old evidence cannot enable egress');
-$policy = ['exits'=>[$id=>$node,$second=>$node,$gid=>$group]];
-$both = $base;
-$both['inbounds'][0]['settings']['clients'][0]['exit']=[$gid];
-$both['inbounds'][0]['settings']['clients'][0]['exit_warp']=[$gid];
-$both['inbounds'][0]['settings']['clients'][0]['exit_full']=$gid;
-$bot->ensureExitNodes($both,$policy);
-$built=array_column($both['routing']['rules'],null,'ruleTag');
-$check(($built["vpnbot:exit:warp-$gid:full"]['outboundTag']??'')==='block','group has no ordinary fallback before first successful probes');
-
-$policy['exits'][$id]['managed_profile']['warp_probe_uuid']='99999999-9999-4999-8999-999999999999';
-$both=$seed;
-$bot->ensureExitNodes($both,$policy);
-$rules=array_column($both['routing']['rules'],null,'ruleTag');
-$check($rules["vpnbot:exit:$id:warp-dns"]['outboundTag']===Bot::EXIT_TAG.'health-'.$id
-    && $rules["vpnbot:exit:$id:warp-domain"]['outboundTag']===$wt,'only a service probe uses the diagnostic identity');
 // A group must select the egress before deciding which DNS server checks a name.
 $guardPac = ['exits'=>[$id=>$node, $second=>$node, $gid=>$group]];
 unset($guardPac['exits'][$second]['managed_profile']);

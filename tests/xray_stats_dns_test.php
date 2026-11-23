@@ -242,24 +242,6 @@ t($traffic['up'] === 310, 'отдельный сброс обычного вых
 t(($traffic['modes']['node']['up'] ?? null) === 10 && ($traffic['modes']['warp']['up'] ?? null) === 150,
     'раздельный учёт с момента обновления сохраняет историю общей');
 
-$scope = 'bot-0123456789abcdef0123';
-$bot->pacFake['exits']['aaaaaaaa']['policy']['bindings'][$scope] = [['list' => 'named', 'action' => 'warp']];
-$bot->statsFake = [];
-$prefix = 'vpnbot-exit-subject-aaaaaaaa-' . $scope;
-$bot->sshOut = json_encode(['stat' => array_map(static fn($name, $bytes) => [
-    'name' => 'outbound>>>' . $name . '>>>traffic>>>uplink', 'value' => $bytes,
-], ['vpnbot-exit-aaaaaaaa', 'vpnbot-exit-warp-aaaaaaaa', "$prefix-direct", "$prefix-warp", "$prefix-row-0",
-    'vpnbot-exit-health-aaaaaaaa'], [10, 20, 3, 4, 5, 99])]);
-for ($sample = 0; $sample < 2; $sample++) {
-    $bot->time_xray_stats = null;
-    $bot->xrayStatsUser();
-    $bot->statsFake = $bot->statsSaved;
-    $traffic = $bot->exitTraffic('aaaaaaaa', $bot->statsFake);
-    t($traffic['up'] === 42 && $traffic['modes']['node']['up'] === 13 && $traffic['modes']['warp']['up'] === 29,
-        'персональные каналы учтены один раз, служебная проверка исключена');
-}
-t($bot->exitTraffic('aaaaaaaa', Bot::foldSession($bot->statsFake))['up'] === 42, 'свёртка сохраняет трафик персональных каналов');
-
 t($bot->dnsDomains(['domain' => 'a.com']) === ['a.com'], 'только главный домен');
 t(
     $bot->dnsDomains(['domain' => 'a.com', 'domain_aliases' => ['b.com', 'c.com']]) === ['a.com', 'b.com', 'c.com'],

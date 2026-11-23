@@ -12,6 +12,7 @@ final class ManagedNodeFields
         'sniffing' => ['ru' => 'Sniffing', 'en' => 'Sniffing'], 'torrent' => ['ru' => 'Торренты', 'en' => 'Torrents'],
         'reserve' => ['ru' => 'Резервный канал', 'en' => 'Backup channel'],
         'wireguard' => ['ru' => 'WireGuard', 'en' => 'WireGuard'], 'amnezia' => ['ru' => 'AmneziaWG', 'en' => 'AmneziaWG'],
+        'warp' => ['ru' => 'WARP ноды', 'en' => 'Node WARP'],
     ];
 
     public static function all(): array
@@ -20,8 +21,7 @@ final class ManagedNodeFields
             'transport' => ['basic', 'ru' => 'Транспорт', 'en' => 'Transport', 'choice', ['reality', 'ws', 'grpc', 'xhttp', 'trojan-grpc']],
             'core' => ['basic', 'ru' => 'Ядро', 'en' => 'Core', 'choice', ['origin', 'origin2', 'origin3', 'fork']],
             'family' => ['network', 'ru' => 'Выход в интернет', 'en' => 'Internet egress', 'choice', [4, 6]],
-            'adguard.enabled' => ['network', 'ru'=>'Блокировка рекламы AdGuard Home', 'en'=>'AdGuard Home ad filtering', 'bool'],
-            'warp_mode' => ['network', 'ru' => 'Выход пользователей через WARP (IPv4)', 'en' => 'User egress via WARP (IPv4)', 'choice', ['off', 'wireguard', 'masque']],
+            'warp_mode' => ['warp', 'ru' => 'Выход пользователей через WARP (IPv4)', 'en' => 'User egress via WARP (IPv4)', 'choice', ['off', 'wireguard', 'masque']],
             'connect_family' => ['network', 'ru' => 'Связь бот → нода', 'en' => 'Bot → node link', 'choice', [4, 6]],
             'vpn_sources' => ['vpn', 'ru' => 'Серверы для VPN (без SSH)', 'en' => 'VPN servers (no SSH)', 'list'],
             'domain' => ['domains', 'ru' => 'Свой домен', 'en' => 'Own domain', 'string'],

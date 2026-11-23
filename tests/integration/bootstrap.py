@@ -103,7 +103,7 @@ def validate_compose_inputs(config):
     for volume in config.get('volumes', {}).values():
         if (volume.get('external') or volume.get('driver_opts')
                 or volume.get('driver', 'local') != 'local'
-                or volume.get('name') not in ('vpnbot-audit_adguard', 'vpnbot-audit_warp', 'vpnbot-audit_node-adguard-ui')):
+                or volume.get('name') not in ('vpnbot-audit_adguard', 'vpnbot-audit_warp')):
             raise ValueError('volume outside disposable stand')
 
 def bootstrap(checkout, candidate, client_image):
@@ -226,8 +226,6 @@ networks:
     external: true
     name: vpnbot-protocol-test
 '''
-    if 'node-adguard-ui' in compose.get('volumes', {}):
-        text += 'volumes:\n  node-adguard-ui:\n    name: vpnbot-audit_node-adguard-ui\n'
     write(BOT / 'compose.audit.yml', text)
     for name in ('compose.migration.json', 'compose.fresh.json'):
         write(BOT / name, {'services': {}})

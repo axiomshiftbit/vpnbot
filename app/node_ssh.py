@@ -304,12 +304,12 @@ class Client:
         return args
 
     @key_locked
-    def request(self, request, target=None, *, panel=False):
+    def request(self, request, target=None):
         if target is None:
             path = self.directory/'endpoint.json'
             trusted(path)
             target = endpoint(decode(path.read_bytes()))
-        if not isinstance(request, dict) or request.get('action') not in (('adguard_panel',) if panel else ('ping', 'status', 'tls_probe', 'backup', 'profile', 'confirm', 'submit', 'job')):
+        if not isinstance(request, dict) or request.get('action') not in ('ping', 'status', 'tls_probe', 'backup', 'profile', 'confirm', 'submit', 'job'):
             raise ValueError('request')
         args = self.ssh(target)
         if policy_request(request):
@@ -317,7 +317,7 @@ class Client:
             if len(body) > LIMIT:
                 body = b'#' + body
         else:
-            body = b'!'+encode(request,2*1024*1024) if panel else encode(request)
+            body = encode(request)
         deadline = self.deadline
         # submit too: "busy" means the node refused before queueing anything, and
         # its one-second status/watch passes would otherwise fail a user's Apply.
@@ -327,10 +327,7 @@ class Client:
             if remaining <= 0:
                 raise NodeBusy('node_busy_timeout')
             try:
-                if panel:
-                    limit = 12*1024*1024
-                    result = decode(run(args, body, timeout=min(15, remaining), rpc=True, limit=limit),limit)
-                elif request['action'] in ('status','backup'):
+                if request['action'] in ('status','backup'):
                     reply = run(args,body,timeout=min(15,remaining),rpc=True,limit=POLICY_FRAME)
                     result = decode(reply,POLICY_FRAME)
                     if len(reply) > LIMIT and snapshot_limit(result.get('result')) != POLICY_LIMIT:
@@ -531,10 +528,9 @@ class Client:
 def main():
     os.umask(0o077)
     first = sys.stdin.buffer.read(1)
-    panel = first == b'!'
     policy_frame = first == b'#'
-    limit = 2*1024*1024 if panel else POLICY_FRAME if policy_frame else LIMIT
-    value = decode((b'' if panel or policy_frame else first)+sys.stdin.buffer.read(limit+1),limit)
+    limit = POLICY_FRAME if policy_frame else LIMIT
+    value = decode((b'' if policy_frame else first)+sys.stdin.buffer.read(limit+1),limit)
     if policy_frame:
         if not isinstance(value,dict) or not isinstance(value.get('value'),dict):
             raise ValueError('invalid policy frame')
@@ -542,8 +538,6 @@ def main():
         if not ((value.get('action') == 'rpc' and policy_request(payload)) or
                 (value.get('action') == 'import' and snapshot_limit(payload.get('snapshot')) == POLICY_LIMIT)):
             raise ValueError('invalid policy frame')
-    if panel and value.get('action') != 'adguard_panel':
-        raise ValueError('invalid panel request')
     if not isinstance(value, dict) or set(value) != {'id', 'action', 'value'}:
         raise ValueError('request')
     client = Client(value['id'])
@@ -556,8 +550,6 @@ def main():
             result = client.reconnect(value['value'])
         elif value['action'] == 'rebind':
             result = client.rebind(value['value'])
-        elif panel:
-            result = client.request({'action':'adguard_panel', 'http':value['value']}, panel=True)
         elif value['action'] == 'rpc':
             result = client.request(value['value'])
         elif value['action'] == 'saved' and value['value'] is None:
@@ -576,7 +568,7 @@ def main():
             result = {'saved': True}
         else:
             raise ValueError('action')
-        sys.stdout.buffer.write(encode({'ok': True, 'result': result}, 12*1024*1024 if panel else POLICY_FRAME if value['action'] in ('rpc','saved','rebind','reconnect') else LIMIT))
+        sys.stdout.buffer.write(encode({'ok': True, 'result': result}, POLICY_FRAME if value['action'] in ('rpc','saved','rebind','reconnect') else LIMIT))
 
 
 if __name__ == '__main__':

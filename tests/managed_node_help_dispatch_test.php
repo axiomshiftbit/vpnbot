@@ -3,7 +3,10 @@ ob_start();require __DIR__.'/managed_node_choice_dispatch_test.php';ob_end_clean
 $checks=0;
 foreach(['ru','en'] as $language){
     foreach(ManagedNodeFields::GROUPS as $group=>$label){
-        $bot=new NodeChoiceDispatchFixture();$bot->language=$language;$bot->showSetting($group);$before=$bot->pacState;
+        $bot=new NodeChoiceDispatchFixture();$bot->language=$language;$bot->showSetting($group);
+        // WARP and AdGuard Home screens exist on node code that reports them.
+        $bot->pacState['managed_nodes']['aabbccdd']['status']['warp_egress']=true;
+        $before=$bot->pacState;
         $bot->click('/nodeSettings aabbccdd '.$group);
         $screen=end($bot->screens);$rows=$screen[1];
         $help='/menuhelp nodeconfig 0 aabbccdd_'.$group;

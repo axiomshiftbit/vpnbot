@@ -49,11 +49,6 @@ if (Panel::isPanelListener()) {
 $webapp = $bot->webappAuth($_GET, $c['key'], (array) ($c['admin'] ?? []));
 
 switch (true) {
-    case preg_match('~^' . preg_quote("/webapp$hash/nad/", '~') . '([a-f0-9]{8})/(.*)$~D', (string) parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH), $nodePanel):
-        try { $bot->nodeAdguardWeb($nodePanel[1], $nodePanel[2], "/webapp$hash/nad/$nodePanel[1]/"); }
-        catch (Throwable $e) { http_response_code(503); }
-        exit;
-
     // Пропуск в веб-панель AdGuard: подзапрос nginx (auth_request) перед
     // каждым запросом к /adguard<hash>/. 204 — пускать, 401 — в мини-приложение.
     case parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) === "/adguard$hash-gate":

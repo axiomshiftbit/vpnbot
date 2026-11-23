@@ -199,6 +199,7 @@ class ManagerUpgrade(unittest.TestCase):
         images_only = image_manifest('c'*40)
         # An unchanged Xray digest alone cannot distinguish these releases.
         for name in ('wg', 'ad'):
+            # An image of a removed node service must never be acquired.
             prefix = upgrade.image_bundle.REGISTRY + name + '@sha256:'
             full['images'][name] = prefix + 'c'*64
             images_only['images'][name] = prefix + 'd'*64
@@ -223,20 +224,20 @@ class ManagerUpgrade(unittest.TestCase):
             apply('rollback', None)
             self.assertEqual(upgrade.images_source(self.store), full['source'])
             apply('configure', self.store.load()['options'] | {'warp_mode': 'wireguard', 'adguard': {'enabled': True}})
-        self.assertEqual(self.store.load()['images'], {name: full['images'][name] for name in ('xr', 'wg', 'ad')})
+        self.assertEqual(self.store.load()['images'], {name: full['images'][name] for name in ('xr', 'wg')})
 
     def test_legacy_generation_with_ambiguous_digests_does_not_mix_optional_images(self):
         full, normal = image_manifest('b'*40), image_manifest('c'*40)
-        normal['images']['ad'] = upgrade.image_bundle.REGISTRY + 'ad@sha256:' + 'd'*64
+        normal['images']['wg'] = upgrade.image_bundle.REGISTRY + 'wg@sha256:' + 'd'*64
         state.atomic(self.store.root/'release.json', state.encode(normal))
         state.atomic(self.store.root/upgrade.RELEASE, state.encode(full))
         runtime = Runtime(self.store, HOST)
         config = self.store.load()
-        config['options']['adguard'] = {'enabled': True}
+        config['options']['warp_mode'] = 'wireguard'
         with patch.object(runtime, 'pull') as pull, self.assertRaisesRegex(ValueError, 'matching image bundle'):
             runtime.ensure_images(config)
         pull.assert_not_called()
-        self.assertNotIn('ad', config['images'])
+        self.assertNotIn('wg', config['images'])
 
     def test_first_update_preserves_a_legacy_generations_bundle_for_rollback(self):
         original = image_manifest('a'*40)

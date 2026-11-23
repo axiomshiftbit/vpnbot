@@ -20,27 +20,58 @@ class WarpServiceTest(unittest.TestCase):
                                         env=dict(os.environ, SOCKS_UDP_PORTS=expected), capture_output=True)
                 self.assertEqual(result.returncode, 0, result.stderr.decode())
 
-    def test_failed_handshake_does_not_leave_ready_interface(self):
-        source = (ROOT / 'scripts/start_wp.sh').read_text()
-        functions = source[source.index('tunnel_up() {'):source.index('MS_PID=""')]
-        with tempfile.TemporaryDirectory() as tmp:
-            env = dict(os.environ, WARP_TEST_DIR=tmp)
-            script = '''
-WGCF_IF=wgcf-profile
-WGCF_CONF=unused
-sleep() { :; }
-wg() {
-    [ -e "$WARP_TEST_DIR/interface" ] || return 1
-    [ "$3" != latest-handshakes ] || printf 'peer\\t0\\n'
-}
-wg-quick() {
-    if [ "$1" = up ]; then touch "$WARP_TEST_DIR/interface";
-    else rm -f "$WARP_TEST_DIR/interface"; fi
-}
-''' + functions + '\nwarp_up && exit 10\ntunnel_up && exit 11\nexit 0\n'
-            result = subprocess.run(['bash', '-c', script], env=env, capture_output=True)
-            self.assertEqual(result.returncode, 0, result.stderr.decode())
+    def run_fixup_up(self, tmp, answering_port):
+        """warp_fixup.sh up with wg/wg-quick replaced in PATH: the real shell code runs."""
+        conf = Path(tmp) / 'wgcf-profile.conf'
+        conf.write_text('[Interface]\nPrivateKey = fixture\nAddress = 172.16.0.2/32\n[Peer]\nEndpoint = engage.example.test:2408\n')
+        conf.chmod(0o600)
+        bin_dir = Path(tmp) / 'bin'
+        bin_dir.mkdir()
+        stubs = {
+            'wg': '#!/bin/sh\n[ -e "$T/interface" ] || exit 1\n[ "$3" = latest-handshakes ] || exit 0\n'
+                  'if grep -q ":$ANSWER$" "$T/wgcf-profile.conf"; then printf "peer\\t1700000000\\n"; else printf "peer\\t0\\n"; fi\n',
+            'wg-quick': '#!/bin/sh\necho "$1 $(sed -n "s/^Endpoint = //p" "$2")" >> "$T/log"\n'
+                        'if [ "$1" = up ]; then touch "$T/interface"; else rm -f "$T/interface"; fi\n',
+            'sleep': '#!/bin/sh\nexit 0\n',
+        }
+        for name, body in stubs.items():
+            (bin_dir / name).write_text(body)
+            (bin_dir / name).chmod(0o755)
+        env = dict(os.environ, T=tmp, ANSWER=answering_port, WGCF_CONF=str(conf), PATH=f"{bin_dir}:{os.environ['PATH']}")
+        result = subprocess.run(['sh', str(ROOT / 'scripts/warp_fixup.sh'), 'up'], env=env, capture_output=True)
+        ups = [line for line in (Path(tmp) / 'log').read_text().splitlines() if line.startswith('up ')]
+        return result, conf, ups
 
+    def test_failed_handshake_does_not_leave_ready_interface(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result, conf, ups = self.run_fixup_up(tmp, 'none')
+            self.assertEqual(result.returncode, 1, result.stderr.decode())
+            self.assertFalse((Path(tmp) / 'interface').exists())
+            self.assertEqual(len(ups), 4)
+            self.assertEqual(conf.stat().st_mode & 0o777, 0o600)
+
+    def test_blocked_endpoint_port_moves_the_profile_to_an_answering_port(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result, conf, ups = self.run_fixup_up(tmp, '1701')
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
+            self.assertTrue((Path(tmp) / 'interface').exists())
+            self.assertIn('Endpoint = engage.example.test:1701\n', conf.read_text())
+            self.assertIn('PrivateKey = fixture', conf.read_text())
+            self.assertEqual(conf.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(sorted(p.name for p in Path(tmp).iterdir()), ['bin', 'interface', 'log', 'wgcf-profile.conf'])
+            self.assertEqual(ups, ['up engage.example.test:2408', 'up engage.example.test:500', 'up engage.example.test:1701'])
+
+    def test_answering_endpoint_keeps_its_port(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result, conf, ups = self.run_fixup_up(tmp, '2408')
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
+            self.assertEqual(ups, ['up engage.example.test:2408'])
+
+    def test_watchdog_uses_the_shared_bring_up(self):
+        source = (ROOT / 'scripts/start_wp.sh').read_text()
+        self.assertIn('warp_up() {\n    WGCF_CONF="$WGCF_CONF" sh "${WARP_FIXUP:-/warp_fixup.sh}" up\n}', source)
+        bot = (ROOT / 'app/bot.php').read_text()
+        self.assertIn("private const WARP_UP = '{ sh /warp_fixup.sh up || exit 1; }';", bot)
 
 if __name__ == '__main__':
     unittest.main()

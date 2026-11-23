@@ -82,24 +82,6 @@ try {
     sharedCheck($bot->getDomain() === 'origin.example.test' && $bot->getDomain(true) === 'cdn.example.test', 'Заданные основной домен и CDN сохраняются');
     $bot->conf = $savedConf;
     foreach (array_keys(ManagedProtocol::NAMES) as $protocol) $modules->set($protocol, true);
-    $pinned = clone $bot;
-    $pid = 'aabbccdd';
-    $pinned->conf['exits'][$pid] = ['kind'=>'remote','enabled'=>1,'routes'=>['domain:node.example.test'=>1]];
-    $pinnedUser =& $pinned->xr['inbounds'][0]['settings']['clients'][0];
-    $pinnedUser['exit'] = $pinnedUser['exit_warp'] = [$pid];
-    $pinned->templates['clash'] = json_decode(file_get_contents(__DIR__.'/../templates/mihomo-warp.json'), true);
-    foreach (['s','si','clj'] as $format) {
-        $sub = sharedProfile($pinned, $format);
-        $body = json_encode($sub);
-        sharedCheck(str_contains($body, 'node.example.test') && !str_contains($body, base64_encode(str_repeat('a',32))), 'Подписка отправляет список ноды через VPN без клиентского WARP-ключа');
-    }
-    $pinnedUser['exit_full'] = $pid;
-    $xrayRules = sharedProfile($pinned, 's')['routing']['rules'];
-    sharedCheck(end($xrayRules)['network'] === 'tcp,udp', 'Полная подписка Xray');
-    sharedCheck(sharedProfile($pinned,'si')['route']['final'] === 'proxy', 'Полная подписка sing-box');
-    $clash = sharedProfile($pinned,'clj');
-    sharedCheck(end($clash['rules']) === 'MATCH,proxy' && !in_array('wireguard',array_column($clash['proxies'],'type'),true), 'Полная подписка Mihomo');
-    unset($pinnedUser);
     $mihomo = sharedProfile($bot, 'cl'); $sing = sharedProfile($bot, 'si');
     sharedCheck($mihomo === sharedProfile($bot, 'clj'), 'Полная общая подписка YAML и JSON семантически идентична');
     $_GET = ['s'=>$client['subtoken'], 't'=>'clj'];

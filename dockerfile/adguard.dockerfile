@@ -37,7 +37,6 @@ RUN apk add --no-cache patch && patch --fuzz=0 -p1 < /tmp/session-rotation.patch
        -ldflags "-s -w -X github.com/AdguardTeam/AdGuardHome/internal/version.version=$ADGUARD_VERSION -X github.com/AdguardTeam/AdGuardHome/internal/version.channel=release" -o /AdGuardHome .
 
 FROM adguard/adguardhome:${ADGUARD_VERSION}
-COPY --from=frontend /source/build/static/ /vpnbot-panel-assets/
 COPY --from=core /AdGuardHome /opt/adguardhome/AdGuardHome
 # SBOM и lock, по которым собран встроенный интерфейс: Trivy проверяет его зависимости.
 COPY --from=frontend /adguard-frontend.cdx.json /source/client_v2/package-lock.json /usr/local/share/vpnbot/adguard-frontend/

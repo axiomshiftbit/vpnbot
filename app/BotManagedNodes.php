@@ -3,8 +3,8 @@
 require_once __DIR__ . '/ManagedNodeProfile.php';
 require_once __DIR__ . '/ManagedNodeFields.php';
 require_once __DIR__ . '/BotManagedNodePeers.php';
-require_once __DIR__ . '/BotNodeAdguard.php';
 require_once __DIR__ . '/BotNodePolicy.php';
+require_once __DIR__ . '/BotNodeRoutes.php';
 require_once __DIR__ . '/BotManagedNodeSubscriptions.php';
 require_once __DIR__ . '/BotManagedNodeNavigation.php';
 require_once __DIR__ . '/BotManagedNodeMenus.php';
@@ -15,8 +15,8 @@ require_once __DIR__ . '/BotManagedNodePresets.php';
 trait BotManagedNodes
 {
     use BotManagedNodePeers;
-    use BotNodeAdguard;
     use BotNodePolicy;
+    use BotNodeRoutes;
     use BotManagedNodeSubscriptions;
     use BotManagedNodeNavigation;
     use BotManagedNodeMenus;
@@ -151,15 +151,13 @@ trait BotManagedNodes
     {
         if (!preg_match('~^[a-f0-9]{8}$~D', $id)) throw new RuntimeException('Invalid node');
         $body = json_encode(['id' => $id, 'action' => $action, 'value' => $value], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        $panel = $action === 'adguard_panel';
         $large = strlen($body) > 65536 && (
             ($action === 'import' && isset($value['snapshot']->options->policy))
             || ($action === 'rpc' && ($value['action'] ?? '') === 'submit' && (isset($value['request']['value']['policy']) || isset($value['request']['value']['options']['policy'])))
         );
-        $limit = $panel ? 12 * 1024 * 1024 : (in_array($action,['rpc','saved','rebind','reconnect'],true) ? 4 * 1024 * 1024 + 4096 : 65536);
+        $limit = in_array($action,['rpc','saved','rebind','reconnect'],true) ? 4 * 1024 * 1024 + 4096 : 65536;
         if ($large) $body = '#' . $body;
-        if ($panel) $body = '!' . $body;
-        if (strlen($body) > ($panel ? 2 * 1024 * 1024 : ($large ? 4 * 1024 * 1024 + 4096 : 65536))) throw new RuntimeException('Node request too large');
+        if (strlen($body) > ($large ? 4 * 1024 * 1024 + 4096 : 65536)) throw new RuntimeException('Node request too large');
         $process = proc_open(['python3', '-I', __DIR__ . '/node_ssh.py'],
             [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'w']], $pipes);
         if (!is_resource($process)) throw new RuntimeException('Node transport unavailable');
@@ -196,7 +194,7 @@ trait BotManagedNodes
                 if ($operation === 'configure') $options = &$request['request']['value'];
                 else $options = &$request['request']['value']['options'];
                 if (($options['amnezia']['parameters'] ?? null) === []) $options['amnezia']['parameters'] = (object) [];
-                foreach (['lists', 'bindings'] as $map) {
+                foreach (['lists', 'bindings', 'routes'] as $map) {
                     if (($options['policy'][$map] ?? null) === []) $options['policy'][$map] = (object) [];
                 }
                 unset($options);
@@ -286,11 +284,21 @@ trait BotManagedNodes
     {
         $node = $this->managedNodes()[$id] ?? null;
         if (!$node || !$node['connected'] || $node['job']) throw new RuntimeException('Node is not ready');
+        $listsSent = null;
+        if ($operation === 'configure') {
+            // Every configure carries the node's current Block and WARP lists.
+            $value['policy'] = $this->nodeRoutesPolicy($node, is_array($value['policy'] ?? null) ? $value['policy'] : null);
+            $listsSent = self::nodeRoutesDigest($this->nodeRoutesSource($node));
+        }
         if ($operation === 'configure' && !empty($node['status']['controller_ip_guard'])) {
             $config = $this->getXray();
             if (!is_array($config) || !isset($config['routing']['rules'])) throw new RuntimeException('Controller rules unavailable');
             $value = $this->withControllerIps($value, $this->controllerBlockedIps($config));
+        } elseif ($operation === 'configure' && isset($value['policy']['controller_ips_digest'])) {
+            // The digest is local bookkeeping; a node without the guard never received the list.
+            $value = $this->withControllerIps($value, []);
         }
+        if ($operation === 'configure' && isset($value['policy']) && !self::nodePolicyActive($value['policy'])) unset($value['policy']);
         if ($operation === 'configure' && $this->managedNodeNetworkProblem($value, $node) !== '') throw new RuntimeException('Node connection family is not prepared');
         if (isset($node['draft']) && $operation !== 'configure') throw new RuntimeException('Apply or discard the settings draft first');
         if (!empty($node['recovery_required']) && $operation !== 'restore') throw new RuntimeException('Restore the saved node first');
@@ -304,8 +312,9 @@ trait BotManagedNodes
         $draft = $operation === 'configure' ? array_intersect_key($node, array_flip(['draft', 'draft_generation'])) : [];
         $origin = array_intersect_key($this->input ?? [], array_flip(['chat','message_id']));
         $subject = $operation === 'rotate' && is_string($value) ? $value : '';
-        $this->managedNodeWrite($id, static function (&$node) use ($job, $before, $operation, $origin, $subject, $draft) {
+        $this->managedNodeWrite($id, static function (&$node) use ($job, $before, $operation, $origin, $subject, $draft, $listsSent) {
             $node['job'] = ['id' => $job['job'], 'operation' => $operation, 'before' => $before, 'phase' => 'waiting', 'started' => time(), 'origin' => $origin, 'subject' => $subject, 'draft' => $draft];
+            if ($listsSent !== null) $node['job']['lists_sent'] = $listsSent;
             unset($node['draft'], $node['draft_generation'], $node['error']);
         });
     }
@@ -393,8 +402,11 @@ trait BotManagedNodes
         $this->managedNodeFinish($id, $saved, static function (&$node) use ($status, $saved, $certificateResult, $checkout) {
             $node['job'] = null; $node['status'] = $status; $node['checked'] = time(); $node['backup_time'] = time(); unset($node['error'], $node['error_stage']);
             $node['last_operation'] = ['operation'=>$saved['operation'] ?? '', 'subject'=>$saved['subject'] ?? '', 'time'=>time(), 'ok'=>true, 'certificate_result'=>$certificateResult];
+            // Only a confirmed generation proves that the node runs these lists.
+            if (isset($saved['lists_sent'])) $node['lists_sent'] = $saved['lists_sent'];
             if ($checkout !== '') $node['last_operation']['checkout'] = $checkout;
-            if (($saved['operation'] ?? '') === 'restore') unset($node['recovery_required']);
+            // A restored snapshot brings its own lists: the controller copy is not on the node until applied again.
+            if (($saved['operation'] ?? '') === 'restore') unset($node['recovery_required'], $node['lists_sent']);
         });
     }
 
@@ -520,8 +532,12 @@ trait BotManagedNodes
             elseif (!empty($node['error'])) $text[] = $this->t('Последнее изменение не подтверждено; проверьте связь и состояние отката.', 'The last change was not confirmed; check connectivity and rollback status.');
             if (($node['last_operation']['checkout'] ?? '') === 'kept' && empty($node['error']) && !$node['job']) $text[] = $this->t('Код ноды обновлён. Каталог /root/vpnbot на ноде оставлен без изменений: в нём локальные правки, другая ветка или более новый коммит.',
                 'Node code was updated. The /root/vpnbot directory on the node was left unchanged: it has local edits, another branch or a newer commit.');
-            if (!empty($node['status']['named_policy'])) $data[] = [['text' => $this->t('Маршрутизация и запреты', 'Routing and block lists'), 'callback_data' => "/np $id all"]];
-            if (!empty($node['status']['adguard_filter'])) $data[] = [['text' => 'AdGuard Home', 'callback_data' => "/nodeAd $id"]];
+            if (!empty($node['status']['shared_routes']) || !empty($node['status']['named_policy'])) {
+                $lists = $this->nodeRoutesSource($node);
+                $count = static fn(array $list) => count(array_filter($list['routes'])) + count(array_filter($list['rulesets'], static fn($set) => !empty($set['on'])));
+                $data[] = [['text' => $this->t('⛔ Блокировка', '⛔ Block') . ' · ' . $count($lists['block']), 'callback_data' => "/nlist $id block 0"],
+                    ['text' => 'WARP · ' . $count($lists['warp']), 'callback_data' => "/nlist $id warp 0"]];
+            }
             $data[] = [['text' => $this->t('⚙️ Xray и подключение', '⚙️ Xray and connection'), 'callback_data' => "/nodeSettings $id"]];
             $data[] = [['text' => $this->t('🧭 Маршруты и наборы', '🧭 Routes and rule sets'), 'callback_data' => "/nr $id"],
                 ['text' => $this->t('👥 Пользователи', '👥 Users'), 'callback_data' => "/nuUsers $id 0"]];

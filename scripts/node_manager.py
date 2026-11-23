@@ -237,16 +237,7 @@ class Manager:
             if 'xray' in data or data.get('cover') or data.get('warp_mode', 'off') != 'off' or any(data.get(channel, {}).get('enabled') for channel in ('wireguard', 'amnezia')):
                 self.runtime.ensure_keys(value)
         elif name == 'peers':
-            bindings = value['options'].get('policy', {}).get('bindings', {})
-            keep = {config.node_policy.peer_scope(peer['id']) for peer in data}
-            for scope in list(bindings):
-                if scope.startswith('peer-') and scope not in keep:
-                    del bindings[scope]
             value['peers'] = data
-            dns = value['options'].get('adguard')
-            if dns:
-                enabled = {peer['id'] for peer in data if peer['enabled']}
-                dns['peers'] = [key for key in dns['peers'] if key in enabled]
             for peer in data:
                 channel=peer.get('channel','vless')
                 if channel != 'vless': value['options'].setdefault(channel,{})['enabled']=True
@@ -263,13 +254,6 @@ class Manager:
                 for peer in value['peers']:
                     if peer['id'] == data:
                         peer['id'] = str(uuid.uuid4())
-                        bindings = value['options'].get('policy', {}).get('bindings', {})
-                        old_scope = config.node_policy.peer_scope(data)
-                        if old_scope in bindings:
-                            bindings[config.node_policy.peer_scope(peer['id'])] = bindings.pop(old_scope)
-                        dns = value['options'].get('adguard')
-                        if dns and data in dns['peers']:
-                            dns['peers'] = [peer['id'] if key == data else key for key in dns['peers']]
                         found = True
                 if not found:
                     raise ValueError('peer no longer exists')
@@ -296,8 +280,6 @@ class Manager:
             if name == 'upgrade' and bundle['source'] != node_upgrade.installed(self.store):
                 raise ValueError('installed code and image bundle differ')
             value['images']['xr'] = bundle['images']['xr']
-            if value['options'].get('adguard', {}).get('enabled'):
-                value['images']['ad'] = bundle['images']['ad']
             if value['options'].get('warp_mode', 'off') != 'off':
                 value['images']['wg'] = bundle['images']['wg']
             if value['options'].get('cover'):
@@ -322,10 +304,8 @@ class Manager:
             value['images'].pop('wg', None)
         if not value['options'].get('cover'):
             value['images'].pop('ng', None)
-        filtering = value['options'].get('adguard', {}).get('enabled')
-        if not filtering:
-            value['images'].pop('ad', None)
-        if filtering or value['options'].get('cover') or value['options'].get('warp_mode', 'off') != 'off':
+        value['images'].pop('ad', None)
+        if value['options'].get('cover') or value['options'].get('warp_mode', 'off') != 'off':
             self.runtime.ensure_images(value)
         value = state.snapshot(value)
         self.runtime.pull(value['images']['xr'])
@@ -433,7 +413,7 @@ class Manager:
                 host |= connections(status.get('sources') or [], options.get('vpn_sources') or [])
             except Exception:
                 host = {}
-            return status | {'code': code, 'host': host, 'warp_egress': True, 'adguard_filter': True, 'named_policy': True, 'controller_ip_guard': True}
+            return status | {'code': code, 'host': host, 'warp_egress': True, 'shared_routes': True, 'controller_ip_guard': True}
         if action == 'tls_probe':
             return self.runtime.tls_probe()
         if action == 'backup':
@@ -481,16 +461,13 @@ def main():
         signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError()))
         signal.alarm(12)
         first = sys.stdin.buffer.read(1)
-        panel = first == b'!'
         policy_frame = first == b'#'
-        limit = 2*1024*1024 if panel else state.POLICY_BYTES + 1024 if policy_frame else state.MAX_BYTES
-        request = state.decode((b'' if panel or policy_frame else first) + sys.stdin.buffer.read(limit+1), limit)
+        limit = state.POLICY_BYTES + 1024 if policy_frame else state.MAX_BYTES
+        request = state.decode((b'' if policy_frame else first) + sys.stdin.buffer.read(limit+1), limit)
         if policy_frame and (not isinstance(request, dict) or set(request) != {'action','request'}
                 or request['action'] != 'submit' or not isinstance(request['request'], dict)
                 or state.policy_size(request['request']) != state.POLICY_BYTES):
             raise ValueError('invalid named policy frame')
-        if panel and (not isinstance(request, dict) or set(request) != {'action','http'} or request['action'] != 'adguard_panel'):
-            raise ValueError('invalid panel frame')
     store = state.Store(ROOT)
     descriptor = os.open(ROOT/'lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
@@ -503,14 +480,8 @@ def main():
             host = config.deployment(state.decode(stream.read(state.MAX_DEPLOYMENT_BYTES+1), state.MAX_DEPLOYMENT_BYTES))
         manager = Manager(store, Runtime(store, host))
         if mode == 'rpc':
-            if panel:
-                import node_adguard
-                if not store.load()['options'].get('adguard', {}).get('enabled'):
-                    raise ValueError('DNS panel is disabled')
-                result = node_adguard.panel(request['http'], store.root, manager.runtime.container(node_adguard.CONTAINER), command)
-            else:
-                result = manager.rpc(request)
-            limit = 12*1024*1024 if panel else state.MAX_BYTES
+            result = manager.rpc(request)
+            limit = state.MAX_BYTES
             if request.get('action') in ('status', 'backup') and state.policy_size(result) == state.POLICY_BYTES:
                 limit = state.POLICY_BYTES + 1024
             sys.stdout.buffer.write(state.encode({'ok': True, 'result': result}, limit)+b'\n')

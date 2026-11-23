@@ -83,17 +83,12 @@ def isolate_resolver(main, warp_id):
             rule['outboundTag'] = 'warp'
     dns = {'servers': ['1.1.1.1'], 'queryStrategy': 'UseIPv4', 'disableFallback': True,
            'disableCache': True, 'tag': 'warp-internal-dns'}
-    filtered = next((o for o in main['outbounds'] if o['tag'] == 'adguard-warp'), None)
     outbounds = [{'tag': 'block', 'protocol': 'blackhole'}, resolve, warp]
-    if filtered:
-        # The freedom redirect supplies the fixed service address, port and
-        # source gateway used by AdGuard for its WARP-only upstream.
-        outbounds.append(filtered)
     return {'log': {'loglevel': 'none'}, 'dns': dns,
             'inbounds': [{'tag': 'warp-handoff', 'listen': address, 'port': port, 'protocol': 'trojan',
                           'settings': {'clients': [{'password': password}]}}],
             'outbounds': outbounds, 'routing': {'domainStrategy': 'AsIs', 'rules': [
-                {'type': 'field', 'inboundTag': ['warp-internal-dns'], 'outboundTag': 'adguard-warp' if filtered else 'warp'},
+                {'type': 'field', 'inboundTag': ['warp-internal-dns'], 'outboundTag': 'warp'},
                 *checks, {'type': 'field', 'inboundTag': ['warp-handoff'], 'outboundTag': 'warp-resolve'}]}}
 
 

@@ -123,7 +123,8 @@ try {
     $b = $reset(); $b->offWarp();
     $check(empty($b->getPacConf()['warpoff']) && is_file("$root/up"), 'Включение при отвечающем сервере');
     $kicks = static fn(WarpLifecycleBot $b) => array_keys(array_filter($b->commands, static fn($c) => str_contains($c, 'touch /run/warp-kick')));
-    $ups = array_keys(array_filter($b->commands, static fn($c) => str_contains($c, 'wg-quick up')));
+    // The bot brings the tunnel up through the shared warp_fixup.sh up.
+    $ups = array_keys(array_filter($b->commands, static fn($c) => str_contains($c, 'warp_fixup.sh up')));
     $check(count($kicks($b)) === 1, 'После включения сторож будится один раз');
     $check($ups && max($ups) < $kicks($b)[0], 'Сторож будится после подъёма туннеля');
     $b = $reset(); $b->fail = 'handshake-all'; $b->offWarp();

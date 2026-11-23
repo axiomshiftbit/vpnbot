@@ -23,8 +23,7 @@ import node_upgrade
 import node_state as state
 import nft_host_setup
 import node_host
-import node_adguard
-from node_runtime import Runtime, command, HostOperationError, host_program, CONTAINER, COVER_CONTAINER, AWG_CONTAINER, WARP_CONTAINER, LABEL
+from node_runtime import Runtime, command, HostOperationError, host_program, CONTAINER, COVER_CONTAINER, AWG_CONTAINER, WARP_CONTAINER, LEGACY_DNS_CONTAINER, LABEL
 
 ROOT = Path('/var/lib/vpnbot-node')
 DOCKER_DAEMON = Path('/etc/docker/daemon.json')
@@ -377,7 +376,7 @@ def preflight(value, docker=True):
     active = command(['docker', 'ps', '--format', '{{json .}}']).stdout.decode().splitlines()
     for line in active:
         name = json.loads(line)['Names']
-        if name not in (CONTAINER, COVER_CONTAINER, AWG_CONTAINER, WARP_CONTAINER, node_adguard.CONTAINER):
+        if name not in (CONTAINER, COVER_CONTAINER, AWG_CONTAINER, WARP_CONTAINER, LEGACY_DNS_CONTAINER):
             raise ValueError('На сервере работают другие контейнеры. Сначала подготовьте перенос существующей установки')
         owned = command(['docker', 'inspect', '--format', '{{index .Config.Labels "'+LABEL+'"}}', name]).stdout.strip()
         if owned != b'1':
@@ -440,8 +439,6 @@ def setup(value, source, channel='latest', bundle=None):
             manifest = image_bundle.read(release)
         backend = Runtime(store, host)
         images = {'xr': manifest['images']['xr']}
-        if value['options'].get('adguard', {}).get('enabled'):
-            images['ad'] = manifest['images']['ad']
         if value['options'].get('cover'):
             images['ng'] = manifest['images']['ng']
         if value['options'].get('warp_mode', 'off') != 'off':

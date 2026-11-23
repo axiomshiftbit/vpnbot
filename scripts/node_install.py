@@ -70,7 +70,9 @@ def sudo_configuration():
 
 def units():
     executable = '/usr/bin/python3 -I /usr/local/lib/vpnbot-node/node_manager.py '
-    hardening = ('User=root\nGroup=root\nUMask=0077\nEnvironment=GODEBUG=multipathtcp=0\n'
+    # No User=root: with NoNewPrivileges and ProtectKernelModules systemd then drops
+    # CAP_SETUID, and the worker cannot start the uid-bound readiness probes.
+    hardening = ('UMask=0077\nEnvironment=GODEBUG=multipathtcp=0\n'
                  'Environment=HOME=/var/lib/vpnbot-node\nNoNewPrivileges=yes\nPrivateTmp=yes\n'
                  'ProtectSystem=strict\nProtectHome=yes\nProtectKernelTunables=yes\nProtectKernelModules=yes\n'
                  'ProtectControlGroups=yes\nReadWritePaths=/var/lib/vpnbot-node /etc/vpnbot-node\n'

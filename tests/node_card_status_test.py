@@ -67,6 +67,16 @@ class InstalledCode(unittest.TestCase):
         for name in upgrade.MODULES:
             self.assertTrue((Path(upgrade.__file__).parent/name).is_file(), name)
 
+    def test_sandboxed_units_keep_the_uid_switch_capability(self):
+        # systemd 257 drops CAP_SETUID for User=root + NoNewPrivileges + ProtectKernelModules.
+        import node_install
+        for name, unit in node_install.units().items():
+            if 'ProtectKernelModules=yes' in unit:
+                with self.subTest(unit=name):
+                    self.assertIn('NoNewPrivileges=yes', unit)
+                    self.assertNotIn('User=', unit)
+                    self.assertNotIn('Group=', unit)
+
     def test_manual_install_from_clean_checkout_reports_its_commit(self):
         work, head = self.checkout()
         upgrade.record(self.store.root, work/'scripts', True)

@@ -269,29 +269,10 @@ tunnel_up() {
     wg show "$WGCF_IF" >/dev/null 2>&1
 }
 
-# Поднять туннель и дождаться РЕАЛЬНОГО рукопожатия: `wg-quick up` возвращает
-# успех, даже когда endpoint не отвечает.
+# Поднять туннель и дождаться РЕАЛЬНОГО рукопожатия, с переходом на запасной
+# порт endpoint: та же реализация, что у кнопок бота (warp_fixup.sh up).
 warp_up() {
-    wg-quick up "$WGCF_CONF" || return 1
-    # Служебный порт WireGuard отделён от SOCKS relay и не опубликован.
-    # Это нужно до handshake, в том числе при повторном подъёме watchdog.
-    if ! wg set "$WGCF_IF" listen-port 51820; then
-        wg-quick down "$WGCF_CONF" 2>/dev/null || true
-        return 1
-    fi
-    i=0
-    while [ "$i" -lt 15 ]; do
-        hs=$(wg show "$WGCF_IF" latest-handshakes 2>/dev/null | awk '{print $2}' | sort -n | tail -1)
-        if [ -n "$hs" ] && [ "$hs" -gt 0 ] 2>/dev/null; then
-            return 0
-        fi
-        sleep 1
-        i=$((i + 1))
-    done
-    # Интерфейс создаётся до handshake. Не оставляем его после неудачи:
-    # tunnel_up() иначе принял бы его за готовый туннель на следующем тике.
-    wg-quick down "$WGCF_CONF" 2>/dev/null || true
-    return 1
+    WGCF_CONF="$WGCF_CONF" sh "${WARP_FIXUP:-/warp_fixup.sh}" up
 }
 
 # MASQUE: аккаунт (при первом включении регистрируется сам, как и аккаунт
