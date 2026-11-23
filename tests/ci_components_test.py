@@ -7,6 +7,7 @@ import re
 import sys
 import unittest
 import urllib.error
+import urllib.parse
 from pathlib import Path
 from unittest.mock import patch
 
@@ -84,7 +85,8 @@ class Api:
         if '/tags' in url:
             return [{'name': tag} for tag in self.tags.get(repo, [])]
         if '/security-advisories' in url:
-            return self.advisories.get(repo, [])
+            page = int(urllib.parse.parse_qs(urllib.parse.urlsplit(url).query).get('page', ['1'])[0])
+            return self.advisories.get(repo, [])[100 * (page - 1):100 * page]
         if '/releases' in url:
             return [{'tag_name': tag, 'prerelease': pre, 'draft': False} for tag, pre in self.releases.get(repo, [])]
         raise AssertionError('unexpected request: ' + url)
@@ -139,7 +141,7 @@ class ComponentsTest(unittest.TestCase):
         self.assertEqual(blocked, [])
         self.assertEqual(len(rows), len(components.COMPONENTS))
         with_cpe = sum(1 for item in components.COMPONENTS if item.get('cpe'))
-        with_repo = sum(1 for item in components.COMPONENTS if item.get('repo'))
+        with_repo = sum(bool(item.get(key)) for item in components.COMPONENTS for key in ('repo', 'upstream'))
         self.assertEqual(sum('nvd.nist.gov' in url for url, _ in api.calls), with_cpe)
         self.assertEqual(sum('/security-advisories' in url for url, _ in api.calls), with_repo)
         # Без источника уязвимостей — только компиляторы, snolc, Alpine и инструменты сборки.
@@ -196,6 +198,17 @@ class ComponentsTest(unittest.TestCase):
         self.assertTrue({'Xray', 'Xray (MASQUE)'} <= newer and not {'Xray (slot 2)', 'Xray (slot 3)'} & newer)
         masque = next(row for row in rows if row['name'] == 'Xray (MASQUE)')
         self.assertEqual(masque['sources'], ['GitHub'])
+
+    def test_advisory_beyond_first_page_and_upstream_build_of_fork(self):
+        fork = components.pins()['Xray (fork)']
+        base = re.fullmatch(r'(v?\d+\.\d+\.\d+)-\d+', fork).group(1)
+        old = advisory('GHSA-old', 'low', '< 0.1.0', '0.1.0')
+        current = advisory('GHSA-upstream', 'high', '= ' + base, '99.0.0')
+        own = advisory('GHSA-fork', 'critical', '= ' + fork, '99.0.0')
+        api = Api(advisories={'XTLS/Xray-core': [old] * 100 + [current],
+                              'Jolymmiles/Xray-core': [own]})
+        _, blocked = self.run_check(api)
+        self.assertEqual({row[2] for row in blocked if row[0] == 'Xray (fork)'}, {'GHSA-upstream', 'GHSA-fork'})
 
     def test_newer_release_is_reported_but_does_not_block(self):
         api = Api(releases={'apernet/hysteria': [('app/v9.0.0', False), ('app/v9.9.9-rc1', True), ('v99.0.0', False)],

@@ -16,7 +16,7 @@ SPECS = {
     'ad': [('gobinary', 'opt/adguardhome/AdGuardHome'), ('node-pkg', 'Node.js')],
     'php': [('gobinary', 'usr/bin/' + n) for n in ('dnslookup', 'sing-box', 'mihomo')],
     'wg': [('gobinary', 'usr/bin/' + n) for n in ('warp-socks', 'wgcf', 'tun2socks', 'amneziawg-go')],
-    'xr': [('gobinary', 'usr/bin/' + n) for n in ('xray', 'xray-smux', 'wireproxy-node')],
+    'xr': [('gobinary', 'usr/bin/' + n) for n in ('xray', 'xray-2', 'xray-3', 'xray-smux', 'wireproxy-node')],
     'np': [('gobinary', 'usr/local/bin/caddy')],
     'dnstt': [('gobinary', 'usr/local/bin/dnstt-server')],
     'hysteria': [('gobinary', 'usr/local/bin/hysteria')],

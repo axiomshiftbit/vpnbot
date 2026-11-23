@@ -68,7 +68,7 @@ COMPONENTS = [
     dict(name='mihomo', pin='MIHOMO_VERSION', cpe='metacubex:mihomo', repo='MetaCubeX/mihomo'),
     dict(name='Caddy', pin='CADDY_VERSION', cpe='caddyserver:caddy', repo='caddyserver/caddy'),
     dict(name='Xray', pin='XRAY_VERSION', repo='XTLS/Xray-core'),
-    dict(name='Xray (fork)', pin='XRAY_FORK_VERSION', repo='Jolymmiles/Xray-core'),
+    dict(name='Xray (fork)', pin='XRAY_FORK_VERSION', repo='Jolymmiles/Xray-core', upstream='XTLS/Xray-core'),
     # Older cores kept in the xr image (selectable on the main server and nodes): advisories
     # apply to them as to the current core; only the comparison with the latest release is skipped.
     dict(name='Xray (slot 2)', pin='XRAY_VERSION_2', repo='XTLS/Xray-core', stale=True),
@@ -283,16 +283,21 @@ def range_matches(current, vulnerable):
 
 def advisory_findings(repo, version, token):
     """Опубликованные объявления безопасности репозитория, затрагивающие версию."""
-    data = fetch(f'https://api.github.com/repos/{repo}/security-advisories?per_page=100&state=published', token)
-    if not isinstance(data, list):
-        raise ValueError('unexpected advisories response')
     found = []
-    for advisory in data:
-        for item in advisory.get('vulnerabilities') or []:
-            if affected(version, item.get('vulnerable_version_range'), item.get('patched_versions')):
-                found.append((advisory.get('cve_id') or advisory['ghsa_id'], (advisory.get('severity') or 'unknown').upper(),
-                              advisory_fix_available(item.get('patched_versions'))))
-                break
+    page = 1
+    while True:
+        data = fetch(f'https://api.github.com/repos/{repo}/security-advisories?per_page=100&state=published&page={page}', token)
+        if not isinstance(data, list):
+            raise ValueError('unexpected advisories response')
+        for advisory in data:
+            for item in advisory.get('vulnerabilities') or []:
+                if affected(version, item.get('vulnerable_version_range'), item.get('patched_versions')):
+                    found.append((advisory.get('cve_id') or advisory['ghsa_id'], (advisory.get('severity') or 'unknown').upper(),
+                                  advisory_fix_available(item.get('patched_versions'))))
+                    break
+        if len(data) < 100:
+            break
+        page += 1
     return sorted(set(found))
 
 
@@ -452,6 +457,14 @@ def check(root=ROOT, token=None, freshness=True):
             findings += [(cve, level, True, 'NVD') for cve, level in nvd_findings(item['cpe'], version)]
         if item.get('repo'):
             findings += [(ident, level, fixable, 'GitHub') for ident, level, fixable in advisory_findings(item['repo'], version, token)]
+        if item.get('upstream'):
+            # This fork appends its build number to the upstream release tag.
+            base = re.fullmatch(r'(v?\d+\.\d+\.\d+)-\d+', version)
+            if not base:
+                raise ValueError('unknown upstream version for ' + name)
+            upstream = advisory_findings(item['upstream'], base[1], token)
+            findings.extend((ident, level, fixable, 'GitHub') for ident, level, fixable in upstream
+                            if (ident, level, fixable, 'GitHub') not in findings)
         newer = None
         if any(item.get(key) for key in FRESHNESS_ONLY):
             latest, answered, notes = latest_only(item, version, token) if freshness else (None, True, [])
