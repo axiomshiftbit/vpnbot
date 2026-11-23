@@ -2,7 +2,7 @@
 require_once __DIR__ . '/../app/bot.php';
 set_error_handler(static function ($n, $s, $f, $l) { if (error_reporting() & $n) throw new ErrorException($s, 0, $n, $f, $l); return true; });
 class NodeNavigationFixture extends Bot {
-    public array $p, $screen = [], $replies = [];
+    public array $p, $screen = [], $replies = [], $xrayRules = [];
     public function showSetting(string $setting): void {
         $transport = in_array($setting, ['reality', 'mask'], true) || str_starts_with($setting, 'xray.reality.') ? 'reality'
             : ($setting === 'xhttp' || str_starts_with($setting, 'xray.xhttp.') ? 'xhttp' : 'ws');
@@ -23,7 +23,7 @@ class NodeNavigationFixture extends Bot {
     }
     public function getPacConf() { return $this->p; }
     public function setPacConf(array $value) { $this->p=$value; return true; }
-    public function getXray() { return ['inbounds'=>[], 'outbounds'=>[], 'routing'=>['rules'=>[]]]; }
+    public function getXray() { return ['inbounds'=>[], 'outbounds'=>[], 'routing'=>['rules'=>$this->xrayRules]]; }
     public function getXrayStats() { return []; }
     public function exitStatus(): array { return []; }
     public function getWgMsg() { return null; }
@@ -92,6 +92,15 @@ foreach (['ru','en'] as $lang) {
 $b=new NodeNavigationFixture();
 $b->managedNodeSettingsMenu('aabbccdd','reserve');
 $check(in_array('/nodeChannel aabbccdd direct',$b->callbacks(),true), 'reserve has direct channel selector');
+$check(!str_contains($b->screen[0], 'запреты IP'), 'no WireGuard warning without controller IP blocks');
+$b->xrayRules = [['type'=>'field','ruleTag'=>'vpnbot:routes:block:ip','ip'=>['11.77.1.0/24'],'outboundTag'=>'block']];
+$b->managedNodeSettingsMenu('aabbccdd','reserve');
+$check(!str_contains($b->screen[0], 'запреты IP'), 'older node code gets no WireGuard closure warning');
+$b->p['managed_nodes']['aabbccdd']['status']['controller_ip_guard'] = true;
+$b->managedNodeSettingsMenu('aabbccdd','reserve');
+$check(str_contains($b->screen[0], 'Канал WireGuard без VLESS при этом закрыт'), 'reserve channel menu warns that WireGuard is closed by IP blocks');
+$b->xrayRules = [];
+unset($b->p['managed_nodes']['aabbccdd']['status']['controller_ip_guard']);
 $b->click('/nr aabbccdd');
 $check(!str_contains($b->screen[0], 'Узлы выхода'), 'node routes have their own breadcrumb');
 $b->p['managed_nodes']['aabbccdd']['status']['options']['transport']='reality';

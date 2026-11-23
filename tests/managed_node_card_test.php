@@ -216,6 +216,15 @@ try {
     $check(str_contains($guardLine($node), 'не подтверждены нодой') && !str_contains($guardLine($node), 'черновик'), 'changed list waits for node confirmation');
     $node['draft'] = $node['status']['options'] ?? [];
     $check(str_contains($guardLine($node), 'примените или сбросьте'), 'a pending draft is named as the delay');
+    // A standalone WireGuard channel cannot prove the list revision: it is closed.
+    $exit['managed_profile']['channel'] = 'wireguard';
+    $exit['policy']['controller_ips'] = ['11.77.1.0/24', '198.51.100.0/24'];
+    $guardLine = static fn(array $node) => Closure::bind(fn() => $this->managedNodeIpGuardLine($node, $exit), $b, Bot::class)();
+    $check(str_contains($guardLine($node), 'Канал WireGuard без VLESS закрыт'), 'a confirmed WireGuard channel is reported as closed');
+    unset($node['status']['controller_ip_guard']);
+    $text = $guardLine($node);
+    $check(str_contains($text, 'Обновите код ноды') && str_contains($text, 'После обновления канал WireGuard без VLESS закроется'),
+        'older node code with WireGuard warns before the update closes the channel');
 } finally {
     foreach (glob("$root/aabbccdd/*") ?: [] as $path) unlink($path);
     @rmdir("$root/aabbccdd"); @rmdir($root);

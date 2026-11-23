@@ -460,8 +460,9 @@ $hop = $rules["vpnbot:exit:$gid:full"]['outboundTag'] ?? '';
 $check(($byTag[$hop]['targetStrategy'] ?? '') === 'ForceIP'
     && in_array($hop, $rules['vpnbot:exit:resolved-block']['inboundTag'] ?? [], true),
     'a legacy managed group member is not trusted to enforce controller IP blocks');
-// A standalone WireGuard channel cannot carry policy logins: even with a confirmed
-// list it stays usable, the controller checks the resolved IP of full traffic.
+// A standalone WireGuard channel cannot carry a login bound to the list revision:
+// while controller IP blocks are active it is closed, confirmed or not. The probe
+// still reaches the node itself, so a closed channel is not reported as a failure.
 $wgProfile = ['link' => $link, 'channel' => 'wireguard', 'outbound' => ['tag' => 'node', 'protocol' => 'wireguard', 'settings' => [
     'secretKey' => base64_encode(str_repeat('a', 32)), 'mtu' => 1280, 'noKernelTun' => true,
     'address' => ['10.77.77.2/32'], 'remoteDNS' => ['1.1.1.1', '9.9.9.9'],
@@ -470,14 +471,63 @@ $wgProfile = ['link' => $link, 'channel' => 'wireguard', 'outbound' => ['tag' =>
 $wgPac = ['exits' => [$id => ['managed_profile' => $wgProfile, 'policy' => $guard] + $node]];
 $wgPac['managed_nodes'][$id] = ['name' => 'wg', 'connected' => true, 'status' => ['controller_ip_guard' => true]];
 $check(($bot->exitNodeOutbound($wgPac['exits'][$id])['protocol'] ?? '') === 'wireguard', 'WireGuard channel fixture is valid');
+$wgCase = static function (array $pac, array $seed) use ($bot, $id): array {
+    $bot->ensureExitNodes($seed, $pac);
+    $byTag = array_column($seed['outbounds'], null, 'tag');
+    $rules = array_column($seed['routing']['rules'], null, 'ruleTag');
+    $full = $rules["vpnbot:exit:$id:full"]['outboundTag'] ?? '';
+    // Follow a controller-side resolve hop to the node outbound it re-enters.
+    $fullEnd = $rules["vpnbot:exit:$id:resolved"]['outboundTag'] ?? $full;
+    $probe = $rules["vpnbot:exit:$id:probe"]['outboundTag'] ?? '';
+    return ['node' => $byTag[Bot::EXIT_TAG.$id]['protocol'] ?? '', 'full' => $byTag[$fullEnd]['protocol'] ?? '',
+        'list' => $byTag[$rules["vpnbot:exit:$id:domain"]['outboundTag'] ?? '']['protocol'] ?? '',
+        'probe' => $byTag[$probe]['protocol'] ?? '', 'probeTag' => $probe];
+};
+$staleWg = $wgPac;
+$staleWg['exits'][$id]['policy']['controller_ips'] = [];
+foreach (['a confirmed list' => $wgPac, 'an unconfirmed list' => $staleWg] as $label => $pac) {
+    $r = $wgCase($pac, $legacySeed);
+    $check($r['node'] === 'blackhole' && $r['full'] === 'blackhole' && $r['list'] === 'blackhole',
+        "WireGuard channel with $label is closed for full and list routes");
+    $check($r['probe'] === 'wireguard' && $r['probeTag'] === Bot::EXIT_TAG.'health-direct-'.$id,
+        "probe of a closed WireGuard channel ($label) still checks the node itself");
+}
+$noBlocks = $legacySeed;
+$noBlocks['routing']['rules'] = array_values(array_filter($noBlocks['routing']['rules'], static fn($r) => ($r['ruleTag'] ?? '') !== 'vpnbot:routes:block:ip'));
+$unreadable = $noBlocks;
+$unreadable['routing']['rules'][] = ['type' => 'field', 'ruleTag' => 'vpnbot:routes:block:ip', 'ip' => ['extip:missing.dat:zz'], 'outboundTag' => 'block'];
+$check($wgCase($wgPac, $unreadable)['node'] === 'blackhole', 'WireGuard channel stays closed when the controller list cannot be read');
+$r = $wgCase($wgPac, $noBlocks);
+$check($r['node'] === 'wireguard' && $r['probeTag'] === Bot::EXIT_TAG.$id, 'WireGuard channel is open without controller IP blocks');
+if (is_string($xray) && $xray !== '' && is_executable($xray)) {
+    $c = $legacySeed; $bot->ensureExitNodes($c, $wgPac);
+    $c['inbounds'] = array_values(array_filter($c['inbounds'], static fn($i) => $i['tag'] !== 'api'));
+    $c['routing']['rules'] = array_values(array_filter($c['routing']['rules'], static fn($r) => ($r['outboundTag'] ?? '') !== 'api'));
+    $file = sys_get_temp_dir() . '/exit-nodes-wg-' . getmypid() . '.json';
+    file_put_contents($file, json_encode($c, JSON_UNESCAPED_SLASHES));
+    $out = [];
+    exec(escapeshellarg($xray) . ' run -test -config ' . escapeshellarg($file) . ' 2>&1', $out, $code);
+    unlink($file);
+    $check($code === 0, 'core accepts a closed WireGuard channel config: ' . implode(' ', array_slice($out, -3)));
+}
+// A closed member never joins a group: auto selection uses the other member,
+// a manual choice of the closed member blocks.
+$wgGroup = ['exits' => [$id => $wgPac['exits'][$id], $second => $guardPac['exits'][$second], $gid => $group + ['choice' => 'auto']],
+    'managed_nodes' => $wgPac['managed_nodes']];
 $c = $legacySeed;
-$bot->ensureExitNodes($c, $wgPac);
-$byTag = array_column($c['outbounds'], null, 'tag');
-$rules = array_column($c['routing']['rules'], null, 'ruleTag');
-$hop = $rules["vpnbot:exit:$id:full"]['outboundTag'] ?? '';
-$check(($byTag[Bot::EXIT_TAG.$id]['protocol'] ?? '') === 'wireguard', 'a WireGuard channel with a confirmed list is not closed');
-$check(($byTag[$hop]['targetStrategy'] ?? '') === 'ForceIP'
-    && in_array($hop, $rules['vpnbot:exit:resolved-block']['inboundTag'] ?? [], true),
-    'full traffic over a WireGuard channel rechecks the resolved IP on the controller');
+$c['inbounds'][0]['settings']['clients'][0]['exit_full'] = $gid;
+$c['inbounds'][0]['settings']['clients'][0]['exit'] = [$gid];
+$bot->ensureExitNodes($c, $wgGroup);
+$balancers = array_column($c['routing']['balancers'] ?? [], null, 'tag');
+$check(($balancers[Bot::EXIT_TAG.$gid]['selector'] ?? []) === [Bot::EXIT_TAG.$second], 'auto group excludes a closed WireGuard member');
+$wgGroup['exits'][$gid]['choice'] = $id;
+$c2 = $legacySeed;
+$c2['inbounds'][0]['settings']['clients'][1]['exit'] = [$gid];
+$bot->ensureExitNodes($c2, $wgGroup);
+$rules = array_column($c2['routing']['rules'], null, 'ruleTag');
+$check(($rules["vpnbot:exit:$gid:probe"]['outboundTag'] ?? '') === 'block', 'manual choice of a closed WireGuard member blocks');
+$oldWg = $wgPac;
+$oldWg['managed_nodes'][$id]['status'] = [];
+$check($wgCase($oldWg, $legacySeed)['node'] === 'wireguard', 'WireGuard channel of older node code keeps the controller-side check');
 if ($failures) { fwrite(STDERR, "exit_nodes_test FAIL:\n - " . implode("\n - ", $failures) . "\n"); exit(1); }
 echo "exit_nodes_test OK\n";

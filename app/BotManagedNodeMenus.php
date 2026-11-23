@@ -68,6 +68,9 @@ trait BotManagedNodeMenus
             foreach (['direct'=>self::managedNodeDirectLabel($options), 'wireguard'=>'WireGuard', 'amnezia'=>'AmneziaWG'] as $channel=>$label) {
                 $data[] = [['text'=>($selected === $channel ? '✓ ' : '') . $label, 'callback_data'=>"/nodeChannel $id $channel"]];
             }
+            $blocks = array_filter($this->getXray()['routing']['rules'] ?? [], static fn($rule) => ($rule['ruleTag'] ?? '') === 'vpnbot:routes:block:ip' && !empty($rule['ip']));
+            if ($blocks && !empty($node['status']['controller_ip_guard'])) $text[] = $this->t('⚠️ На основном сервере действуют запреты IP. Канал WireGuard без VLESS при этом закрыт для трафика пользователей: он не передаёт логин, привязанный к версии списка. Выберите VLESS, Trojan или AmneziaWG.',
+                '⚠️ Main-server IP blocks are active. The standalone WireGuard channel is then closed for user traffic: it cannot carry a login bound to the list revision. Choose VLESS, Trojan or AmneziaWG.');
             $data[] = [['text'=>$this->t('Настройки WireGuard', 'WireGuard settings'), 'callback_data'=>"/nodeSettings $id wireguard"],
                 ['text'=>$this->t('Настройки AmneziaWG', 'AmneziaWG settings'), 'callback_data'=>"/nodeSettings $id amnezia"]];
         }

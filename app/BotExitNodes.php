@@ -679,10 +679,12 @@ trait BotExitNodes
                 $controllerIps = null;
             }
         }
-        // A standalone WireGuard channel cannot carry a policy login. The node applies
-        // the list to its WireGuard controller identity; the controller checks as well.
-        $enforced = static fn(string $nodeId) => $ipGuard($nodeId) && $controllerIps
-            && ($nodes[$nodeId]['managed_profile']['channel'] ?? '') !== 'wireguard'
+        // A standalone WireGuard channel cannot carry a login bound to the list revision,
+        // so the controller cannot prove that the node enforces the current list. While
+        // controller IP blocks are active (or cannot be read) such a channel stays closed.
+        $wireguard = static fn(string $nodeId) => ($nodes[$nodeId]['managed_profile']['channel'] ?? '') === 'wireguard';
+        $closed = static fn(string $nodeId) => $ipGuard($nodeId) && $wireguard($nodeId) && $controllerIps !== [];
+        $enforced = static fn(string $nodeId) => $ipGuard($nodeId) && $controllerIps && !$wireguard($nodeId)
             && !empty($nodes[$nodeId]['policy']['revision'])
             && ($nodes[$nodeId]['policy']['controller_ips'] ?? []) === $controllerIps;
         $index = 0;
@@ -809,7 +811,12 @@ trait BotExitNodes
             $tag = self::EXIT_TAG . $id;
             $ipv6 = $ipv6 || $node['kind'] === 'ipv6';
             $probeTarget = $tag;
-            if ($delegate) {
+            if ($closed($id)) {
+                // The probe still shows whether the node itself answers; its users are blocked.
+                $probeTarget = self::EXIT_TAG . 'health-direct-' . $id;
+                $c['outbounds'][] = $outbound + ['tag' => $probeTarget];
+                $outbound = ['protocol' => 'blackhole'];
+            } elseif ($delegate) {
                 $probeTarget = self::EXIT_TAG . 'health-direct-' . $id;
                 $c['outbounds'][] = $outbound + ['tag' => $probeTarget];
                 if (in_array($outbound['protocol'], ['trojan', 'vless'], true)) {
@@ -831,7 +838,8 @@ trait BotExitNodes
                 $members = [];
                 foreach ($node['members'] as $member) {
                     $candidate = $nodes[$member] ?? [];
-                    if (($candidate['kind'] ?? '') === 'remote' && !empty($candidate['enabled']) && $this->exitNodeOutbound($candidate) !== null) $members[] = self::EXIT_TAG . $member;
+                    if (($candidate['kind'] ?? '') === 'remote' && !empty($candidate['enabled']) && !$closed((string) $member)
+                        && $this->exitNodeOutbound($candidate) !== null) $members[] = self::EXIT_TAG . $member;
                 }
                 $this->ensureBlockOutbound($c);
                 $this->ensureDirectOutbound($c);

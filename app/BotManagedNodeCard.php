@@ -51,9 +51,16 @@ trait BotManagedNodeCard
             $ips = null;
         }
         if ($ips === []) return '';
+        $wireguard = ($exit['managed_profile']['channel'] ?? '') === 'wireguard';
         if (empty($node['status']['controller_ip_guard'])) {
             return $this->t('⚠️ Код ноды не применяет запреты IP основного сервера. Для «Весь трафик» адрес проверяет основной сервер, маршруты по спискам доменов идут без этой проверки. Обновите код ноды.',
-                '⚠️ The node code does not enforce main-server IP blocks. The main server checks the address for All traffic; domain-list routes skip this check. Update the node code.');
+                '⚠️ The node code does not enforce main-server IP blocks. The main server checks the address for All traffic; domain-list routes skip this check. Update the node code.')
+                . ($wireguard ? ' ' . $this->t('После обновления канал WireGuard без VLESS закроется: заранее переключите связь на VLESS, Trojan или VLESS внутри AmneziaWG.',
+                    'After the update the standalone WireGuard channel will close: switch the link to VLESS, Trojan or VLESS inside AmneziaWG first.') : '');
+        }
+        if ($wireguard) {
+            return $this->t('⛔ Канал WireGuard без VLESS закрыт, пока на основном сервере действуют запреты IP: он не передаёт логин, привязанный к версии списка. Трафик пользователей через ноду блокируется. Переключите связь на VLESS, Trojan или VLESS внутри AmneziaWG.',
+                '⛔ The standalone WireGuard channel is closed while main-server IP blocks are active: it cannot carry a login bound to the list revision. User traffic through the node is blocked. Switch the link to VLESS, Trojan or VLESS inside AmneziaWG.');
         }
         if ($ips !== null && !empty($exit['policy']['revision']) && ($exit['policy']['controller_ips'] ?? []) === $ips) return '';
         return $this->t('⏳ Запреты IP основного сервера ещё не подтверждены нодой. До подтверждения адрес для «Весь трафик» проверяет основной сервер, маршруты по спискам доменов идут без этой проверки.', '⏳ The node has not confirmed the main-server IP blocks yet. Until then the main server checks the address for All traffic; domain-list routes skip this check.')
