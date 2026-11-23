@@ -13,6 +13,13 @@ class RoutesFixtureBot extends ManagedFixtureBot
     public function exitRulesetRefresh(string $url, array $set): string { $this->refreshed[] = $url; return 'download'; }
     protected function nodePolicyDat(array $entry): array { return $this->dat[$entry['value'] ?? ''] ?? throw new RuntimeException('no dat'); }
     public function sendFile($chat, $file, $caption = false, $to = false) { $this->files[] = $file; return ['ok' => true]; }
+    public array $messages = []; public array $replyState = [];
+    public function request($method, $data, $json_header = 0) {
+        if ($method !== 'sendMessage') throw new RuntimeException('Unexpected Telegram request');
+        $this->messages[] = $data;
+        return ['ok' => true, 'result' => ['message_id' => 6]];
+    }
+    public function stashReply($r, array $state) { $this->replyState = $state; }
     public function compactNodePoliciesForTest(array $pac): array { return self::compactNodePolicies($pac); }
     // The controller core judges patterns; PCRE stands in for it here.
     public function exitRulesetCoreAccepts(array $entries): bool { foreach ($entries as $e) if (str_starts_with($e, 'regexp:') && @preg_match('~' . substr($e, 7) . '~', '') === false) return false; return true; }
@@ -33,6 +40,23 @@ $check(in_array("/nlist $id block 0", $cb($bot), true) && in_array("/nlist $id w
 $check(!preg_grep('~^/(np|nad|nodeAd)~', $cb($bot)), 'card has no removed node menus');
 $bot->nodeRoutesMenu($id, 'block');
 $check(!in_array("/nlApply $id block", $cb($bot), true), 'nothing to apply for an untouched list');
+
+// Telegram copies the contents of one code span, including the colon needed for input.
+foreach (['ru', 'en'] as $lang) {
+    $bot->language = $lang;
+    foreach (['block', 'warp'] as $kind) {
+        $bot->messages = [];
+        $bot->nodeRoutesPrompt($id, $kind, false);
+        $check(count($bot->messages) === 1, 'one reply prompt per list');
+        $message = $bot->messages[0];
+        $check($message['parse_mode'] === 'HTML' && json_decode($message['reply_markup'], true)['force_reply'], 'HTML reply prompt');
+        preg_match_all('~<code>([^<]+)</code>~', $message['text'], $spans);
+        $prefixes = ['domain:', 'full:', 'keyword:', 'regexp:', 'geosite:', 'geoip:', 'ext:', 'extip:', 'set:', 'set: ipcidr'];
+        $check(!array_diff($prefixes, $spans[1]), "$lang $kind add prompt has separately copyable prefixes");
+        $check($bot->replyState['callback'] === 'saveNodeRoutes' && $bot->replyState['args'] === [$id, $kind], 'reply saves to the selected list');
+    }
+}
+$bot->language = 'ru';
 
 // Main-bot CSV export, route export lines and sets in one import.
 $bot->saveNodeRoutes("full:ads.example;1\ndomain:off.example;0\n203.0.113.0/24\n# off: keyword:tracker\nset: https://lists.example/block.srs\nfull:bad..example;1", $id, 'block');

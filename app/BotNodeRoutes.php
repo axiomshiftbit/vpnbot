@@ -190,8 +190,8 @@ trait BotNodeRoutes
                     'The node blocks these domains and addresses for all its traffic: main-bot users, external panels and other bots.')
                 : $this->t('Эти домены и адреса нода выпускает через свой WARP, остальное — напрямую. Блокировка старше WARP.',
                     'The node sends these domains and addresses through its WARP and everything else directly. Block takes priority over WARP.'),
-            $this->t('Записи: domain:, full:, keyword:, regexp:, IP/CIDR, geosite:, geoip:, ext:файл.dat:категория; наборы .srs/.mrs — строкой «set: ссылка».',
-                'Entries: domain:, full:, keyword:, regexp:, IP/CIDR, geosite:, geoip:, ext:file.dat:category; .srs/.mrs sets as a “set: URL” line.')];
+            $this->t('Нажмите «➕ Добавить», чтобы увидеть примеры правил и скопировать префикс.',
+                'Tap ➕ Add for rule examples and prefixes you can copy.')];
         if (empty($status['shared_routes'])) {
             $text[] = $kind === 'warp' || empty($status['named_policy'])
                 ? $this->t('⚠️ Код ноды не поддерживает этот список. Обновите код ноды.', '⚠️ The node code does not support this list. Update the node code.')
@@ -251,8 +251,47 @@ trait BotNodeRoutes
         $this->exitPrompt($import
             ? $this->t("пришлите файл (.txt или .csv экспорта основного бота) или вставьте записи текстом.\nЗаписи добавятся к имеющимся, повторы пропускаются. Строки <code># off: </code> и <code>запись;0</code> — выключенные записи, <code>set: </code> — наборы .srs/.mrs.",
                 "send a file (.txt, or the main bot's .csv export) or paste the entries as text.\nEntries are added to the existing ones, duplicates are skipped. <code># off: </code> and <code>entry;0</code> lines are disabled entries, <code>set: </code> lines are .srs/.mrs sets.")
-            : $this->t("введите записи, по одной на строку: domain:, full:, keyword:, regexp:, IP/CIDR, geosite:, geoip:, ext:файл.dat:категория или <code>set: ссылка</code> на .srs/.mrs.",
-                "enter the entries, one per line: domain:, full:, keyword:, regexp:, IP/CIDR, geosite:, geoip:, ext:file.dat:category or <code>set: URL</code> of an .srs/.mrs set."),
+            : $this->t(<<<'RU'
+                пришлите правила одним сообщением. Разделяйте записи переносом строки, запятой или пробелом, например <code>vk.com, keyword:reddit</code>.
+
+                <b>Домены и IP</b>
+                Нажмите на префикс, чтобы скопировать его вместе с двоеточием.
+                <code>domain:</code> — домен и все его поддомены. Записи <code>domain:vk.com</code> и <code>vk.com</code> равнозначны.
+                <code>full:</code> — только точное имя, например <code>full:example.com</code>.
+                <code>keyword:</code> — подстрока в имени домена, например <code>keyword:reddit</code>.
+                <code>regexp:</code> — регулярное выражение для имени домена, например <code>regexp:\.ru$</code>. Каждое выражение пишите на отдельной строке, чтобы пробелы и запятые остались частью шаблона.
+                IPv4, IPv6 и сети CIDR вводите без префикса, например <code>192.0.2.0/24</code> или <code>2001:db8::1</code>.
+
+                <b>Категории из .dat</b>
+                <code>geosite:</code> — группа доменов, например <code>geosite:youtube</code>.
+                <code>geoip:</code> — группа IP-адресов, например <code>geoip:cn</code>.
+                Свой файл .dat сначала добавьте в <b>routes → dat</b> основного бота. Используйте имя файла и категорию из него.
+                <code>ext:</code> — домены, например <code>ext:dlc.dat:github</code>.
+                <code>extip:</code> — IP-адреса, например <code>extip:zkeenip.dat:akamai</code>.
+
+                <b>Наборы .srs и .mrs</b>
+                <code>set:</code> — для .srs или доменного .mrs. Для .mrs с IP-подсетями скопируйте <code>set: ipcidr</code>. После префикса поставьте пробел и вставьте HTTPS-ссылку на файл. Каждый набор пишите на отдельной строке.
+                RU, <<<'EN'
+                send the rules in one message. Separate entries with a new line, comma or space, for example <code>vk.com, keyword:reddit</code>.
+
+                <b>Domains and IPs</b>
+                Tap a prefix to copy it with the colon.
+                <code>domain:</code> matches a domain and all its subdomains. <code>domain:vk.com</code> and <code>vk.com</code> are equivalent.
+                <code>full:</code> matches the exact hostname, for example <code>full:example.com</code>.
+                <code>keyword:</code> matches part of a hostname, for example <code>keyword:reddit</code>.
+                <code>regexp:</code> matches a hostname using a regular expression, for example <code>regexp:\.ru$</code>. Put each expression on its own line so spaces and commas stay in the pattern.
+                Enter IPv4 or IPv6 addresses and CIDR networks without a prefix, for example <code>192.0.2.0/24</code> or <code>2001:db8::1</code>.
+
+                <b>Categories from .dat files</b>
+                <code>geosite:</code> matches a group of domains, for example <code>geosite:youtube</code>.
+                <code>geoip:</code> matches a group of IP addresses, for example <code>geoip:cn</code>.
+                First add your own .dat file under <b>routes → dat</b> in the main bot. Use its filename and a category from that file.
+                <code>ext:</code> matches domains, for example <code>ext:dlc.dat:github</code>.
+                <code>extip:</code> matches IP addresses, for example <code>extip:zkeenip.dat:akamai</code>.
+
+                <b>.srs and .mrs rule sets</b>
+                <code>set:</code> accepts an .srs file or a domain-based .mrs file. For an .mrs file containing IP networks, copy <code>set: ipcidr</code>. Follow the prefix with a space and the HTTPS URL of the file. Put each set on its own line.
+                EN),
             'saveNodeRoutes', [$id, $kind]);
     }
 
