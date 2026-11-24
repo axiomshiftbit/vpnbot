@@ -19,7 +19,8 @@ import ci_release_policy as release
 # Xray compatibility slots pinned in .env are mandatory like the primary/fork/helper
 # binaries. Native C/C++ and OS package coverage are separate.
 RUST_TARGETS = {
-    'tt': {'usr/local/libexec/trusttunnel_endpoint', 'usr/local/bin/setup_wizard'},
+    # Endpoint and setup wizard are linked into the same Rust binary since 1.3.1.
+    'tt': {'usr/local/libexec/trusttunnel_endpoint'},
     'telemt': {'usr/local/bin/telemt'},
     'ss': {'usr/bin/' + name for name in ('sslocal', 'ssserver', 'ssmanager', 'ssservice', 'ssurl')},
     'snolc': {'opt/snolc/runtime/bin/snolc', 'opt/snolc/sbom/vpnbot-snolc-modules'},

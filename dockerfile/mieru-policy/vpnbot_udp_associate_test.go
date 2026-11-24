@@ -36,7 +36,7 @@ func TestVPNBotUDPAssociateBufferReuseAndUnsolicitedSender(t *testing.T) {
 	}()
 	tunnel := common.NewPacketOverStreamTunnel(client)
 	buf := make([]byte, 1<<16)
-	for i, size := range []int{1, 32768, 65000, 2} {
+	for i, size := range []int{0, 1, 32768, 65000, 2} {
 		name := fmt.Sprintf("%d.%s.test", i, strings.Repeat("a", 50))
 		addr := model.AddrSpec{FQDN: name, Port: destination.LocalAddr().(*net.UDPAddr).Port}
 		var request bytes.Buffer

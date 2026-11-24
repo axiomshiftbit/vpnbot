@@ -39745,7 +39745,7 @@ DNS-over-HTTPS with IP:
         }
         $toml  = $this->t("# TrustTunnel endpoint config (fallback, собран ботом).\n", "# TrustTunnel endpoint config (fallback, built by the bot).\n")
                . $this->t("# Применение:\n", "# How to apply:\n")
-               . "#   setup_wizard --mode non-interactive \\\n"
+               . "#   trusttunnel_client --setup-wizard --mode non-interactive \\\n"
                . $this->t("#       --endpoint_config <этот файл> --settings trusttunnel_client.toml\n", "#       --endpoint_config <this file> --settings trusttunnel_client.toml\n")
                . "#   trusttunnel_client -c trusttunnel_client.toml\n\n";
         $toml .= 'hostname = "' . $esc($host) . "\"\n";

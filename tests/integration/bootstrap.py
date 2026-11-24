@@ -266,7 +266,6 @@ networks:
             '--network', 'vpnbot-audit_default', '--ip', '10.10.0.' + str(ip), '--cap-add', 'NET_ADMIN',
             '--device', '/dev/net/tun', '--device', '/dev/ppp', '--sysctl', 'net.ipv4.conf.all.src_valid_mark=1', client_image)
     run('docker', 'rm', client_pin)
-    run('docker', 'cp', ROOT / 'stand/bin/trusttunnel', 'vpnbot-audit-ssclient:/tmp/trusttunnel')
     target = ROOT / 'protocol-fixtures'
     write(target / 'private-target-ip', '10.10.0.242\n')
     run('docker', 'run', '-d', '--name', 'vpnbot-protocol-target', '--label', 'vpnbot.hosted-ci=true',

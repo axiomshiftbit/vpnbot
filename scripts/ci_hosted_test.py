@@ -40,12 +40,16 @@ def client_downloads(destination):
         # выпусков автор удалил 2026-10-22, поэтому -2 больше не скачивается.
         ('https://github.com/klzgrad/naiveproxy/releases/download/v154.0.8037.49-5/naiveproxy-v154.0.8037.49-5-linux-x64.tar.xz',
          '80214dfea1767f6ecf63a3a79dc9f48b203460f51abc609357fff48dd5844c7d', {'naive': 'naive'}),
+        ('https://github.com/TrustTunnel/TrustTunnelClient/releases/download/v1.3.0/trusttunnel_client-v1.3.0-linux-x86_64.tar.gz',
+         '99e764bb2c080f7a60c441b51ad75fa7ec00e6c8a80afe36030af37201ba32f7', {'trusttunnel_client': 'trusttunnel'}),
         ('https://github.com/TrustTunnel/TrustTunnelClient/releases/download/v1.1.11/trusttunnel_client-v1.1.11-linux-x86_64.tar.gz',
          '00e0546a6b35840dbb92b741dff3da6732a74bf2d6c581e044bb4567c0d96825',
-         {'trusttunnel_client': 'trusttunnel', 'setup_wizard': 'setup_wizard'}),
+         {'trusttunnel_client': 'trusttunnel-previous', 'setup_wizard': 'setup_wizard-previous'}),
         # Проверка уже выданных профилей и клиента до обновления сервера Mieru.
+        ('https://github.com/enfein/mieru/releases/download/v3.39.0/mieru_3.39.0_linux_amd64.tar.gz',
+         '81f549ffd7be2df6958b1051aad10e58884889d92e691c1e43822c42091d1dfe', {'mieru': 'mieru-previous'}),
         ('https://github.com/enfein/mieru/releases/download/v3.38.1/mieru_3.38.1_linux_amd64.tar.gz',
-         'f7ec3b1c2caf338803426d2b3ff32d85654ce585b391556ebe5d2ea55d72d34f', {'mieru': 'mieru-previous'}),
+         'f7ec3b1c2caf338803426d2b3ff32d85654ce585b391556ebe5d2ea55d72d34f', {'mieru': 'mieru-3.38.1'}),
     ]
     destination.mkdir(mode=0o700)
     for url, digest, names in releases:

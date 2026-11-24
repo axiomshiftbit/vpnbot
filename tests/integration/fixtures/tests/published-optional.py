@@ -39,11 +39,11 @@ def udp_echo(port,host='11.77.0.2',target=9999):
     s.sendto(b'\0\0\0\x01'+socket.inet_aton(host)+struct.pack('!H',target)+data,('127.0.0.1',relay))
     return s.recv(65535).endswith(data)
  except (OSError,AssertionError):return False
-for proto,file,boundary,engines in [('anytls','integration_anytls.py',"\ndriver('cards')",['singbox','mihomo']),('mieru','mieru_client.py',None,['native','native-previous','mihomo']),('tuic','integration_tuic.py','\nwait_applied()', ['singbox','mihomo']),('shadowtls','shadowtls_client.py',None,['singbox','mihomo'])]:
+for proto,file,boundary,engines in [('anytls','integration_anytls.py',"\ndriver('cards')",['singbox','mihomo']),('mieru','mieru_client.py',None,['native','native-previous','native-3.38.1','mihomo']),('tuic','integration_tuic.py','\nwait_applied()', ['singbox','mihomo']),('shadowtls','shadowtls_client.py',None,['singbox','mihomo'])]:
  ns={'__name__':'postrestore_optional','__file__':str(o/file)};s=(o/file).read_text();exec(compile(s.split(boundary)[0] if boundary else s,str(o/file),'exec'),ns)
  for engine in engines:
-  client=ns['Client']('native' if engine=='native-previous' else engine)
-  if engine=='native-previous':client.binary='/opt/vpnbot-hosted-ci/stand/bin/mieru-previous'
+  client=ns['Client']('native' if engine.startswith('native-') else engine)
+  if engine.startswith('native-'):client.binary=str(b.parent/'bin'/('mieru-'+engine.removeprefix('native-')))
   with client as c:
    ok,body=c.request();check(proto+'/'+engine+'/restored-profile-HTTP',ok and body==b'VPNBOT-PROTOCOL-TARGET\n')
    ok,body=c.request('https://anytls.test:8443/',https=True);check(proto+'/'+engine+'/restored-profile-HTTPS',ok and body==b'VPNBOT-PROTOCOL-TARGET\n')

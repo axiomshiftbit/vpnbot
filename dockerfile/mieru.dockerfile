@@ -1,6 +1,6 @@
 ARG PROTOCOL_GO_VERSION=1.27.4
-ARG MIERU_VERSION=v3.39.0
-ARG MIERU_SOURCE_SHA256=434198ea0558bc440379e9a0a97f6904ba8dd6b213dd6fb9d578388eba7d2f12
+ARG MIERU_VERSION=v3.40.0
+ARG MIERU_SOURCE_SHA256=b8498d2d87ae6c6acd00d0a76bea4f19947568538056dbe53c169512d8bab354
 FROM golang:${PROTOCOL_GO_VERSION}-alpine AS build
 ARG MIERU_VERSION
 ARG MIERU_SOURCE_SHA256
@@ -17,8 +17,8 @@ RUN patch -p1 --fuzz=0 < /policy/hooks.patch \
     && cp /policy/*.go pkg/socks5/
 RUN sh /build-tools/go-security.sh
 RUN sh /build-tools/go-retry.sh go test -vet=off ./pkg/socks5 -run TestVPNBot -count=1
-RUN sh /build-tools/go-retry.sh go test -vet=off ./internal/bufpool ./apis/common ./pkg/common ./pkg/appctl/appctlcommon ./pkg/protocol \
-    -run 'Test.*(Buffer|Acquire|PacketTunnel|UDPAssociate|Idle|ServerTCP)' -count=1
+RUN sh /build-tools/go-retry.sh go test -vet=off ./internal/bufpool ./apis/common ./pkg/common ./pkg/appctl/appctlcommon ./pkg/protocol ./pkg/socks5 \
+    -run 'Test.*(Buffer|Acquire|PacketTunnel|UDPAssociate|Idle|ServerTCP|ClientPacketSession|StatsRace|ZeroLengthPayload|TruncatedHeader|RejectPrivateAndLoopbackDomainName)' -count=1
 RUN CGO_ENABLED=0 sh /build-tools/go-retry.sh go build -trimpath -ldflags '-s -w' -o /mita ./cmd/mita \
     && CGO_ENABLED=0 sh /build-tools/go-retry.sh go build -trimpath -ldflags '-s -w' -o /mieru-control ./cmd/vpnbot-control
 

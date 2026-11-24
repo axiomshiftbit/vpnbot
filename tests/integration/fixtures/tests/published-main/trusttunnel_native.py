@@ -7,10 +7,12 @@ def run(*a,timeout=45):return subprocess.run(list(map(str,a)),capture_output=Tru
 def check(n,v):results.append({'name':n,'passed':v});(O/'results.json').write_text(json.dumps(results,indent=2));print(('PASS ' if v else 'FAIL ')+n,flush=True)
 def bot(a):
  r=run('docker','exec','php-audit','php','/tmp/audit-driver.php',a,timeout=120);r.check_returncode();j=json.loads(r.stdout);check(a+'-warnings',not j['warnings'])
-def export():
+def export(previous=False):
  bot('tt-export');a=tomllib.loads((R/'bot/logs/audit-files/trusttunnel-audittt.toml').read_text());a['addresses']=['10.10.0.10:2443'];a['certificate']=(R/'bot/certs/cert_public').read_text()
  (O/'endpoint.toml').write_text('\n'.join(k+' = '+json.dumps(v) for k,v in a.items()))
- r=run(R/'bin/setup_wizard','--mode','non-interactive','--endpoint_config',O/'endpoint.toml','--settings',O/'settings.toml');(O/'wizard.log').write_text(r.stdout+r.stderr);check('official-wizard-accepts-export',r.returncode==0);r.check_returncode();return (O/'settings.toml').read_text()
+ wizard=[R/'bin/setup_wizard-previous'] if previous else [R/'bin/trusttunnel','--setup-wizard']
+ (O/'settings.toml').unlink(missing_ok=True)
+ r=run(*wizard,'--mode','non-interactive','--endpoint_config',O/'endpoint.toml','--settings',O/'settings.toml');(O/'wizard.log').write_text(r.stdout+r.stderr);check(('previous-' if previous else '')+'official-wizard-accepts-export',r.returncode==0);r.check_returncode();return (O/'settings.toml').read_text()
 def settings(s,proto):
  # Replace generated TUN listener with SOCKS so host routes stay untouched.
  s=re.sub(r'(?ms)^\[listener\.tun\].*?(?=^\[|\Z)','',s);s+='\n[listener.socks]\naddress = "127.0.0.1:'+str(PROBE_PORT)+'"\n';s=re.sub(r'(?m)^upstream_protocol\s*=.*$', 'upstream_protocol = "'+proto+'"',s);(O/'client.toml').write_text(s)
@@ -28,10 +30,11 @@ def unused_port():
  code='import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'
  p=run('nsenter','-t',pid,'-n','python3','-c',code);p.check_returncode();return int(p.stdout)
 
-def start(s,proto):
+def start(s,proto,client='trusttunnel'):
  global PROBE_PORT
  PROBE_PORT=unused_port()
  cleanup_client()
+ run('docker','cp',R/'bin'/client,C+':/tmp/trusttunnel').check_returncode()
  settings(s,proto);run('docker','cp',O/'client.toml',C+':/tmp/tt-client.toml').check_returncode();f=(O/(proto+'.log')).open('w');p=subprocess.Popen(['docker','exec',C,'/tmp/trusttunnel','-c','/tmp/tt-client.toml','-l','warn'],stdout=f,stderr=f);time.sleep(2);return p,f
 def stop(p,f):
  cleanup_client()
@@ -59,6 +62,10 @@ address=info['NetworkSettings']['Networks']['vpnbot-audit_default']['IPAddress']
 code='import socket,sys;s=socket.socket();s.settimeout(1);sys.exit(0 if s.connect_ex((sys.argv[1],1987))!=0 else 1)'
 check('metrics-unreachable-from-other-container',run('docker','exec','php-audit','python3','-c',code,address).returncode==0)
 check('metrics-port-not-published','1987/tcp' not in info['HostConfig']['PortBindings'])
+p,f=start(export(previous=True),'http2','trusttunnel-previous')
+try:
+ r=http();check('previous-client-https',r.returncode==0 and 'Example Domain' in r.stdout)
+finally:stop(p,f)
 s=export()
 for proto in ['http2','http3']:
  p,f=start(s,proto)

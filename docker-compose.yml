@@ -1078,7 +1078,7 @@ services:
             dockerfile: trusttunnel.dockerfile
             args:
                 image: ${IMAGE:-alpine:3.24}
-                TT_REF: ${TT_REF:-v1.1.0}
+                TT_REF: ${TT_REF:-v1.3.1}
         volumes:
             - ./config/.profile:/root/.bashrc:ro
             - ./ssh/pub:/ssh:ro
@@ -1204,8 +1204,8 @@ services:
             dockerfile: mieru.dockerfile
             args:
                 PROTOCOL_GO_VERSION: ${PROTOCOL_GO_VERSION:-1.27.4}
-                MIERU_VERSION: ${MIERU_VERSION:-v3.39.0}
-                MIERU_SOURCE_SHA256: ${MIERU_SOURCE_SHA256:-434198ea0558bc440379e9a0a97f6904ba8dd6b213dd6fb9d578388eba7d2f12}
+                MIERU_VERSION: ${MIERU_VERSION:-v3.40.0}
+                MIERU_SOURCE_SHA256: ${MIERU_SOURCE_SHA256:-b8498d2d87ae6c6acd00d0a76bea4f19947568538056dbe53c169512d8bab354}
         environment:
             GODEBUG: multipathtcp=0 # Go 1.24+ иначе слушает MPTCP (CVE-2026-98432)
             PROTOCOL_DESIRED: /config/desired.json

@@ -72,8 +72,7 @@
  			dstAddr, err := resolveSocks5UDPAddr(context.Background(), resolver, datagram.Addr)
  			if err != nil {
  				log.Debugf("UDP associate %v ResolveUDPAddr() failed: %v", udpConn.LocalAddr(), err)
-@@ -111,8 +114,7 @@
- 			if ok {
+@@ -109,6 +112,5 @@
  				header = v.([]byte)
  			} else {
 -				header = udpAddrToHeader(addr)
@@ -81,7 +80,6 @@
 +				continue
  			}
  			// Cached headers remain independently owned and immutable.
- 			start := maxUDPHeaderLen - len(header)
 @@ -129,7 +131,7 @@
  
  // RunUDPForwardingLoop exchanges socks5 UDP packets between a mieru proxy client and a socks5 proxy server,

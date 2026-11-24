@@ -2394,8 +2394,8 @@ $i = [
         'ru' => 'ссылка',
     ],
     'tt config hint'  => [
-        'en' => 'endpoint config: setup_wizard --mode non-interactive --endpoint_config &lt;file&gt; --settings trusttunnel_client.toml',
-        'ru' => 'конфиг эндпоинта: setup_wizard --mode non-interactive --endpoint_config &lt;файл&gt; --settings trusttunnel_client.toml',
+        'en' => 'endpoint config: trusttunnel_client --setup-wizard --mode non-interactive --endpoint_config &lt;file&gt; --settings trusttunnel_client.toml',
+        'ru' => 'конфиг эндпоинта: trusttunnel_client --setup-wizard --mode non-interactive --endpoint_config &lt;файл&gt; --settings trusttunnel_client.toml',
     ],
     'tt fallback'  => [
         'en' => 'built without the endpoint binary — check the tt container',

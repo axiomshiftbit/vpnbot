@@ -2,7 +2,7 @@
 # Update:
 #   поменять TT_REF в .env (пин на коммит/тег) и закоммитить — CI пересоберёт
 #   или локально: TT_REF=<sha|tag> docker compose build tt
-ARG TT_REF=v1.1.0
+ARG TT_REF=v1.3.1
 
 # Сборка и итоговый образ на Alpine, как у остальных сервисов. Компилятор
 # берётся готовым образом rust:<версия>-alpine: установщик rustup из сети
@@ -33,7 +33,7 @@ WORKDIR /src
 # работал только пока пин лежал в последних 50 коммитах master, а с пином на
 # коммит это вопрос времени. GitHub отдаёт fetch по sha, так что depth 1
 # хватает и для тега, и для коммита.
-# Upstream 1.1.0 определяет версию через git describe: fetch тега только
+# Upstream определяет версию через git describe: fetch тега только
 # в FETCH_HEAD теряет его имя. Сохраняем ref тега; SHA-пины тоже допустимы.
 RUN git init -q . \
     && git remote add origin https://github.com/TrustTunnel/TrustTunnel.git \
@@ -51,20 +51,15 @@ RUN git init -q . \
     && pinned=$(awk -v key="trusttunnel/${TT_REF}" '$2 == key {print $1}' /sources.sha256) \
     && test "$(git rev-parse HEAD)" = "${pinned:-$TT_REF}" \
     && test -s Cargo.lock && sha256sum Cargo.lock > /tmp/cargo-lock.sha256
-RUN cargo auditable build --locked --release --bin trusttunnel_endpoint \
-    && cargo auditable build --locked --release --bin setup_wizard \
-    && strip target/release/trusttunnel_endpoint target/release/setup_wizard
-# 1.1.0: внутренний HTTP/1 обработчик метрик паникует, если публичный HTTP/1
+# Внутренний HTTP/1 обработчик метрик паникует, если публичный HTTP/1
 # выключен. Оставляем публичную политику прежней; исправляем только default.
 COPY trusttunnel-metrics.patch /trusttunnel-metrics.patch
 RUN git apply --check /trusttunnel-metrics.patch && git apply /trusttunnel-metrics.patch \
     && cargo test --locked --release -p trusttunnel --lib metrics_without_public_http1 \
-    && cargo auditable build --locked --release --bin trusttunnel_endpoint --bin setup_wizard \
-    && strip target/release/trusttunnel_endpoint target/release/setup_wizard \
+    && cargo auditable build --locked --release --bin trusttunnel_endpoint \
+    && strip target/release/trusttunnel_endpoint \
     && sha256sum -c /tmp/cargo-lock.sha256 \
-    && for binary in target/release/trusttunnel_endpoint target/release/setup_wizard; do \
-         readelf -S "$binary" | grep -q '\.dep-v0'; \
-       done
+    && readelf -S target/release/trusttunnel_endpoint | grep -q '\.dep-v0'
 
 FROM $image
 # Alpine вместо Debian: в образе на Debian сканер находил десятки уязвимостей
@@ -75,7 +70,6 @@ RUN apk upgrade --no-cache --available \
     && apk add --no-cache ca-certificates curl iproute2 openssh libgcc mimalloc2 \
     && mkdir -p /root/.ssh /trusttunnel_endpoint /usr/local/libexec
 COPY --from=build /src/target/release/trusttunnel_endpoint /usr/local/libexec/
-COPY --from=build /src/target/release/setup_wizard         /usr/local/bin/
 COPY --from=build /src/Cargo.lock /usr/local/share/trusttunnel/Cargo.lock
 # Распределитель памяти musl плохо переносит многопоточную нагрузку: при пяти
 # одновременных клиентах endpoint тратил втрое-вчетверо больше процессора и
@@ -86,7 +80,9 @@ COPY --from=build /src/Cargo.lock /usr/local/share/trusttunnel/Cargo.lock
 RUN test -f /usr/lib/libmimalloc-secure.so.2 \
     && printf '%s\n' '#!/bin/sh' 'LD_PRELOAD=/usr/lib/libmimalloc-secure.so.2 exec /usr/local/libexec/trusttunnel_endpoint "$@"' \
         > /usr/local/bin/trusttunnel_endpoint \
-    && chmod 755 /usr/local/bin/trusttunnel_endpoint
+    && printf '%s\n' '#!/bin/sh' 'exec /usr/local/bin/trusttunnel_endpoint --setup-wizard "$@"' \
+        > /usr/local/bin/setup_wizard \
+    && chmod 755 /usr/local/bin/trusttunnel_endpoint /usr/local/bin/setup_wizard
 WORKDIR /trusttunnel_endpoint
 # Сборка откажет, если бинарнику не хватает библиотеки в итоговом образе.
 RUN trusttunnel_endpoint --version && setup_wizard --help >/dev/null
