@@ -6,6 +6,8 @@ os.umask(0o077)
 p=argparse.ArgumentParser();p.add_argument('--checkout',type=Path,required=True);p.add_argument('--manifest',type=Path,required=True);p.add_argument('--results',type=Path,required=True);p.add_argument('--allow-test-failures',action='store_true');a=p.parse_args()
 B=Path('/opt/vpnbot-hosted-ci/stand/bot');R=Path('/opt/vpnbot-hosted-ci/tests');O=a.results
 sys.path.insert(0,str(a.checkout/'scripts'));import image_bundle as ib
+sys.path.append(str(R))
+import optional_matrix
 candidate=ib.read(a.manifest)
 baseenv={k:os.environ[k] for k in ("PATH","HOME","LANG","LC_ALL","SHELL","TERM","TMPDIR") if k in os.environ}
 for n in ('VPNBOT_BUNDLE_FILE','GHCR_TOKEN','GHCR_USER','GITHUB_TOKEN','GH_TOKEN'):baseenv.pop(n,None)
@@ -302,7 +304,7 @@ python3 scripts/ci_unit_tests.py --stage native --report /results/unit.json --lo
    capture(['docker','network','disconnect','vpnbot-protocol-test',d['Id']])
  (R/'published-optional-results.json').unlink(missing_ok=True)
  run('native-optional',['python3',str(R/'published-optional.py')],timeout=300)
- rows=json.loads((R/'published-optional-results.json').read_text());check('native','optional-HTTP-HTTPS-TCP-UDP',len(rows)==38 and all(x['ok'] for x in rows));counts['native']+=len(rows)
+ rows=json.loads((R/'published-optional-results.json').read_text());check('native','optional-HTTP-HTTPS-TCP-UDP',optional_matrix.complete(rows));counts['native']+=len(rows)
  run('naive-idle',['python3',str(Path(__file__).with_name('naive_idle.py'))],environ=env|{'VPNBOT_TEST_RESULTS':str(O)},timeout=140)
  rows=json.loads((O/'naive-idle.json').read_text());check('native','Naive75-seconds-idle',len(rows)==5 and all(x['ok'] for x in rows));counts['native']+=len(rows)
  for name in ('naive-upgrade','mieru-idle','ocserv-upgrade'):isolated_case(name)

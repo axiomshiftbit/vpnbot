@@ -1,4 +1,5 @@
 from pathlib import Path
+from optional_matrix import CLIENTS
 import sys,runpy,json,subprocess,time,copy,importlib.util,os,socket,shutil,struct,zipfile
 r=Path('/opt/vpnbot-hosted-ci/tests');o=r/'optional-native';b=Path('/opt/vpnbot-hosted-ci/stand/bot');rows=[]
 def check(name,ok):
@@ -39,9 +40,9 @@ def udp_echo(port,host='11.77.0.2',target=9999):
     s.sendto(b'\0\0\0\x01'+socket.inet_aton(host)+struct.pack('!H',target)+data,('127.0.0.1',relay))
     return s.recv(65535).endswith(data)
  except (OSError,AssertionError):return False
-for proto,file,boundary,engines in [('anytls','integration_anytls.py',"\ndriver('cards')",['singbox','mihomo']),('mieru','mieru_client.py',None,['native','native-previous','native-3.38.1','mihomo']),('tuic','integration_tuic.py','\nwait_applied()', ['singbox','mihomo']),('shadowtls','shadowtls_client.py',None,['singbox','mihomo'])]:
+for proto,file,boundary in [('anytls','integration_anytls.py',"\ndriver('cards')"),('mieru','mieru_client.py',None),('tuic','integration_tuic.py','\nwait_applied()'),('shadowtls','shadowtls_client.py',None)]:
  ns={'__name__':'postrestore_optional','__file__':str(o/file)};s=(o/file).read_text();exec(compile(s.split(boundary)[0] if boundary else s,str(o/file),'exec'),ns)
- for engine in engines:
+ for engine in CLIENTS[proto]:
   client=ns['Client']('native' if engine.startswith('native-') else engine)
   if engine.startswith('native-'):client.binary=str(b.parent/'bin'/('mieru-'+engine.removeprefix('native-')))
   with client as c:
