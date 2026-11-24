@@ -107,10 +107,25 @@ sys.exit(''' + str(int(failed_start)) + ''')
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                    start_new_session=True)
         def cleanup():
-            (self.root / 'release-start').touch(); (self.root / 'release').touch()
-            try: os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError: pass
-            process.wait(timeout=5)
+            (self.root / 'release-start').touch()
+            (self.root / 'release').touch()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=5)
+            # preup uses setsid: the worker outlives make and owns a separate
+            # session. Its child must release the worker lock before rmtree.
+            pidfile = self.root / 'update/update_pid'
+            if process.returncode == 0:
+                deadline = time.monotonic() + 5
+                while not (pidfile.is_file() and pidfile.stat().st_size):
+                    if time.monotonic() >= deadline:
+                        self.fail('started worker did not publish its PID')
+                    time.sleep(.02)
+            if pidfile.is_file():
+                subprocess.run(['sh', 'scripts/stop_update.sh', str(pidfile)], cwd=self.root,
+                               check=True, timeout=10)
         self.addCleanup(cleanup)
         deadline = time.monotonic() + 5
         while not (self.root / 'start-entered').exists():
