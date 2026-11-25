@@ -2,10 +2,10 @@
   "schema": 1,
   "platform": "windows-amd64",
   "sing_box": {
-    "version": "1.14.4+vpnbot.security.20261115",
+    "version": "1.14.4+vpnbot.security.20261125",
     "release_url": "https://github.com/SagerNet/sing-box/releases/tag/v1.14.4",
     "files": {
-      "sing-box.exe": "fff314697b9066c63a4ef391ef49fa88439f648d4a4c9bd0dc70af05a7bec4ce",
+      "sing-box.exe": "19bcef802b1c66b1270f44b4d0870224213042eefde1b2d23db293fd525c7f98",
       "libcronet.dll": "3217c6260fbca5f16072e0b79735742f40109a63bb0ff88fd6b96dd6b54a2928",
       "LICENSE": "bb3805862b583aee73ad6f7805ec634747a37257a637a3069857843f05ea589c"
     },
@@ -28,18 +28,19 @@
       "go_module_version": "(devel)",
       "inputs": {
         "DEFAULT_BUILD_TAGS_WINDOWS": "4e06ed88fa49dc635b8fbc93dbf1f6fbec76e32eca1b07d0cc29cb563e770981",
-        "Dockerfile": "fb2a17391c93d21ff7b84a35a0f28a1cd6c62f17aa2aa7edeaa3d28092146df3",
+        "Dockerfile": "f95b640108c76153391a8fead0d5cb56c1f7569d45d4dff555b87767a5896044",
         "LDFLAGS": "d0a3a04eb9ac5f3018978515e4864ba61cca69d9a99101d11d7970e537a1991d",
-        "go.mod": "6380ff67ead83e48e31d19d6a59e9603c3d249291e00cf569acba15703b0d515",
-        "go.sum": "035f6cd52151300d52fbb9b13c59e3d8e25bc91f3e175d1015e1d2898ed2f1a7"
+        "go.mod": "864dafea954db74f3f3f2d251b1c0021fc175d9b45aeb3ce607ae907ad7774ad",
+        "go.sum": "39c54825dd6fba6a7bf6a76420a24b1e29ecd746c5c665c1af00662044953fdf"
       },
       "reproducibility": {
         "independent_empty_compiler_caches": 2,
-        "identical_binary_sha256": "fff314697b9066c63a4ef391ef49fa88439f648d4a4c9bd0dc70af05a7bec4ce"
+        "identical_binary_sha256": "19bcef802b1c66b1270f44b4d0870224213042eefde1b2d23db293fd525c7f98"
       },
       "dependency_minimums_helper_sha256": "af9de92c4e9327e10215178473bfe59bad19575d8666f2c9be41803eeb7a31d9",
       "additional_dependency_updates": {
-        "golang.org/x/crypto": "v0.59.0"
+        "golang.org/x/crypto": "v0.59.0",
+        "github.com/insomniacslk/dhcp": "v0.0.0-20260719225207-c76316d4aa82"
       }
     }
   },
@@ -52,5 +53,5 @@
     "uninstall.cmd": "c91a16b0978c67f074452dafd2899acbb29e9251016a44a7ff0948fc4382a231",
     "winsw3.exe": "a2daa6a33a9c2b791ae31d9092e7935c339d1e03e89bfb747618ce2f4e819e20"
   },
-  "bundle_sha256": "6c005ff4b2cd0f0bde9086be109b1cda0ffa25193f82ba963fd52697717bdf4b"
+  "bundle_sha256": "3e97e346649e74e820d32b56fbd9e1b65a7691fb8693dcccff80bbd3ac97cd40"
 }

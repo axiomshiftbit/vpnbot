@@ -11,7 +11,7 @@ RUN cmp release/DEFAULT_BUILD_TAGS_WINDOWS /inputs/DEFAULT_BUILD_TAGS_WINDOWS \
     && go mod download all && sha256sum -c /tmp/locks.sha256
 ENV CGO_ENABLED=0 GOOS=windows GOARCH=amd64 GOAMD64=v1 GOPROXY=off
 RUN --network=none tags=$(cat release/DEFAULT_BUILD_TAGS_WINDOWS) \
-    && flags="-X github.com/sagernet/sing-box/constant.Version=1.14.4+vpnbot.security.20261115 $(cat release/LDFLAGS) -s -w -buildid=" \
+    && flags="-X github.com/sagernet/sing-box/constant.Version=1.14.4+vpnbot.security.20261125 $(cat release/LDFLAGS) -s -w -buildid=" \
     && go build -mod=readonly -trimpath -tags "$tags" -ldflags "$flags" -o /out/sing-box.exe ./cmd/sing-box \
     && sha256sum -c /tmp/locks.sha256
 FROM scratch
