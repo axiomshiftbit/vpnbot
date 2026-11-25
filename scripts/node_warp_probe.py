@@ -34,6 +34,31 @@ def tls_context():
     return context
 
 
+TRACE_FIELDS = {'warp': rb'(on|plus|off)', 'ip': rb'[0-9a-fA-F:.]{2,45}', 'colo': rb'[A-Z]{3}', 'loc': rb'[A-Z]{2}'}
+
+
+def trace(port, password):
+    """Fields of Cloudflare's trace through the node's WARP; only well-formed values are kept."""
+    host = TRACE_HOST.encode('ascii')
+    destination = b'\x03' + bytes([len(host)]) + host + struct.pack('!H', 443)
+    with connect(port, password, b'\x01', destination) as raw:
+        with tls_context().wrap_socket(raw, server_hostname=TRACE_HOST) as sock:
+            sock.sendall(b'GET /cdn-cgi/trace HTTP/1.1\r\nHost: ' + host + b'\r\nConnection: close\r\n\r\n')
+            with http.client.HTTPResponse(sock) as response:
+                response.begin()
+                return trace_fields(response.read(8192)) if response.status == 200 else {}
+
+
+def trace_fields(body):
+    result = {}
+    for line in body.splitlines():
+        name, _, value = line.partition(b'=')
+        pattern = TRACE_FIELDS.get(name.decode('ascii', 'replace'))
+        if pattern and re.fullmatch(pattern, value):
+            result[name.decode()] = value.decode()
+    return result
+
+
 def check_trace(port, password):
     host = TRACE_HOST.encode('ascii')
     destination = b'\x03' + bytes([len(host)]) + host + struct.pack('!H', 443)
@@ -79,7 +104,13 @@ if __name__ == '__main__':
     try:
         port = int(sys.argv[1])
         password = sys.stdin.buffer.readline(66).removesuffix(b'\n')
-        if re.fullmatch(rb'[0-9a-f]{64}', password):
+        if re.fullmatch(rb'[0-9a-f]{64}', password) and '--trace' in sys.argv[2:]:
+            try:
+                fields = trace(port, password)
+            except (OSError, ValueError, ssl.SSLError, http.client.HTTPException, struct.error):
+                fields = {}
+            print(' '.join(f'{key}={fields[key]}' for key in TRACE_FIELDS if key in fields))
+        elif re.fullmatch(rb'[0-9a-f]{64}', password):
             https = measure(check_trace, port, password)
             udp = measure(check_udp, port, password)
             if '--details' in sys.argv[2:]:

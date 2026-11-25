@@ -1,10 +1,14 @@
 """Shared destination routing of a managed node: Block and WARP lists for all its traffic."""
+from bisect import bisect_right
 from copy import deepcopy
 import hashlib
 import hmac
 import ipaddress
+import json
 import re
 import uuid
+
+import node_geodat
 
 ROUTE_KINDS = ('block', 'warp')
 # Bound the work before routes expand across every authenticated subject.
@@ -76,6 +80,53 @@ def validate(value):
     return value
 
 
+def php_json(value):
+    """The bytes PHP json_encode(..., JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) gives the controller."""
+    if value == {}:
+        return '[]'
+    text = json.dumps(value, ensure_ascii=False, separators=(',', ':'))
+    # PHP still escapes the JavaScript line terminators without JSON_UNESCAPED_LINE_TERMINATORS.
+    return text.replace('\u2028', '\\u2028').replace('\u2029', '\\u2029')
+
+
+def routes_digest(routes):
+    return hashlib.sha256(php_json(routes).encode()).hexdigest()
+
+
+def ips_digest(ips):
+    return hashlib.sha256('\n'.join(ips).encode()).hexdigest() if ips else None
+
+
+def summary(policy):
+    """What status reports instead of the expanded lists: their digests and sizes."""
+    if 'bindings' in policy:
+        policy = migrate(policy)
+    result = {key: policy[key] for key in ('revision',) if key in policy}
+    if policy.get('controller_ips'):
+        result['controller_ips_digest'] = ips_digest(policy['controller_ips'])
+    result['routes_digest'] = routes_digest(policy.get('routes', {}))
+    result['counts'] = {name: {kind: len(entries) for kind, entries in parts.items()} for name, parts in policy.get('routes', {}).items()}
+    result['counts']['controller'] = len(policy.get('controller_ips', []))
+    return result
+
+
+def resolve(policy, current):
+    """A request may name the lists the node already runs by digest instead of carrying them again."""
+    policy = {key: value for key, value in policy.items() if key != 'counts'}
+    current = current or {}
+    if 'bindings' in current:
+        current = migrate(current)
+    if 'routes_digest' in policy:
+        if 'routes' in policy or policy.pop('routes_digest') != routes_digest(current.get('routes', {})):
+            raise ValueError('lists_missing')
+        policy['routes'] = current.get('routes', {})
+    if 'controller_ips_digest' in policy:
+        if 'controller_ips' in policy or policy.pop('controller_ips_digest') != ips_digest(current.get('controller_ips', [])):
+            raise ValueError('lists_missing')
+        policy['controller_ips'] = current['controller_ips']
+    return policy
+
+
 def accounts(value):
     """Revision-bound logins of the controller when it delegates its own IP blocks."""
     policy = value['options']['policy']
@@ -97,13 +148,58 @@ def shared(policy, strict):
     return lists, ({'all': rows} if rows else {})
 
 
+def collapse(cidrs):
+    networks = [ipaddress.ip_network(item, strict=False) for item in cidrs]
+    return [*ipaddress.collapse_addresses(n for n in networks if n.version == 4),
+            *ipaddress.collapse_addresses(n for n in networks if n.version == 6)]
+
+
+def uncovered(networks, cover):
+    """Networks not inside one of the collapsed (disjoint) cover networks."""
+    ranges = {4: [], 6: []}
+    for network in cover:
+        ranges[network.version].append((int(network.network_address), int(network.broadcast_address)))
+    starts = {version: [start for start, _ in sorted(items)] for version, items in ranges.items()}
+    ends = {version: [end for _, end in sorted(items)] for version, items in ranges.items()}
+    result = []
+    for network in networks:
+        index = bisect_right(starts[network.version], int(network.network_address)) - 1
+        if index < 0 or ends[network.version][index] < int(network.broadcast_address):
+            result.append(network)
+    return result
+
+
+def assets(policy, lists):
+    """Geodata of the lists and the matcher each rule uses instead of the entries."""
+    ips, sites = {}, {}
+    block = collapse(lists.get('block', {}).get('ip', []))
+    # Controller and Block IPs both block: an address already in Block needs no second copy.
+    controller = uncovered(collapse(policy.get('controller_ips', [])), block)
+    for name, networks in (('controller', controller), ('block', block), ('warp', collapse(lists.get('warp', {}).get('ip', [])))):
+        if networks:
+            ips[name] = [str(n) for n in networks]
+    for name, parts in lists.items():
+        if parts.get('domain'):
+            sites[name] = list(dict.fromkeys(parts['domain']))
+    files = {}
+    if ips:
+        files[node_geodat.IP_FILE] = node_geodat.geoip(ips)
+    if sites:
+        files[node_geodat.SITE_FILE] = node_geodat.geosite(sites)
+    matchers = {name: {'ip': [node_geodat.reference('ip', name)] if name in ips else [],
+                       'domain': [node_geodat.reference('domain', name)] if name in sites else []} for name in ('controller', *lists)}
+    return files, matchers
+
+
 def compile_policy(main, strict, value):
+    """Add the routing policy to the cores; returns the geodata files both cores load."""
     policy = value['options'].get('policy')
     if not policy:
-        return
+        return {}
     lists, bindings = shared(policy, strict)
     if not bindings and not policy.get('controller_ips'):
-        return
+        return {}
+    files, lists = assets(policy, lists)
     original = main['inbounds'][0]['settings']['clients'][0]
     incoming = [i['tag'] for i in main['inbounds'] if i['tag'] in ('node', 'node-wg4', 'node-wg6')]
     wg = [tag for tag in incoming if tag != 'node']
@@ -143,9 +239,10 @@ def compile_policy(main, strict, value):
         field = {'type': 'field', 'inboundTag': ['node'], 'user': [email]}
         selection.extend([field | {'network': 'tcp', 'domain': ['full:www.gstatic.com'], 'port': '443', 'outboundTag': 'direct'},
                           field | {'outboundTag': 'block'}])
-    for index, (scope, default, incoming_tags, email, role) in enumerate(subjects):
+    paths = {}
+    for scope, default, incoming_tags, email, role in subjects:
         rows = bindings.get('all', [])
-        controller_ips = policy.get('controller_ips', []) if scope == 'controller' else []
+        controller_ips = lists['controller']['ip'] if scope == 'controller' else []
         # A dedicated relay login always gets its default exit. Without a rule
         # it would fall through to the core's first outbound (direct).
         if not rows and not controller_ips and not role:
@@ -155,10 +252,10 @@ def compile_policy(main, strict, value):
             field['user'] = [email]
         rows = sorted(rows, key=lambda row: row['action'] != 'block')
         earlier_ips = [(controller_ips, 'block')] if controller_ips else []
-        for order, row in enumerate([*rows, {'action': default}]):
+        for row in [*rows, {'action': default}]:
             parts = lists[row['list']] if 'list' in row else {}
             action = row['action']
-            domains = [d.removeprefix('keyword:') for d in parts.get('domain', [])]
+            domains = parts.get('domain', [])
             ips = parts.get('ip', [])
             if action == 'block':
                 if domains:
@@ -169,13 +266,18 @@ def compile_policy(main, strict, value):
             if domains or 'list' not in row:
                 target = action
                 if earlier_ips:
-                    target = resolved_path(main, strict, direct, action, earlier_ips, f'policy-{index}-{order}')
+                    # Subjects share identical IP chains: one loopback per distinct chain.
+                    key = (action, tuple((tuple(ips), act) for ips, act in earlier_ips))
+                    if key not in paths:
+                        paths[key] = resolved_path(main, strict, direct, action, earlier_ips, f'policy-{len(paths)}')
+                    target = paths[key]
                 elif action == 'warp' and not strict:
                     target = 'block'
                 selection.append(field | ({'domain': domains} if domains else {}) | {'outboundTag': target})
             if ips:
                 earlier_ips.append((ips, action))
     rules[position:position] = selection
+    return files
 
 
 def resolved_path(main, strict, direct, mode, earlier, tag):

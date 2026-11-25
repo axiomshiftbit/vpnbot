@@ -43,6 +43,12 @@ masque_alpn() {
 }
 MODE=$(warp_mode)
 ALPN=$(masque_alpn)
+# Порт узла MASQUE, выбранный в боте: официальные порты, по HTTP/2 — только 443.
+masque_port() {
+    port=$(jq -r '.warp_masque_port // empty' /config/pac.json 2>/dev/null || true)
+    case "$(masque_alpn):$port" in h3:500|h3:1701|h3:4500|h3:4443|h3:8443|h3:8095) echo "$port" ;; *) echo 443 ;; esac
+}
+MASQUE_PORT=$(masque_port)
 # /run переживает перезапуск контейнера: отметка прошлого запуска уверяла бы
 # бота, что прокси уже работает в этом режиме.
 rm -f /run/warp-mode
@@ -228,11 +234,11 @@ proxy_firewall() {
         done
         if [ "$MODE" = masque ]; then
             # Интерфейса туннеля нет: соединение с узлом Cloudflare держит сам
-            # прокси. Ему разрешён только этот адрес и порт 443 — всё прикладное
+            # прокси. Ему разрешён только этот адрес и выбранный порт — всё прикладное
             # идёт внутри туннеля. Узел IPv4, по IPv6 не разрешено ничего. Пока
             # адрес неизвестен, прокси не выпускается никуда.
             if [ "$firewall" = iptables ] && [ -n "$MASQUE_ENDPOINT" ]; then
-                "$firewall" -A WARP_PROXY_OUT -d "$MASQUE_ENDPOINT" -p "$MASQUE_PROTO" --dport 443 -j RETURN || return 1
+                "$firewall" -A WARP_PROXY_OUT -d "$MASQUE_ENDPOINT" -p "$MASQUE_PROTO" --dport "${MASQUE_PORT:-443}" -j RETURN || return 1
             fi
         else
             "$firewall" -A WARP_PROXY_OUT -o "$WGCF_IF" -j RETURN || return 1
@@ -340,7 +346,7 @@ masque_up() {
     MASQUE_ENDPOINT=$(sh /warp_masque.sh endpoint) || { echo "[warp] MASQUE: no valid endpoint in the account"; return 1; }
     if [ "$ALPN" = h2 ]; then MASQUE_PROTO=tcp; else MASQUE_PROTO=udp; fi
     # Имя оканчивается на .json: ядро определяет формат конфига по расширению.
-    (umask 077; sh /warp_masque.sh config "$SOCKS_PORT" "$ALPN" > /run/warp-socks-masque.new.json) || return 1
+    (umask 077; sh /warp_masque.sh config "$SOCKS_PORT" "$ALPN" '' 0.0.0.0 "${MASQUE_PORT:-443}" > /run/warp-socks-masque.new.json) || return 1
     if ! warp-socks run -test -config /run/warp-socks-masque.new.json >/dev/null 2>&1; then
         echo "[warp] MASQUE: proxy config rejected by the core"
         rm -f /run/warp-socks-masque.new.json
@@ -351,7 +357,7 @@ masque_up() {
     chmod 640 /run/warp-socks-masque.new.json || return 1
     mv /run/warp-socks-masque.new.json /run/warp-socks-masque.json || return 1
     proxy_firewall || return 1
-    echo "[warp] MASQUE: endpoint $MASQUE_ENDPOINT $MASQUE_PROTO/443 ($ALPN)"
+    echo "[warp] MASQUE: endpoint $MASQUE_ENDPOINT $MASQUE_PROTO/${MASQUE_PORT:-443} ($ALPN)"
     MASQUE_ACCOUNT=$(masque_account)
     MASQUE_READY=1
 }
@@ -567,13 +573,15 @@ while true; do
     # путь «туннеля нет → поднять».
     want_mode=$(warp_mode)
     want_alpn=$(masque_alpn)
-    if [ "$want_mode" != "$MODE" ] || { [ "$MODE" = masque ] && [ "$want_alpn" != "$ALPN" ]; } \
+    want_port=$(masque_port)
+    if [ "$want_mode" != "$MODE" ] || { [ "$MODE" = masque ] && { [ "$want_alpn" != "$ALPN" ] || [ "$want_port" != "$MASQUE_PORT" ]; }; } \
         || { [ "$MODE" = masque ] && [ "$MASQUE_READY" = 1 ] && [ "$(masque_account)" != "$MASQUE_ACCOUNT" ]; }; then
         echo "[warp] switching mode: $(mode_name "$MODE" "$ALPN") -> $(mode_name "$want_mode" "$want_alpn")"
         socks_stop
         link_down
         MODE=$want_mode
         ALPN=$want_alpn
+        MASQUE_PORT=$want_port
         MASQUE_ENDPOINT=""
         if ! proxy_firewall; then
             echo "[warp] kill-switch chain was NOT rebuilt; SOCKS stays stopped"

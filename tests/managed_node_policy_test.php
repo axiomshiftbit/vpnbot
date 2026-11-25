@@ -309,3 +309,136 @@ foreach ([true,false] as $healthy) {
 
 echo "PASS reconcile a restored legacy node policy
 ";
+
+// A node that reports digests keeps its running lists when the request names them:
+// automatic IP sync and an apply without list changes do not resend megabytes.
+class DigestNodeFixtureBot extends GuardFixtureBot
+{
+    public int $rejectDigest = 0; public array $backup = []; public string $rejectAs = 'lists';
+    public array $runningRoutes = [];
+    protected function managedNodeRpc(string $id, array $request): array {
+        if ($request['action'] === 'backup') { $this->events[] = 'backup'; return $this->backup; }
+        if ($request['action'] === 'routes') { $this->events[] = 'routes'; return ['routes' => $this->runningRoutes]; }
+        if ($request['action'] === 'submit' && isset($request['request']['value']['policy']['routes_digest']) && $this->rejectDigest-- > 0) {
+            $this->submitted[] = $request['request'];
+            throw $this->rejectAs === 'generic' ? new RuntimeException('Node transport timeout') : new NodeListsDigestException('lists_missing');
+        }
+        return parent::managedNodeRpc($id, $request);
+    }
+}
+$routesDigest = hash('sha256', json_encode($confirmedRoutes, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+// The node computes the same bytes in Python: the reference also sits in node_policy_test.py.
+$check(Closure::bind(fn() => self::nodeRoutesDigest(['block' => ['domain' => ['regexp:^a\.b/c$', "full:\u{e9}.test", "keyword:x\u{2028}"], 'ip' => ['192.0.2.0/24']],
+    'warp' => ['domain' => ["keyword:\u{432}\u{438}\u{434}\u{435}\u{43e}"]]]), null, Bot::class)()
+    === '1b9cc32f8cc9a41b6eeaa1a804bedfb185c719f660c3237d40672ff040d077c2', 'controller and node routes digests match');
+foreach ([0, 1] as $reject) {
+    $digestBot = new DigestNodeFixtureBot();
+    $digestBot->rejectDigest = $reject;
+    $digestBot->remoteStatus['shared_routes'] = $digestBot->remoteStatus['controller_ip_guard'] = $digestBot->remoteStatus['policy_summary'] = true;
+    $digestBot->remoteStatus['pending'] = null;
+    $digestBot->remoteStatus['options']['policy'] = ['routes_digest' => $routesDigest, 'counts' => ['block' => ['domain' => 1], 'controller' => 0]];
+    $digestBot->backup = ['options' => ['policy' => ['routes' => $confirmedRoutes]]];
+    $digestBot->pacState['managed_nodes'][$id]['status']['policy_summary'] = true;
+    $digestBot->pacState['managed_nodes'][$id]['job'] = null;
+    $digestBot->pacState['managed_nodes'][$id]['lists'] = ['block' => ['routes' => [], 'rulesets' => []], 'warp' => ['routes' => ['full:draft.example' => 1], 'rulesets' => []]];
+    $digestBot->xrayState['routing']['rules'] = [['ruleTag' => 'vpnbot:routes:block:ip', 'ip' => ['198.51.100.7']]];
+    $digestBot->checkManagedNodes();
+    $first = $digestBot->submitted[0]['value']['policy'] ?? [];
+    $check(($first['routes_digest'] ?? '') === $routesDigest && !isset($first['routes']) && !isset($first['counts'])
+        && ($first['controller_ips'] ?? []) === ['198.51.100.7'], 'IP sync names the running lists by digest and sends the changed IPs');
+    if ($reject) {
+        $retry = $digestBot->submitted[1]['value']['policy'] ?? [];
+        $check(count($digestBot->submitted) === 2 && in_array('backup', $digestBot->events, true) && ($retry['routes'] ?? null) === $confirmedRoutes
+            && !isset($retry['routes_digest']), 'a rejected digest is resent once with the node snapshot lists, not local edits');
+    } else $check(count($digestBot->submitted) === 1, 'accepted digest is sent once');
+}
+
+// A timeout may have queued the first request: only an explicit lists_missing is resent.
+$generic = new DigestNodeFixtureBot();
+$generic->rejectDigest = 1; $generic->rejectAs = 'generic';
+$generic->remoteStatus['shared_routes'] = $generic->remoteStatus['controller_ip_guard'] = $generic->remoteStatus['policy_summary'] = true;
+$generic->remoteStatus['pending'] = null;
+$generic->remoteStatus['options']['policy'] = ['routes_digest' => $routesDigest];
+$generic->pacState['managed_nodes'][$id]['status']['policy_summary'] = true;
+$generic->pacState['managed_nodes'][$id]['job'] = null;
+$generic->xrayState['routing']['rules'] = [['ruleTag' => 'vpnbot:routes:block:ip', 'ip' => ['198.51.100.7']]];
+$generic->checkManagedNodes();
+$check(count($generic->submitted) === 1 && !in_array('backup', $generic->events, true), 'a generic failure is not resent');
+
+// Apply with lists the node already runs: the expanded routes travel as a digest.
+$same = new DigestNodeFixtureBot();
+$same->remoteStatus['pending'] = null;
+$node = &$same->pacState['managed_nodes'][$id];
+$node['job'] = null;
+$node['status']['shared_routes'] = $node['status']['policy_summary'] = true;
+$node['lists'] = ['block' => ['routes' => ['full:blocked.example' => 1], 'rulesets' => []], 'warp' => ['routes' => ['192.0.2.0/24' => 1], 'rulesets' => []]];
+$node['status']['options']['policy'] = ['routes_digest' => $routesDigest];
+unset($node);
+$same->nodeRoutesApply($id, 'warp');
+$applied = $same->submitted[0]['value']['policy'] ?? [];
+$check(($applied['routes_digest'] ?? '') === $routesDigest && !isset($applied['routes']), 'unchanged lists apply by digest');
+$same->pacState['managed_nodes'][$id]['job'] = null;
+$same->pacState['managed_nodes'][$id]['lists']['warp']['routes']['full:new.example'] = 1;
+$same->nodeRoutesApply($id, 'warp');
+$changed = $same->submitted[1]['value']['policy'] ?? [];
+$check(isset($changed['routes']['warp']['domain']) && !isset($changed['routes_digest']), 'edited lists are sent in full');
+// Confirming a change: the direct fallback gets the node's running blocks, never a stale copy.
+foreach ([true, false] as $matching) {
+    $use = new DigestNodeFixtureBot();
+    $use->runningRoutes = $matching ? $confirmedRoutes : ['block' => ['domain' => ['full:other.example']]];
+    $use->managedNodeUseProfile($id, $use->profile, $use->remoteStatus['options'] + ['policy' => ['routes_digest' => $routesDigest]]);
+    $stored = $use->pacState['exits'][$id]['policy'] ?? [];
+    $check(in_array('routes', $use->events, true) && (($stored['routes'] ?? null) === $confirmedRoutes) === $matching,
+        $matching ? 'running lists fetched for the fallback' : 'lists with another digest are not used');
+}
+echo "PASS lists by digest: IP sync, rejected digest, unchanged apply\n";
+
+// Expansion stops as soon as the lists can no longer fit, before large sets exhaust PHP memory.
+$budgetBot = new RoutesFixtureBot();
+$budgetBot->dat = ['ru' => array_map(static fn($i) => "198.51.100.$i/32", range(1, 50))];
+$parts = Closure::bind(function (array $list, int $budget) { return $this->nodeRoutesParts($list, $budget); }, $budgetBot, Bot::class);
+$list = ['routes' => ['full:a.example' => 1, 'geoip:ru' => 1], 'rulesets' => []];
+$check(count($parts($list, 51)['ip']) === 50, 'expansion within the budget: the category reference is not charged');
+try { $parts($list, 50); $stopped = false; } catch (NodeRoutesException $e) { $stopped = $e->getMessage() === 'size'; }
+$check($stopped, 'a category past the budget stops with the size error');
+$check(Bot::NODE_ROUTES_MAX_ENTRIES * 15 > 3 * 1024 * 1024, 'the early stop never rejects lists that fit 3 MiB');
+// Overlapping categories count once.
+$budgetBot->dat['ru2'] = array_merge($budgetBot->dat['ru'], ['203.0.113.1/32']);
+$check(count($parts(['routes' => ['geoip:ru' => 1, 'geoip:ru2' => 1], 'rulesets' => []], 51)['ip']) === 51, 'overlapping categories are charged once');
+echo "PASS expansion budget\n";
+
+// A refreshed .dat changes the expanded list of an applied source: the node gets it hourly.
+$syncBot = new RoutesFixtureBot();
+$sync = Closure::bind(function (string $id) { $this->syncNodeRoutes($id); }, $syncBot, Bot::class);
+$node = &$syncBot->pacState['managed_nodes'][$id];
+$node['job'] = null; $node['status']['shared_routes'] = true; $node['status']['pending'] = null;
+$node['lists'] = ['block' => ['routes' => ['geoip:lab' => 1], 'rulesets' => []], 'warp' => ['routes' => [], 'rulesets' => []]];
+$node['lists_sent'] = Closure::bind(fn() => self::nodeRoutesDigest($this->nodeRoutesSource($node)), $syncBot, Bot::class)();
+$node['status']['options']['policy'] = ['routes_digest' => hash('sha256', json_encode(['block' => ['ip' => ['192.0.2.0/24']]], JSON_UNESCAPED_SLASHES))];
+unset($node);
+$syncBot->dat = ['lab' => ['192.0.2.0/24']];
+$sync($id);
+$check($syncBot->submitted === [], 'unchanged expansion is not resent');
+$syncBot->dat = ['lab' => ['192.0.2.0/24', '203.0.113.0/24']];
+$sync($id);
+$check($syncBot->submitted === [], 'checked at most hourly');
+$syncBot->pacState['managed_nodes'][$id]['lists_checked'] = 0;
+$syncBot->pacState['managed_nodes'][$id]['lists']['block']['routes']['full:draft.example'] = 1;
+$sync($id);
+$check($syncBot->submitted === [], 'unapplied edits wait for Apply');
+unset($syncBot->pacState['managed_nodes'][$id]['lists']['block']['routes']['full:draft.example']);
+$syncBot->pacState['managed_nodes'][$id]['lists_checked'] = 0;
+$sync($id);
+$sent = $syncBot->submitted[0]['value']['policy']['routes'] ?? [];
+$check(count($syncBot->submitted) === 1 && ($sent['block']['ip'] ?? []) === ['192.0.2.0/24', '203.0.113.0/24'], 'refreshed source resent through a normal job');
+// A refused automatic resend is not repeated for the same expansion.
+$syncBot->pacState['managed_nodes'][$id]['job'] = null;
+$syncBot->pacState['managed_nodes'][$id]['lists_checked'] = 0;
+$syncBot->submitted = [];
+$sync($id);
+$check($syncBot->submitted === [], 'the same refused expansion is not resent every hour');
+$syncBot->dat = ['lab' => ['192.0.2.0/24', '203.0.113.0/25']];
+$syncBot->pacState['managed_nodes'][$id]['lists_checked'] = 0;
+$sync($id);
+$check(count($syncBot->submitted) === 1, 'a changed source is tried again');
+echo "PASS hourly resync of refreshed sources\n";

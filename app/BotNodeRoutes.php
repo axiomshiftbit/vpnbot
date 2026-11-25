@@ -3,6 +3,9 @@
 /** A node list that cannot be expanded or sent; the message names the reason for the admin. */
 class NodeRoutesException extends RuntimeException {}
 
+/** A configure request named lists by digest and the node refused it; the caller resends them in full. */
+class NodeListsDigestException extends RuntimeException {}
+
 /**
  * Shared Block and WARP lists of a managed node. They route all traffic the node
  * receives: main-bot users, external panels and other bots. Entries follow the
@@ -64,10 +67,23 @@ trait BotNodeRoutes
         });
     }
 
+    /**
+     * Entries past which both lists can no longer fit the node's 3 MiB: even the shortest
+     * entry costs 15 bytes there. Stopping early keeps large sets and .dat categories from
+     * exhausting PHP memory before the size check.
+     */
+    public const NODE_ROUTES_MAX_ENTRIES = 210000;
+
     /** Matcher lists for the node. A broken source must never become a smaller list silently. */
-    private function nodeRoutesParts(array $list): array
+    private function nodeRoutesParts(array $list, int &$budget = self::NODE_ROUTES_MAX_ENTRIES): array
     {
         $entries = array_filter($list['routes']);
+        // Charge only new unique entries: overlapping sets and categories count once.
+        $spend = static function (int $added) use (&$budget) {
+            $budget -= $added;
+            if ($budget < 0) throw new NodeRoutesException('size');
+        };
+        $spend(count($entries));
         foreach ($list['rulesets'] as $url => $set) {
             if (!is_array($set) || empty($set['on'])) continue;
             // The node has no copy of the set: refresh it at most daily when applying; a failed refresh keeps the last entries.
@@ -78,14 +94,21 @@ trait BotNodeRoutes
             }
             $items = $cache['entries'] ?? [];
             if (!$items) throw new NodeRoutesException('set');
+            $before = count($entries);
             foreach ($items as $entry) $entries[$entry] = 1;
+            $spend(count($entries) - $before);
+            unset($items, $cache);
         }
         foreach (array_keys($entries) as $raw) {
             $entry = $this->classifyRouteEntry((string) $raw);
             if (!in_array($entry['kind'], ['ext', 'extip', 'geosite', 'geoip'], true)) continue;
             unset($entries[$raw]);
             try { $expanded = $this->nodePolicyDat($entry); } catch (Throwable $e) { throw new NodeRoutesException('dat'); }
+            // The reference (already removed, charged above) is replaced by its new entries.
+            $before = count($entries);
             foreach ($expanded as $value) $entries[$value] = 1;
+            $spend(count($entries) - $before - 1);
+            unset($expanded);
         }
         $parts = [];
         foreach (array_keys($entries) as $raw) {
@@ -104,9 +127,10 @@ trait BotNodeRoutes
     {
         $status = $node['status'] ?? [];
         $lists = $this->nodeRoutesSource($node);
+        $budget = self::NODE_ROUTES_MAX_ENTRIES;
         if (!empty($status['shared_routes'])) {
             $routes = [];
-            foreach (self::NODE_ROUTE_KINDS as $kind) if ($parts = $this->nodeRoutesParts($lists[$kind])) $routes[$kind] = $parts;
+            foreach (self::NODE_ROUTE_KINDS as $kind) if ($parts = $this->nodeRoutesParts($lists[$kind], $budget)) $routes[$kind] = $parts;
             $policy = ['routes' => $routes];
         } elseif (!empty($status['named_policy'])) {
             $parts = $this->nodeRoutesParts($lists['block']);
@@ -165,7 +189,8 @@ trait BotNodeRoutes
             'set' => $this->t('Набор .srs/.mrs недоступен, а сохранённой копии нет. Проверьте ссылку или выключите набор.', 'An .srs/.mrs set is unreachable and has no saved copy. Check the URL or disable the set.'),
             'dat' => $this->t('Категория geosite/geoip/ext недоступна: нет файла .dat или категории. Проверьте источники .dat основного бота.', 'A geosite/geoip/ext category is unavailable: the .dat file or category is missing. Check the main bot’s .dat sources.'),
             'entry' => $this->t('В списке есть запись, которую нельзя передать ноде. Удалите её.', 'The list has an entry that cannot be sent to the node. Delete it.'),
-            'size' => $this->t('Списки вместе больше 3 МБ. Уменьшите их.', 'The lists exceed 3 MB together. Make them smaller.'),
+            'size' => $this->t('Списки после разворачивания категорий .dat и наборов больше лимита ноды (3 МБ, около 150–200 тыс. записей). Уменьшите их или выключите крупные наборы и категории.',
+                'After expanding .dat categories and sets the lists exceed the node limit (3 MB, about 150–200 thousand entries). Make them smaller or disable large sets and categories.'),
             'frame' => $this->t('Превышен лимит ноды. Допускается до 200 000 запретов IP основного сервера и до 4 МиБ на всё задание вместе со списками.', 'Node limit exceeded. Up to 200,000 controller IP blocks and 4 MiB for the complete request including the lists are supported.'),
             'probe' => $this->t('«Блокировка» задевает www.gstatic.com: через него основной бот проверяет ноду, и каждое применение откатится. Уберите запись, которая его блокирует.',
                 'Block covers www.gstatic.com: the main bot checks the node through it, so every apply would roll back. Remove the entry that blocks it.'),
@@ -175,7 +200,8 @@ trait BotNodeRoutes
 
     private static function nodePolicyActive(array $policy): bool
     {
-        return !empty($policy['routes']) || !empty($policy['lists']) || !empty($policy['controller_ips']) || !empty($policy['controller_ips_digest']);
+        return !empty($policy['routes']) || !empty($policy['lists']) || !empty($policy['controller_ips']) || !empty($policy['controller_ips_digest'])
+            || (isset($policy['routes_digest']) && $policy['routes_digest'] !== self::nodeRoutesDigest([]));
     }
 
     public function nodeRoutesMenu(string $id, string $kind, int $page = 0, string $notice = ''): void
@@ -198,13 +224,15 @@ trait BotNodeRoutes
                 ? $this->t('⚠️ Код ноды не поддерживает этот список. Обновите код ноды.', '⚠️ The node code does not support this list. Update the node code.')
                 : $this->t('⚠️ Старый код ноды применит только блокировку. Обновите код ноды.', '⚠️ Older node code applies only the block list. Update the node code.');
         } elseif ($kind === 'warp' && (($node['draft'] ?? $status['options'] ?? [])['warp_mode'] ?? 'off') === 'off') {
-            $text[] = $this->t('⚠️ WARP ноды выключен: записи этого списка идут напрямую. Включите его в «⚙️ Xray и подключение» → «WARP ноды».',
-                '⚠️ Node WARP is off: entries of this list go directly. Enable it in ⚙️ Xray and connection → Node WARP.');
+            $text[] = $this->t('⚠️ WARP ноды выключен: записи этого списка идут напрямую. Включите его кнопкой «🌐 WARP» в карточке ноды.',
+                '⚠️ Node WARP is off: entries of this list go directly. Enable it with the 🌐 WARP button in the node card.');
         }
         if ($kind === 'warp' && ($status['options']['warp_mode'] ?? 'off') !== 'off' && (int) ($status['options']['family'] ?? 4) === 4) {
             $text[] = $this->t('В режиме ForceIPv4 адреса IPv6 из списка WARP блокируются.', 'In ForceIPv4 mode IPv6 destinations in the WARP list are blocked.');
         }
         if ($this->nodeRoutesPending($node)) $text[] = $this->t('Есть изменения, которые ещё не применены на ноде.', 'Some changes are not applied on the node yet.');
+        $text[] = $this->t('Оба списка вместе после разворачивания категорий .dat и наборов — до 3 МБ (около 150–200 тыс. записей). Обновлённые .dat и наборы применённых списков нода получает сама: бот сверяет их раз в час.',
+            'Both lists together, after expanding .dat categories and sets, may take up to 3 MB (about 150–200 thousand entries). The node receives refreshed .dat files and sets of applied lists by itself: the bot compares them hourly.');
         if ($notice !== '') $text[] = '<b>' . self::esc($notice) . '</b>';
         $rows = [];
         foreach ($list['routes'] as $entry => $on) $rows[] = ['E', (string) $entry, !empty($on)];
@@ -370,6 +398,31 @@ trait BotNodeRoutes
         } catch (Throwable $e) {
             $this->nodeRoutesMenu($id, $kind, 0, $this->t('Список не очищен. Обновите экран.', 'The list was not cleared. Refresh the screen.'));
         }
+    }
+
+    /**
+     * Refreshed .dat files and sets change the expanded lists without an edit. Hourly, resend
+     * the applied lists when their expansion no longer matches what the node runs. Unapplied
+     * edits, drafts and running jobs are left alone: the change goes through the usual probe.
+     */
+    private function syncNodeRoutes(string $id): void
+    {
+        $this->managedNodeLocked($id, function () use ($id) {
+            $node = $this->managedNodes()[$id] ?? [];
+            if (empty($node['connected']) || !empty($node['job']) || isset($node['draft']) || !empty($node['recovery_required'])
+                || !empty($node['status']['pending']) || empty($node['status']['shared_routes'])
+                || time() - (int) ($node['lists_checked'] ?? 0) < 3600) return;
+            $this->managedNodeWrite($id, static function (&$saved) { if ($saved) $saved['lists_checked'] = time(); });
+            $running = $node['status']['options']['policy']['routes_digest'] ?? null;
+            if (!is_string($running) || $this->nodeRoutesPending($node)) return;
+            try { $routes = $this->nodeRoutesPolicy($node, null)['routes'] ?? []; }
+            catch (Throwable $error) { return; }
+            $digest = self::nodeRoutesDigest($routes);
+            // A refused expansion is not retried until a source changes it again.
+            if ($digest === $running || $digest === ($node['lists_auto_digest'] ?? null)) return;
+            $this->managedNodeWrite($id, static function (&$saved) use ($digest) { if ($saved) $saved['lists_auto_digest'] = $digest; });
+            $this->managedNodeSubmitLocked($id, 'configure', $node['status']['options'], $node['status']['generation'] ?? null);
+        });
     }
 
     /** Sends both lists with the current settings (and the pending settings draft, if any). */

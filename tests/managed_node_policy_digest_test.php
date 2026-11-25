@@ -135,8 +135,16 @@ file_put_contents($dat->dir . '/cat.dat', 'v1');
 @unlink(sys_get_temp_dir() . '/vpnbot-controller-ips.json');
 $dat->categories = ['ru' => ['10.1.0.0/16', '10.0.0.0/16']];
 $config = ['routing' => ['rules' => [['ruleTag' => 'vpnbot:routes:block:ip', 'ip' => ['ext:cat.dat:ru', '10.9.0.0/16']]]]];
-$digestOf = Closure::bind(fn(array $config) => $this->controllerBlockedIpsDigest($config), $dat, Bot::class);
-$full = Closure::bind(fn(array $config) => $this->controllerBlockedIps($config), $dat, Bot::class);
+// These checks count expansions behind the controller digest cache; the per-category
+// node .dat cache (managed_node_dat_cache_test.php) is cleared before each count.
+$digestOf = Closure::bind(function (array $config) {
+    foreach (glob(sys_get_temp_dir() . '/vpnbot-node-dat-*.json') ?: [] as $file) @unlink($file);
+    return $this->controllerBlockedIpsDigest($config);
+}, $dat, Bot::class);
+$full = Closure::bind(function (array $config) {
+    foreach (glob(sys_get_temp_dir() . '/vpnbot-node-dat-*.json') ?: [] as $file) @unlink($file);
+    return $this->controllerBlockedIps($config);
+}, $dat, Bot::class);
 $first = $digestOf($config);
 $check($first === hash('sha256', implode("\n", $full($config))) && count($dat->tools) === 2, 'digest matches the expanded list');
 $dat->tools = [];

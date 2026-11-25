@@ -371,7 +371,7 @@ try {
     $english = $b->menuHelpContent('warp')[2];
     $b->language = 'ru';
     [$title, $back, $pages] = $b->menuHelpContent('warp');
-    $check($title === 'WARP' && $back === '/warp' && count($pages) === 5 && count($english) === 5, 'в справке WARP пять страниц, возврат в меню WARP');
+    $check($title === 'WARP' && $back === '/warp' && count($pages) === 6 && count($english) === 6, 'в справке WARP шесть страниц, возврат в меню WARP');
     foreach (['Режим: WireGuard или MASQUE', 'MASQUE: транспорт, ключ и неполадки'] as $name) {
         $check(isset($pages[$name]), "страница справки есть: $name");
     }

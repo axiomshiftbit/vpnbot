@@ -113,7 +113,7 @@ endpoint() {
 }
 
 # Конфиг прокси: SOCKS на входе, выход в WARP по MASQUE.
-#   config <порт> [h3|h2] [fwmark] [адрес прослушивания]
+#   config <порт> [h3|h2] [fwmark] [адрес прослушивания] [порт узла WARP]
 # fwmark нужен только пробному подключению (check): при поднятом WireGuard он
 # выводит пакеты мимо туннеля, как это делает wg-quick для своих.
 config() {
@@ -121,8 +121,11 @@ config() {
     alpn=${2:-h3}
     mark=${3:-}
     listen=${4:-0.0.0.0}
+    remote=${5:-443}
     exists || fail 'no MASQUE account'
     case "$port" in ''|*[!0-9]*) fail 'bad port' ;; esac
+    # Официальные порты MASQUE; по HTTP/2 — только TCP 443.
+    case "$alpn:$remote" in h2:443|h3:443|h3:500|h3:1701|h3:4500|h3:4443|h3:8443|h3:8095) ;; *) fail 'bad WARP port' ;; esac
     case "$mark" in *[!0-9]*) fail 'bad mark' ;; esac
     address=$(endpoint) || fail 'bad endpoint'
     local4=$(jq -r '.address_v4 // empty' "$DIR/device.json")
@@ -132,7 +135,7 @@ config() {
     jq -n \
         --arg listen "$listen" --argjson port "$port" --arg address "$address" \
         --rawfile key "$DIR/key.pem" --arg public "$(jq -r '.endpoint_public_key' "$DIR/device.json")" \
-        --arg local4 "$local4" --arg alpn "$alpn" --arg mark "$mark" --arg sni "$SNI" '
+        --arg local4 "$local4" --arg alpn "$alpn" --arg mark "$mark" --arg sni "$SNI" --argjson remote "$remote" '
         {
             log: {loglevel: "warning", access: "none"},
             inbounds: [{
@@ -141,7 +144,7 @@ config() {
             }],
             outbounds: [{
                 protocol: "masque",
-                settings: {address: $address, port: 443, remoteDNS: ["1.1.1.1", "1.0.0.1"]},
+                settings: {address: $address, port: $remote, remoteDNS: ["1.1.1.1", "1.0.0.1"]},
                 streamSettings: ({
                     method: "masque",
                     # Пустой User-Agent, как у официального клиента WARP: с 26.10.17
@@ -274,6 +277,7 @@ rollback() {
 # вместе с ним (pkill -x warp-socks).
 check() {
     alpn=${1:-h3}
+    remote=${2:-443}
     exists || fail 'no MASQUE account'
     mark=''
     wgmark=$(wg show wgcf-profile fwmark 2>/dev/null || true)
@@ -300,7 +304,7 @@ check() {
         # shellcheck disable=SC2086
         iptables -t mangle -I $reply 2>/dev/null || reply=''
     fi
-    if config "$CHECK_PORT" "$alpn" "$mark" 127.0.0.1 > "$conf" && "$probe" run -test -config "$conf" >/dev/null 2>&1; then
+    if config "$CHECK_PORT" "$alpn" "$mark" 127.0.0.1 "$remote" > "$conf" && "$probe" run -test -config "$conf" >/dev/null 2>&1; then
         "$probe" run -config "$conf" >/dev/null 2>&1 &
         pid=$!
         attempt=0
@@ -334,5 +338,5 @@ case "${1:-}" in
     rollback) rollback ;;
     check) shift; check "$@" ;;
     status) status ;;
-    *) fail 'usage: warp_masque.sh supported|exists|current|endpoint|config|register|commit|rollback|check|status' ;;
+    *) fail 'usage: warp_masque.sh supported|exists|current|endpoint|config|register|commit|rollback|check [h3|h2] [port]|status' ;;
 esac

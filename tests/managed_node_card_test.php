@@ -83,7 +83,7 @@ try {
     $check(str_contains($text, 'работает 3 д 4 ч') && str_contains($text, 'нагрузка 0,12 / 2 CPU') && str_contains($text, 'память: свободно 1 GB из 2 GB')
         && str_contains($text, 'сеть с загрузки: ↓1 GB ↑2 GB'), 'card shows node server metrics');
     $check(str_contains($text, '🟢 основной бот <code>198.51.100.7</code> — TCP 2') && str_contains($text, '🟢 VPN-сервер <code>198.51.100.8</code> — UDP WG/AWG')
-        && str_contains($text, '⚫ VPN-сервер <code>198.51.100.9</code> — нет соединений'), 'card shows each permitted server online state');
+        && str_contains($text, '⚫ без соединений: <code>198.51.100.9</code>'), 'card shows active servers and folds idle ones');
     $check(!str_contains($text, '<b>x'), 'invalid server address is not rendered');
     $check(str_contains($text, 'Внутри AmneziaWG (локально): TCP 1') && str_contains($text, 'вне списка: 3'), 'card shows local and unexpected connections');
     $check(str_contains($text, 'YouTube видит RU') && str_contains($text, 'выход FI') && str_contains($text, '45 мс') && str_contains($text, 'Доступность за 24 ч'), 'card shows the main bot traffic check with YouTube country');
@@ -108,7 +108,7 @@ try {
     $check(str_contains($text, 'Кнопки обновления обновляют и код, и образы') && str_contains($buttons, '/nodeExport aabbccdd') && str_contains($buttons, '/nodeImport aabbccdd'), 'maintenance shows version and both file buttons');
     $b->language = 'en';
     $text = $card($b);
-    $check(str_contains($text, 'Connected servers') && str_contains($text, 'Main bot users routed') && mb_strlen($text) < 4096, 'English card fits Telegram');
+    $check(str_contains($text, 'Connected servers') && str_contains($text, '<b>Users</b>') && str_contains($text, 'Routed through the node') && mb_strlen($text) < 4096, 'English card fits Telegram');
     $b->language = 'ru';
 
     // Download: fresh snapshot, private chat, file bound to the controller key.

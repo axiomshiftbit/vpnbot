@@ -123,16 +123,18 @@ trait BotNodePolicy
         return $pac;
     }
 
-    private function withControllerIps(array $options, array $ips): array
+    /** $running: the digest of the list the node runs, when it accepts the list by digest. */
+    private function withControllerIps(array $options, array $ips, ?string $running = null): array
     {
         $policy = $options['policy'] ?? ['lists' => [], 'bindings' => []];
-        $same = self::policyIpsDigest($policy) === self::controllerIpsDigest($ips);
-        // The node needs the expanded list itself; the stored digest only identifies it.
-        unset($policy['controller_ips_digest']);
-        if ($ips) $policy['controller_ips'] = $ips;
-        else unset($policy['controller_ips']);
+        $digest = self::controllerIpsDigest($ips);
+        $same = self::policyIpsDigest($policy) === $digest;
+        unset($policy['controller_ips_digest'], $policy['controller_ips']);
+        // The node keeps the list it runs when named by digest; otherwise it needs the list itself.
+        if ($ips && $same && $running !== null && $running === $digest) $policy['controller_ips_digest'] = $digest;
+        elseif ($ips) $policy['controller_ips'] = $ips;
         if (!$same) $policy['revision'] = bin2hex(random_bytes(16));
-        if ($ips || !empty($policy['bindings']) || !empty($policy['lists']) || !empty($policy['routes'])) $options['policy'] = $policy;
+        if ($ips || !empty($policy['bindings']) || !empty($policy['lists']) || !empty($policy['routes']) || isset($policy['routes_digest'])) $options['policy'] = $policy;
         else unset($options['policy']);
         return $options;
     }
@@ -184,13 +186,31 @@ trait BotNodePolicy
         if (!preg_match('~^[a-zA-Z0-9_.-]+\.dat$~D', $file) || !preg_match('~^[a-zA-Z0-9_-]+$~D', $category)
             || $this->datCategoryError($entry) !== null) throw new InvalidArgumentException();
         $path = $this->datPath($this->datResolve($file));
+        // Each apply expands every category again (seconds for large files). Cache the result by
+        // the file's identity; a refreshed .dat gets a new key. As with the controller IP digest,
+        // only a root-owned file is trusted in the shared temporary directory (the bot runs as root).
+        clearstatcache(true, $path);
+        $stat = @stat($path);
+        $cache = $stat === false ? null : sys_get_temp_dir() . '/vpnbot-node-dat-'
+            . hash('sha256', json_encode([$path, $stat['size'], $stat['mtime'], $stat['ctime'], $stat['ino'], $category, $ip])) . '.json';
+        if ($cache !== null && is_file($cache) && !is_link($cache) && @fileowner($cache) === 0) {
+            $saved = @json_decode((string) @file_get_contents($cache), true, 32);
+            if (is_array($saved) && array_is_list($saved) && $saved) return $saved;
+        }
         $tmp = tempnam(sys_get_temp_dir(), 'node-list-');
         if ($tmp === false) throw new RuntimeException();
         try {
             $cmd = ['python3', __DIR__.'/exit_ruleset.py', 'dat', $path, $tmp, $ip ? 'ip' : 'domain', $category];
             if (!$this->exitRulesetTool($cmd)) throw new InvalidArgumentException();
-            return json_decode(file_get_contents($tmp), true, 32, JSON_THROW_ON_ERROR);
-        } finally { unlink($tmp); }
+            $result = json_decode(file_get_contents($tmp), true, 32, JSON_THROW_ON_ERROR);
+            if ($cache !== null && is_array($result) && $result) {
+                foreach (glob(sys_get_temp_dir() . '/vpnbot-node-dat-*.json') ?: [] as $old) {
+                    if (@filemtime($old) < time() - 2 * 86400 && @fileowner($old) === 0) @unlink($old);
+                }
+                if (@rename($tmp, $cache)) $tmp = null;
+            }
+            return $result;
+        } finally { if ($tmp !== null) @unlink($tmp); }
     }
 
 }

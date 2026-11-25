@@ -81,7 +81,8 @@ $check(!in_array('confirm', $bot->events) && $bot->pacState['exits']['aabbccdd']
 $check($bot->pacState['managed_nodes']['aabbccdd']['job']['phase'] === 'wait_rollback', 'wait for durable node rollback');
 $bot->remoteStatus['generation'] = str_repeat('a', 32); $bot->remoteStatus['pending'] = null;
 $bot->managedNodePoll('aabbccdd');
-$check($bot->pacState['managed_nodes']['aabbccdd']['job'] === null && $bot->pacState['managed_nodes']['aabbccdd']['error'] === 'rolled_back', 'rollback recovered after controller restart');
+// The rollback followed a failed traffic check: the card keeps that reason.
+$check($bot->pacState['managed_nodes']['aabbccdd']['job'] === null && $bot->pacState['managed_nodes']['aabbccdd']['error'] === 'probe_failed', 'rollback recovered after controller restart');
 
 $bot = new ManagedFixtureBot(); $bot->lostConfirm = true;
 try { $bot->managedNodePoll('aabbccdd'); } catch (RuntimeException $error) {}
@@ -91,10 +92,16 @@ $bot->managedNodePoll('aabbccdd');
 $check(!in_array('confirm', $bot->events) && $bot->pacState['managed_nodes']['aabbccdd']['job'] === null, 'confirmed generation recovered without double confirmation');
 
 $bot = new ManagedFixtureBot(); $bot->snapshotPass = false;
-try { $bot->managedNodePoll('aabbccdd'); } catch (RuntimeException $error) {}
-$check($bot->pacState['managed_nodes']['aabbccdd']['job'] !== null, 'failed snapshot is retried');
-$bot->snapshotPass = true; $bot->managedNodePoll('aabbccdd');
-$check($bot->pacState['managed_nodes']['aabbccdd']['job'] === null, 'backup retry completes confirmed job');
+$bot->managedNodePoll('aabbccdd');
+// The confirmed result is reported at once; the copy is retried without holding the screen.
+$check($bot->pacState['managed_nodes']['aabbccdd']['job'] === null && !empty($bot->pacState['managed_nodes']['aabbccdd']['backup_stale'])
+    && !isset($bot->pacState['managed_nodes']['aabbccdd']['backup_time']), 'failed snapshot does not hold the confirmed job');
+$bot->pacState['managed_nodes']['aabbccdd']['status']['pending'] = null;
+Closure::bind(fn() => $this->managedNodeBackupRetry('aabbccdd'), $bot, Bot::class)();
+$check(!empty($bot->pacState['managed_nodes']['aabbccdd']['backup_stale']), 'snapshot still failing stays stale');
+$bot->snapshotPass = true;
+Closure::bind(fn() => $this->managedNodeBackupRetry('aabbccdd'), $bot, Bot::class)();
+$check(empty($bot->pacState['managed_nodes']['aabbccdd']['backup_stale']) && isset($bot->pacState['managed_nodes']['aabbccdd']['backup_time']), 'backup retry saves the copy');
 
 $bot = new ManagedFixtureBot(); $bot->remoteJob = ['state' => 'running'];
 $bot->managedNodePoll('aabbccdd');
@@ -120,4 +127,27 @@ foreach (['ru', 'en'] as $language) {
     $bot->managedNodeApply('aabbccdd');
     $check(in_array('submit', $bot->events) && !isset($bot->pacState['managed_nodes']['aabbccdd']['draft']), 'Apply submits one typed job');
 }
+// A failed job keeps the node's reason (no error text).
+$failed = new ManagedFixtureBot();
+$failed->remoteJob = ['state' => 'failed', 'error' => 'operation_failed', 'reason' => 'config_too_large'];
+$failed->remoteStatus['pending'] = null;
+$failed->managedNodePoll('aabbccdd');
+$check(($failed->pacState['managed_nodes']['aabbccdd']['error_reason'] ?? '') === 'config_too_large', 'failure reason recorded');
+$failed->managedNodeMenu('aabbccdd');
+$check(str_contains(end($failed->screens)[0], 'больше лимита ноды'), 'card names the reason');
+
+// Running jobs are polled between maintenance steps: not before the node can have applied
+// anything, then at most every five seconds.
+$tick = new ManagedFixtureBot();
+$tick->pacState['managed_nodes']['aabbccdd']['job']['started'] = time();
+$tick->managedNodeJobsTick();
+$check(!in_array('job', $tick->events, true), 'a fresh job is not polled yet');
+$tick = new ManagedFixtureBot();
+$tick->pacState['managed_nodes']['aabbccdd']['job']['started'] = time() - 20;
+$tick->managedNodeJobsTick();
+$check(in_array('confirm', $tick->events, true) && $tick->pacState['managed_nodes']['aabbccdd']['job'] === null, 'a due job is confirmed between steps');
+$tick->events = [];
+$tick->pacState['managed_nodes']['aabbccdd']['job'] = ['id' => str_repeat('d', 32), 'operation' => 'configure', 'started' => time() - 20, 'phase' => 'waiting', 'before' => [], 'origin' => []];
+$tick->managedNodeJobsTick();
+$check($tick->events === [], 'polled at most every five seconds');
 echo "PASS $checks managed node controller/menu checks\n";

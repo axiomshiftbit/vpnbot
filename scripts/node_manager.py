@@ -18,12 +18,15 @@ import uuid
 # Installed files and their parents are root-owned; -I ignores Python environment.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import node_config as config
+import node_policy
+import node_warp
 import node_state as state
 from node_runtime import Runtime, command
 
 ROOT = Path('/var/lib/vpnbot-node')
 DEPLOYMENT = Path('/etc/vpnbot-node/deployment.json')
-OPERATIONS = ('configure', 'peers', 'rotate', 'restart', 'rollback', 'restore', 'update', 'upgrade', 'renew', 'renew_force', 'certificate_delete')
+OPERATIONS = ('configure', 'peers', 'rotate', 'restart', 'rollback', 'restore', 'update', 'upgrade', 'renew', 'renew_force', 'certificate_delete',
+              'warp_account')
 # Full update: vpnbot-node-upgrade.service installs the code, then the worker the images.
 UPGRADE_UNIT = 'vpnbot-node-upgrade.service'
 
@@ -172,6 +175,12 @@ def operation(request):
     elif name in ('update', 'upgrade'):
         if value not in ('latest', 'dev'):
             raise ValueError('invalid update channel')
+    elif name == 'warp_account':
+        # A new WARP account: free, or with a WARP+ key that must be accepted.
+        if not isinstance(value, dict) or value.get('action') not in ('register', 'license') \
+                or set(value) != ({'action', 'key'} if value.get('action') == 'license' else {'action'}) \
+                or (value['action'] == 'license' and (not isinstance(value['key'], str) or not node_warp.LICENSE.fullmatch(value['key']))):
+            raise ValueError('invalid WARP account request')
     elif value is not None:
         raise ValueError('operation takes no parameters')
     result = {'operation': name, 'value': value}
@@ -180,6 +189,15 @@ def operation(request):
             raise ValueError('invalid base generation')
         result['generation'] = request['generation']
     return result
+
+
+FAILURE_STAGES = ('warp', 'compile', 'core_test', 'firewall', 'start', 'warp_register', 'certificate')
+
+
+def failure_reason(error, stage):
+    if isinstance(error, ValueError) and str(error) in ('snapshot exceeds size limit', 'compiled destination policy too large'):
+        return 'config_too_large'
+    return stage if stage in FAILURE_STAGES else 'unexpected'
 
 
 class Manager:
@@ -257,6 +275,14 @@ class Manager:
                         found = True
                 if not found:
                     raise ValueError('peer no longer exists')
+        elif name == 'warp_account':
+            if value['options'].get('warp_mode', 'off') == 'off':
+                raise ValueError('WARP is disabled')
+            # The new account lives in its own directory: a rollback returns to the old one.
+            account = secrets.token_hex(8)
+            self.runtime.stage = 'warp_register'
+            self.runtime.warp_register(value, account, data.get('key'))
+            value['identity']['warp_account'] = account
         elif name == 'restore':
             value = data
         elif name == 'rollback':
@@ -314,14 +340,23 @@ class Manager:
         return self.apply(value, bundle) | certificate_result
 
     def certificate(self, options, force=False):
+        self.runtime.stage = 'certificate'
         if force:
             return self.runtime.certificate(options['domain'], options.get('domain_aliases', []), force=True)
         if options.get('domain_aliases'):
             return self.runtime.certificate(options['domain'], options['domain_aliases'])
         return self.runtime.certificate(options['domain'])
 
+    def resolve_lists(self, request):
+        """Fill the lists a configure request names by digest from the running generation."""
+        value = request.get('value') if isinstance(request, dict) and request.get('operation') == 'configure' else None
+        if not isinstance(value, dict) or not isinstance(value.get('policy'), dict):
+            return request
+        current = self.store.load()['options'].get('policy')
+        return dict(request, value=dict(value, policy=node_policy.resolve(value['policy'], current)))
+
     def submit(self, request):
-        request = operation(request)
+        request = operation(self.resolve_lists(request))
         if 'generation' in request and request['generation'] != self.store.current():
             raise ValueError('node generation changed')
         job = self.store.read('job.json')
@@ -348,12 +383,14 @@ class Manager:
             return  # The code phase belongs to the upgrade unit.
         job.update(state='running', time=int(time.time()))
         state.atomic(self.store.root/'job.json', state.encode(job))
+        self.runtime.stage = None
         try:
             result = self.execute(request)
             job.update(state='done', result=result)
-        except Exception:
-            # No exception text: subprocess output and input can contain keys.
-            job.update(state='failed', error='operation_failed')
+        except Exception as error:
+            # No exception text: subprocess output and input can contain keys. The
+            # stage it failed in tells the controller what to check.
+            job.update(state='failed', error='operation_failed', reason=failure_reason(error, getattr(self.runtime, 'stage', None)))
         finally:
             job['time'] = int(time.time())
             state.atomic(self.store.root/'job.json', state.encode(job))
@@ -397,7 +434,7 @@ class Manager:
             raise ValueError('invalid RPC request')
         action = request['action']
         fields = {'ping': set(), 'status': set(), 'tls_probe': set(), 'backup': set(), 'profile': {'peer'},
-                  'confirm': {'nonce'}, 'submit': {'request'}, 'job': {'id'}}
+                  'confirm': {'nonce'}, 'submit': {'request'}, 'job': {'id'}, 'warp_info': set(), 'routes': set()}
         if action not in fields or set(request) != fields[action] | {'action'}:
             raise ValueError('unknown action or fields')
         if action == 'ping':
@@ -413,9 +450,19 @@ class Manager:
                 host |= connections(status.get('sources') or [], options.get('vpn_sources') or [])
             except Exception:
                 host = {}
-            return status | {'code': code, 'host': host, 'warp_egress': True, 'shared_routes': True, 'controller_ip_guard': True}
+            return status | {'code': code, 'host': host, 'warp_egress': True, 'shared_routes': True, 'controller_ip_guard': True,
+                             'policy_summary': True, 'warp_account': True}
         if action == 'tls_probe':
             return self.runtime.tls_probe()
+        if action == 'routes':
+            # The running generation's Block and WARP lists: status carries only their digest.
+            policy = self.store.load()['options'].get('policy') or {}
+            if 'bindings' in policy:
+                policy = node_policy.migrate(policy)
+            return {'routes': policy.get('routes', {})}
+        if action == 'warp_info':
+            value = self.store.load()
+            return node_warp.info(value['options'], self.store.root, value['identity'].get('warp_account'))
         if action == 'backup':
             pending = self.store.pending()
             return self.store.load(pending['before'] if pending else None)
@@ -433,6 +480,7 @@ class Manager:
             self.store.confirm(request['nonce'])
             # Confirmed: only the current generation's VPNBot images are kept.
             self.runtime.prune_images()
+            self.runtime.prune_warp_accounts()
             return {'confirmed': True}
         if action == 'submit':
             return self.submit(request['request'])
@@ -469,6 +517,11 @@ def main():
                 or state.policy_size(request['request']) != state.POLICY_BYTES):
             raise ValueError('invalid named policy frame')
     store = state.Store(ROOT)
+    if mode == 'rpc' and isinstance(request, dict) and request.get('action') == 'job':
+        # Read-only: job.json is replaced atomically. Answer while the worker holds the
+        # lock for the running job; a refusal there only made the controller wait.
+        sys.stdout.buffer.write(state.encode({'ok': True, 'result': Manager(store, None).rpc(request)})+b'\n')
+        return
     descriptor = os.open(ROOT/'lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
         # Workers can start before submit releases its lock; boot can race
@@ -482,7 +535,8 @@ def main():
         if mode == 'rpc':
             result = manager.rpc(request)
             limit = state.MAX_BYTES
-            if request.get('action') in ('status', 'backup') and state.policy_size(result) == state.POLICY_BYTES:
+            if request.get('action') in ('status', 'backup') and state.policy_size(result) == state.POLICY_BYTES \
+                    or request.get('action') == 'routes':
                 limit = state.POLICY_BYTES + 1024
             sys.stdout.buffer.write(state.encode({'ok': True, 'result': result}, limit)+b'\n')
         elif mode == 'worker':
@@ -515,6 +569,10 @@ if __name__ == '__main__':
         print('{"ok":false,"error":"busy"}')
         # The 15-second recovery pass simply runs again; a held lock is no failure.
         sys.exit(0 if sys.argv[1:] == ['watch'] else 1)
+    except ValueError as error:
+        # A digest of lists this node no longer runs: the controller resends them in full.
+        print('{"ok":false,"error":"lists_missing"}' if str(error) == 'lists_missing' else '{"ok":false,"error":"operation_failed"}')
+        sys.exit(1)
     except Exception:
         print('{"ok":false,"error":"operation_failed"}')
         sys.exit(1)

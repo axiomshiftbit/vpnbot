@@ -42,6 +42,18 @@ print('{"ok":true,"result":{"schema":1}}')
             self.assertEqual(reply, {'schema': 1})
             self.assertEqual(counter.read_text(), '4')
 
+    def test_lists_missing_is_reported_once_and_distinctly(self):
+        # Nothing was queued: the controller resends the lists in full, the transport does not retry.
+        with tempfile.TemporaryDirectory() as tmp:
+            client = transport.Client('aabbccdd', Path(tmp)/'nodes')
+            counter = Path(tmp)/'calls'
+            code = ('from pathlib import Path\nimport sys\np=Path(sys.argv[1]);p.write_text(str(int(p.read_text())+1) if p.exists() else "1")\n'
+                    'print(\'{"ok":false,"error":"lists_missing"}\');sys.exit(1)\n')
+            with patch.object(client, 'ssh', return_value=[sys.executable, '-c', code, str(counter)]), \
+                    self.assertRaises(transport.ListsMissing):
+                client.request({'action': 'submit', 'request': {'operation': 'restart', 'value': None}}, target={})
+            self.assertEqual(counter.read_text(), '1')
+
     def test_busy_retries_are_bounded_and_ssh_failure_is_never_replayed(self):
         for action, status, expected in [('status', 1, 4), ('submit', 1, 4), ('confirm', 1, 1), ('submit', 255, 1)]:
             with tempfile.TemporaryDirectory() as tmp:

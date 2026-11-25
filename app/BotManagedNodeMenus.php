@@ -23,6 +23,8 @@ trait BotManagedNodeMenus
             'warp' => !empty($node['status']['warp_egress']), default => true,
         };
         if ($group !== 'root' && !$supported($group)) { $this->managedNodeMenu($id); return; }
+        // WARP has its own screen with status, ports and the account.
+        if ($group === 'warp') { $this->managedNodeWarp($id, $notice, "/nodeSettings $id"); return; }
         $options = $node['draft'] ?? $node['status']['options'] ?? [];
         if ($group !== 'root' && !ManagedNodeFields::groupActive($options, $group)) {
             $group = 'root';

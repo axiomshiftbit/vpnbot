@@ -60,7 +60,7 @@ def installed(store):
 
 # Modules copied to the node's code directory by node_setup.py --upgrade-code.
 MODULES = ('node_manager.py', 'node_runtime.py', 'node_config.py', 'node_xray.py', 'node_dpi.py', 'node_cover.py',
-           'node_wg.py', 'node_awg.py', 'node_warp.py', 'node_policy.py', 'warp_masque.sh', 'node_state.py', 'node_upgrade.py', 'image_bundle.py', 'node_code.py')
+           'node_wg.py', 'node_awg.py', 'node_warp.py', 'node_policy.py', 'node_geodat.py', 'warp_masque.sh', 'node_state.py', 'node_upgrade.py', 'image_bundle.py', 'node_code.py')
 LIB = Path('/usr/local/lib/vpnbot-node')
 INSTALLED = 'code-installed.json'
 

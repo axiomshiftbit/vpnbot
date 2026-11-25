@@ -13,6 +13,9 @@ import node_awg
 
 
 WARP_CORE_PORT = 18443
+# Cloudflare's published WARP ingress ports: the default first, then the fallbacks.
+# MASQUE over HTTP/2 uses TCP 443 only.
+WARP_PORTS = {'wireguard': (2408, 500, 1701, 4500), 'masque': (443, 500, 1701, 4500, 4443, 8443, 8095)}
 TRANSPORTS = ('reality', 'ws', 'grpc', 'xhttp', 'trojan-grpc')
 GRPC = ('grpc', 'trojan-grpc')
 CORES = {'origin': '/usr/bin/xray', 'origin2': '/usr/bin/xray-2', 'origin3': '/usr/bin/xray-3', 'fork': '/usr/bin/xray-smux'}
@@ -54,7 +57,7 @@ def settings(value):
     if isinstance(value, dict) and 'adguard' in value:
         # AdGuard Home was removed from nodes; older snapshots and controllers still carry it.
         value = {key: item for key, item in value.items() if key != 'adguard'}
-    if not isinstance(value, dict) or set(value) - {'connect_family', 'xray', 'cover', 'wireguard', 'amnezia', 'domain_aliases', 'vpn_sources', 'warp_mode', 'policy'} != {'transport', 'family', 'core', 'domain', 'mask'}:
+    if not isinstance(value, dict) or set(value) - {'connect_family', 'xray', 'cover', 'wireguard', 'amnezia', 'domain_aliases', 'vpn_sources', 'warp_mode', 'warp_port', 'warp_http', 'policy'} != {'transport', 'family', 'core', 'domain', 'mask'}:
         raise ValueError('invalid settings fields')
     if not isinstance(value['transport'], str) or not isinstance(value['core'], str) \
             or value['transport'] not in TRANSPORTS or value['core'] not in CORES \
@@ -74,6 +77,17 @@ def settings(value):
         raise ValueError('invalid WARP egress mode')
     if mode != 'off' and (value['family'] != 4 or result.get('wireguard', {}).get('active')):
         raise ValueError('WARP egress requires IPv4 egress and a VLESS, Trojan or Amnezia controller channel')
+    if mode == 'off':
+        # The WARP choices of a disabled mode have nothing to apply to.
+        result.pop('warp_port', None)
+        result.pop('warp_http', None)
+    else:
+        http = value.get('warp_http', 'h3')
+        if http not in ('h3', 'h2') or (http == 'h2' and mode != 'masque'):
+            raise ValueError('invalid WARP MASQUE transport')
+        if 'warp_port' in value and (type(value['warp_port']) is not int or value['warp_port'] not in WARP_PORTS[mode]
+                                     or (http == 'h2' and value['warp_port'] != 443)):
+            raise ValueError('not an official WARP port for this mode')
     if 'cover' in value and type(value['cover']) is not bool:
         raise ValueError('invalid cover site flag')
     if 'connect_family' in value and (type(value['connect_family']) is not int or value['connect_family'] not in (4, 6)):
@@ -162,8 +176,11 @@ def needs_certificate(options):
 
 
 def identity(value):
-    if not isinstance(value, dict) or set(value)-{'encryption', 'mldsa', 'cover_auth', 'wireguard', 'amnezia', 'external', 'warp_uuid'} != {'uuid', 'private', 'public', 'short_id', 'path'}:
+    if not isinstance(value, dict) or set(value)-{'encryption', 'mldsa', 'cover_auth', 'wireguard', 'amnezia', 'external', 'warp_uuid', 'warp_account'} != {'uuid', 'private', 'public', 'short_id', 'path'}:
         raise ValueError('invalid node identity')
+    # The WARP account directory this generation uses; absent: the account created before accounts had names.
+    if 'warp_account' in value and (not isinstance(value['warp_account'], str) or not re.fullmatch(r'[a-f0-9]{16}', value['warp_account'])):
+        raise ValueError('invalid WARP account')
     if not isinstance(value['uuid'], str) or str(uuid.UUID(value['uuid'])) != value['uuid']:
         raise ValueError('invalid client identity')
     if 'warp_uuid' in value and (not isinstance(value['warp_uuid'], str) or

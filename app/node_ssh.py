@@ -32,6 +32,10 @@ class NodeBusy(ValueError):
     """The node rejected this request before executing any operation."""
 
 
+class ListsMissing(ValueError):
+    """The node refused lists named by a digest it does not run; nothing was queued."""
+
+
 def policy_request(request):
     if not isinstance(request, dict) or request.get('action') != 'submit':
         return False
@@ -222,6 +226,9 @@ def run(args, data=b'', timeout=15, *, rpc=False, limit=LIMIT):
                 if isinstance(reply, dict) and set(reply) == {'ok', 'error'} \
                         and reply['ok'] is False and reply['error'] == 'busy':
                     raise NodeBusy('node_busy')
+                if isinstance(reply, dict) and set(reply) == {'ok', 'error'} \
+                        and reply['ok'] is False and reply['error'] == 'lists_missing':
+                    raise ListsMissing('lists_missing')
             raise ValueError('ssh_failed')
         return body
 
@@ -309,7 +316,7 @@ class Client:
             path = self.directory/'endpoint.json'
             trusted(path)
             target = endpoint(decode(path.read_bytes()))
-        if not isinstance(request, dict) or request.get('action') not in ('ping', 'status', 'tls_probe', 'backup', 'profile', 'confirm', 'submit', 'job'):
+        if not isinstance(request, dict) or request.get('action') not in ('ping', 'status', 'tls_probe', 'backup', 'profile', 'confirm', 'submit', 'job', 'warp_info', 'routes'):
             raise ValueError('request')
         args = self.ssh(target)
         if policy_request(request):
@@ -321,7 +328,7 @@ class Client:
         deadline = self.deadline
         # submit too: "busy" means the node refused before queueing anything, and
         # its one-second status/watch passes would otherwise fail a user's Apply.
-        attempts = 4 if request['action'] in ('ping', 'status', 'tls_probe', 'backup', 'profile', 'job', 'submit') else 1
+        attempts = 4 if request['action'] in ('ping', 'status', 'tls_probe', 'backup', 'profile', 'job', 'submit', 'warp_info', 'routes') else 1
         for attempt in range(attempts):
             remaining = deadline-time.monotonic()
             if remaining <= 0:
@@ -332,6 +339,9 @@ class Client:
                     result = decode(reply,POLICY_FRAME)
                     if len(reply) > LIMIT and snapshot_limit(result.get('result')) != POLICY_LIMIT:
                         raise ValueError('oversized metadata')
+                elif request['action'] == 'routes':
+                    # Only lists: the running generation's Block and WARP entries.
+                    result = decode(run(args,body,timeout=min(15,remaining),rpc=True,limit=POLICY_FRAME),POLICY_FRAME)
                 else:
                     result = decode(run(args, body, timeout=min(15, remaining), rpc=True))
                 break
@@ -577,6 +587,9 @@ def main():
 if __name__ == '__main__':
     try:
         main()
+    except ListsMissing:
+        print('{"ok":false,"error":"lists_missing"}')
+        sys.exit(1)
     except Exception:
         print('{"ok":false,"error":"node_connection_failed"}')
         sys.exit(1)

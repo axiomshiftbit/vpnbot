@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 import uuid
 
 from node_config_test import OPTIONS, HOST, KEYS, node
@@ -85,6 +86,119 @@ class NodeWarp(unittest.TestCase):
                      profile().replace('2408', '99999'), profile().replace('PrivateKey', 'Missing')):
             with self.assertRaises(ValueError):
                 node_warp.wireguard(text)
+
+    def test_official_ports_and_masque_transport(self):
+        self.assertEqual(node.settings(OPTIONS4 | {'warp_port': 500})['warp_port'], 500)
+        masque = OPTIONS4 | {'warp_mode': 'masque'}
+        self.assertEqual(node.settings(masque | {'warp_port': 8443, 'warp_http': 'h3'})['warp_port'], 8443)
+        self.assertEqual(node.settings(masque | {'warp_port': 443, 'warp_http': 'h2'})['warp_http'], 'h2')
+        for wrong in (OPTIONS4 | {'warp_port': 443}, OPTIONS4 | {'warp_port': '500'}, OPTIONS4 | {'warp_http': 'h2'},
+                      masque | {'warp_port': 2408}, masque | {'warp_port': 8443, 'warp_http': 'h2'}, masque | {'warp_http': 'h1'}):
+            with self.subTest(wrong=wrong), self.assertRaises(ValueError):
+                node.settings(wrong)
+        # A disabled WARP keeps no port choice that could fail a later apply.
+        self.assertNotIn('warp_port', node.settings(OPTIONS4 | {'warp_mode': 'off', 'warp_port': 500}))
+        for account in ('A' * 16, 'a' * 15, 1):
+            with self.subTest(account=account), self.assertRaises(ValueError):
+                node.identity(KEYS | {'warp_account': account})
+        self.assertEqual(node.identity(KEYS | {'warp_account': 'a' * 16})['warp_account'], 'a' * 16)
+
+    def test_account_directories_registration_and_port(self):
+        with tempfile.TemporaryDirectory(dir='/tmp') as temp:
+            root = Path(temp)
+            seen = []
+
+            def command(args, timeout=None, **_):
+                directory = Path(next(a for a in args if a.startswith('type=bind,src=') and a.endswith(',dst=/account')).split(',')[1][4:])
+                key = directory/'license.key'
+                seen.append((args, key.read_text() if key.exists() else None))
+                (directory/'wgcf-account.toml').write_text("device_id = 'device'\n")  # as wgcf register does
+                return subprocess.CompletedProcess(args, 0, profile().encode(), b'')
+            account = 'b' * 16
+            node_warp.register('wireguard', 'image', root, account, 'AAAA-BBBB-CCCC', command)
+            args, key = seen[-1]
+            self.assertEqual(key, 'AAAA-BBBB-CCCC')
+            self.assertFalse(any('AAAA-BBBB-CCCC' in a for a in args), 'the key never reaches process arguments')
+            self.assertFalse((root/'warp/accounts'/account/'license.key').exists())
+            with self.assertRaises(ValueError):
+                node_warp.register('wireguard', 'image', root, account, None, command)  # not an empty directory
+            for wrong in ('short', 'bad key with spaces', 'x' * 65):
+                with self.subTest(key=wrong), self.assertRaises(ValueError):
+                    node_warp.register('wireguard', 'image', root, 'c' * 16, wrong, command)
+            # The legacy account stays at warp/ itself; a named one in its own directory.
+            with unittest.mock.patch.object(node_warp, 'bootstrap_wireguard'):
+                warp = node_warp.outbound('wireguard', 'image', root, command, account, 4500)
+                node_warp.outbound('wireguard', 'image', root, command)
+            self.assertTrue(warp['settings']['peers'][0]['endpoint'].endswith(':4500'))
+            self.assertIn(f'type=bind,src={root}/warp/accounts/{account},dst=/account', seen[-2][0])
+            self.assertIn(f'type=bind,src={root}/warp,dst=/account', seen[-1][0])
+            with self.assertRaises(ValueError):
+                node_warp.outbound('wireguard', 'image', root, command, '../escape')
+
+    def test_registration_script_keys_both_kinds_and_fails_only_for_the_current_mode(self):
+        stubs = {
+            'wgcf': '#!/bin/sh\ncase "$1" in\n register) printf "device_id = \'d\'\\nlicense_key = \'free\'\\n" > "$4" ;;\n'
+                    ' update) grep -q "license_key = \\"BAD" "$3" && exit 1; cp "$3" "$T/updated" ;;\n'
+                    ' generate) echo profile > "$3" ;;\nesac\n',
+            'helper': '#!/bin/sh\n[ -n "${HELPER_FAIL:-}" ] && exit 1\ncase "$1" in\n register) [ "${WARP_LICENSE_KEY:-}" = BAD ] && exit 1;'
+                      ' mkdir -p masque.new && echo "${WARP_LICENSE_KEY:-free}" > masque.new/key ;;\n commit) mv masque.new masque ;;\nesac\n',
+        }
+        def run(mode, key=None, **env):
+            temp = Path(tempfile.mkdtemp(dir='/tmp'))
+            self.addCleanup(__import__('shutil').rmtree, temp)
+            (temp/'bin').mkdir()
+            for name, body in stubs.items():
+                (temp/'bin'/name).write_text(body)
+                (temp/'bin'/name).chmod(0o755)
+            work = temp/'account'
+            work.mkdir()
+            if key:
+                (work/'license.key').write_text(key)
+            script = node_warp.REGISTER.replace('sh /helper', f'sh {temp}/bin/helper')
+            result = subprocess.run(['sh', '-c', script, 'register', mode], cwd=work, capture_output=True,
+                                    env=os.environ | {'PATH': f"{temp}/bin:{os.environ['PATH']}", 'T': str(temp)} | env)
+            return result.returncode, work, temp
+        code, work, temp = run('wireguard', 'AAAA-BBBB-CCCC')
+        self.assertEqual(code, 0)
+        self.assertIn('license_key = "AAAA-BBBB-CCCC"', (temp/'updated').read_text())
+        self.assertEqual((work/'masque/key').read_text().strip(), 'AAAA-BBBB-CCCC', 'MASQUE gets the key too')
+        self.assertFalse((work/'license.key').exists())
+        code, work, _ = run('wireguard', None, HELPER_FAIL='1')
+        self.assertEqual(code, 0, 'the other kind is best effort')
+        self.assertTrue((work/'wgcf-profile.conf').exists() and not (work/'masque').exists())
+        code, work, _ = run('masque', 'BAD')
+        self.assertNotEqual(code, 0, 'a rejected key fails the current mode')
+        code, work, _ = run('wireguard', 'BAD')
+        self.assertNotEqual(code, 0)
+
+    def test_docker_arguments_keep_options_before_the_image(self):
+        # Options inserted before "run" made "docker --mount ...": MASQUE never registered.
+        for mode in ('wireguard', 'masque'):
+            args = node_warp.container('image', Path('/state/warp'), mode)
+            self.assertEqual(args[:2], ['docker', 'run'])
+            image = args.index('image')
+            self.assertEqual(args[image - 2:image + 2], ['--entrypoint', 'timeout', 'image', '100'])
+            options = args[2:image - 2]
+            self.assertIn('type=bind,src=/state/warp,dst=/account', options)
+            self.assertEqual(any(o.endswith(',dst=/helper,readonly') for o in options), mode == 'masque')
+            self.assertEqual('WARP_MASQUE_DIR=/account/masque' in options, mode == 'masque')
+
+    def test_info_masks_secrets_and_whitelists_fields(self):
+        with tempfile.TemporaryDirectory(dir='/tmp') as temp:
+            root = Path(temp)
+            (root/'warp').mkdir(mode=0o700)
+            (root/'warp/wgcf-account.toml').write_text("access_token = 'token-123456789'\ndevice_id = 'device-1'\n"
+                                                       "license_key = 'AAAA-BBBB-CCCC'\nprivate_key = 'private-987654321'\nunknown = 'leak'\n")
+            peer = base64.b64encode(bytes(range(32, 64))).decode()
+            (root/'warp/wgcf-profile.conf').write_text(profile().replace('PublicKey = ' + base64.b64encode(bytes(range(32))).decode(),
+                                                                         'PublicKey = ' + peer) + 'MTU = 1280\nUnknown = leak\n')
+            result = node_warp.info(OPTIONS4 | {'warp_port': 500}, root, None)
+            text = json.dumps(result)
+            for secret in ('token-123456789', 'AAAA-BBBB-CCCC', 'private-987654321', base64.b64encode(bytes(range(32))).decode()[:20], 'leak'):
+                self.assertNotIn(secret, text)
+            self.assertIn(['license_key', '…CCCC'], result['account_fields'])
+            self.assertIn(['Endpoint', 'engage.cloudflareclient.com:500'], result['profile'])
+            self.assertEqual((result['account'], result['default_port']), ('legacy', 2408))
 
     @unittest.skipUnless(os.environ.get('VLESS_TEST_XRAY'), 'requires Xray')
     def test_authenticated_routes_and_fail_closed(self):

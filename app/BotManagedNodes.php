@@ -5,6 +5,7 @@ require_once __DIR__ . '/ManagedNodeFields.php';
 require_once __DIR__ . '/BotManagedNodePeers.php';
 require_once __DIR__ . '/BotNodePolicy.php';
 require_once __DIR__ . '/BotNodeRoutes.php';
+require_once __DIR__ . '/BotManagedNodeWarp.php';
 require_once __DIR__ . '/BotManagedNodeSubscriptions.php';
 require_once __DIR__ . '/BotManagedNodeNavigation.php';
 require_once __DIR__ . '/BotManagedNodeMenus.php';
@@ -17,6 +18,7 @@ trait BotManagedNodes
     use BotManagedNodePeers;
     use BotNodePolicy;
     use BotNodeRoutes;
+    use BotManagedNodeWarp;
     use BotManagedNodeSubscriptions;
     use BotManagedNodeNavigation;
     use BotManagedNodeMenus;
@@ -174,6 +176,7 @@ trait BotManagedNodes
                 throw new RuntimeException('Node transport timeout');
             }
             $reply = json_decode($response, true, 64, JSON_THROW_ON_ERROR);
+            if (is_array($reply) && ($reply['ok'] ?? null) === false && ($reply['error'] ?? '') === 'lists_missing') throw new NodeListsDigestException('lists_missing');
             if (!is_array($reply) || ($reply['ok'] ?? false) !== true || !is_array($reply['result'] ?? null)) throw new RuntimeException('Node request failed');
             return $reply['result'];
         } finally {
@@ -233,6 +236,15 @@ trait BotManagedNodes
             }
         }
         if ($this->exitAddressProblem($parsed['address']) !== '') throw new RuntimeException('Node endpoint is not allowed');
+        // Status reports only the lists' digest. The direct fallback needs the blocks the node runs
+        // now; the saved copy is refreshed only after confirmation, so ask the node for them.
+        $digest = $options['policy']['routes_digest'] ?? null;
+        if (is_string($digest) && !isset($options['policy']['routes']) && $digest !== self::nodeRoutesDigest([])) {
+            try {
+                $routes = $this->managedNodeRpc($id, ['action' => 'routes'])['routes'] ?? null;
+                if (is_array($routes) && self::nodeRoutesDigest($routes) === $digest) $options['policy']['routes'] = $routes;
+            } catch (Throwable $error) { /* Without the lists the direct fallback stays closed. */ }
+        }
         $edit = function (array &$p) use ($id, $profile, $options) {
             if (!isset($this->managedNodes($p)[$id])) return 'exit not found';
             if (!isset($p['exits'][$id]) && count($this->exitNodes($p)) >= self::EXIT_MAX) return 'exit too many';
@@ -292,15 +304,42 @@ trait BotManagedNodes
     {
         $node = $this->managedNodes()[$id] ?? null;
         if (!$node || !$node['connected'] || $node['job']) throw new RuntimeException('Node is not ready');
+        // A node that reports digests keeps its running lists when a request names them by digest.
+        $byDigest = $operation === 'configure' && !empty($node['status']['policy_summary']);
+        try {
+            $this->managedNodeSubmitRequest($id, $node, $operation, $value, $expectedGeneration, $applyLists, $byDigest);
+        } catch (NodeListsDigestException $error) {
+            // The node rejected a digest of lists it no longer runs: send them in full once.
+            $this->managedNodeSubmitRequest($id, $node, $operation, $value, $expectedGeneration, $applyLists, false);
+        }
+    }
+
+    private function managedNodeSubmitRequest(string $id, array $node, string $operation, $value, ?string $expectedGeneration, bool $applyLists, bool $byDigest): void
+    {
         $listsSent = null;
+        $running = is_array($node['status']['options']['policy'] ?? null) ? $node['status']['options']['policy'] : [];
         if ($operation === 'configure' && $applyLists) {
             $value['policy'] = $this->nodeRoutesPolicy($node, is_array($value['policy'] ?? null) ? $value['policy'] : null);
             $listsSent = self::nodeRoutesDigest($this->nodeRoutesSource($node));
         }
+        if ($operation === 'configure' && is_array($value['policy']['routes'] ?? null) && $byDigest
+            && self::nodeRoutesDigest($value['policy']['routes']) === ($running['routes_digest'] ?? null)) {
+            $value['policy']['routes_digest'] = $running['routes_digest'];
+            unset($value['policy']['routes']);
+        } elseif ($operation === 'configure' && !$byDigest && isset($value['policy']['routes_digest'])) {
+            // Resending the running options (controller IP refresh): take the node's own lists
+            // from its snapshot, never the unapplied local edits.
+            $saved = $this->managedNodeRpc($id, ['action' => 'backup'])['options']['policy'] ?? [];
+            $saved = self::nodeRoutesDigest($saved['routes'] ?? []) === $value['policy']['routes_digest'] ? $saved['routes'] ?? [] : null;
+            if ($saved === null) throw new RuntimeException('Node lists changed');
+            $value['policy']['routes'] = $saved;
+            unset($value['policy']['routes_digest']);
+        }
+        if ($operation === 'configure' && is_array($value['policy'] ?? null)) unset($value['policy']['counts']);
         if ($operation === 'configure' && !empty($node['status']['controller_ip_guard'])) {
             $config = $this->getXray();
             if (!is_array($config) || !isset($config['routing']['rules'])) throw new RuntimeException('Controller rules unavailable');
-            $value = $this->withControllerIps($value, $this->controllerBlockedIps($config));
+            $value = $this->withControllerIps($value, $this->controllerBlockedIps($config), $byDigest ? self::policyIpsDigest($running) : null);
         } elseif ($operation === 'configure' && isset($value['policy']['controller_ips_digest'])) {
             // The digest is local bookkeeping; a node without the guard never received the list.
             $value = $this->withControllerIps($value, []);
@@ -319,6 +358,8 @@ trait BotManagedNodes
             if (count($value['policy']['controller_ips'] ?? []) > 200000
                 || strlen(json_encode($request, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES)) > 4 * 1024 * 1024) throw new NodeRoutesException('frame');
         }
+        // Only the node's explicit lists_missing (NodeListsDigestException) triggers a full resend;
+        // a timeout or a busy node may have queued the first request.
         $job = $this->managedNodeRpc($id, $request);
         if (!preg_match('~^[a-f0-9]{32}$~D', (string) ($job['job'] ?? ''))) throw new RuntimeException('Invalid node job');
         $before = array_intersect_key($exit, array_flip(['link', 'managed_profile', 'policy']));
@@ -328,7 +369,7 @@ trait BotManagedNodes
         $this->managedNodeWrite($id, static function (&$node) use ($job, $before, $operation, $origin, $subject, $draft, $listsSent) {
             $node['job'] = ['id' => $job['job'], 'operation' => $operation, 'before' => $before, 'phase' => 'waiting', 'started' => time(), 'origin' => $origin, 'subject' => $subject, 'draft' => $draft];
             if ($listsSent !== null) $node['job']['lists_sent'] = $listsSent;
-            unset($node['draft'], $node['draft_generation'], $node['error']);
+            unset($node['draft'], $node['draft_generation'], $node['error'], $node['error_reason']);
         });
     }
 
@@ -353,7 +394,7 @@ trait BotManagedNodes
             if (!empty($status['pending'])) return;
             if (!empty($node['recovery_required'])) {
                 $this->managedNodeWrite($id, static function (&$node) use ($status) {
-                    $node['job'] = null; $node['status'] = $status; $node['checked'] = time(); $node['error'] = 'restore_required';
+                    $node['job'] = null; $node['status'] = $status; $node['checked'] = time(); $node['error'] = 'restore_required'; unset($node['error_reason']);
                 });
                 return;
             }
@@ -373,10 +414,15 @@ trait BotManagedNodes
             $this->managedNodeRestoreClient($id, $saved['before']);
             // The code phase of a full update stopped before any image change.
             $stage = ($job['error'] ?? '') === 'code_upgrade_failed' ? (preg_match('~^[a-z_]{1,24}$~D', (string) ($job['stage'] ?? '')) ? $job['stage'] : 'unexpected') : '';
-            $this->managedNodeFinish($id, $saved, static function (&$node) use ($status, $saved, $stage) {
+            $this->managedNodeFinish($id, $saved, static function (&$node) use ($status, $saved, $stage, $job) {
                 foreach (($saved['draft'] ?? []) as $key=>$value) $node[$key] = $value;
                 $node['job'] = null; $node['status'] = $status; $node['checked'] = time(); $node['error'] = $stage === '' ? 'rolled_back' : 'code_upgrade_failed';
+                // The traffic check failed and the node has now rolled back: keep that reason.
+                if ($stage === '' && ($saved['phase'] ?? '') === 'wait_rollback') $node['error'] = 'probe_failed';
                 if ($stage === '') unset($node['error_stage']); else $node['error_stage'] = $stage;
+                // The stage the node failed in (no error text): the card tells what to check.
+                if (preg_match('~^[a-z_]{1,24}$~D', (string) ($job['reason'] ?? ''))) $node['error_reason'] = $job['reason'];
+                else unset($node['error_reason']);
             });
             return;
         }
@@ -390,7 +436,7 @@ trait BotManagedNodes
             } catch (Throwable $error) {
                 $this->managedNodeRestoreClient($id, $saved['before']);
                 $this->managedNodeWrite($id, static function (&$node) {
-                    $node['job']['phase'] = 'wait_rollback'; $node['error'] = 'probe_failed';
+                    $node['job']['phase'] = 'wait_rollback'; $node['error'] = 'probe_failed'; unset($node['error_reason']);
                 });
                 return;
             }
@@ -408,12 +454,16 @@ trait BotManagedNodes
             if (!$this->managedNodeTrafficReady($id)) throw new RuntimeException('Restarted node traffic probe failed');
         }
         $status = $this->managedNodeRpc($id, ['action' => 'status']);
-        $this->managedNodeTransport($id, 'snapshot');
+        // The change is confirmed: report it now. A failed copy keeps the previous one and
+        // the scheduled backup refresh retries; it must not hold the result screen back.
+        $backedUp = $this->managedNodeSnapshotSaved($id);
         $certificateResult = isset($job['result']['certificate_result']) || in_array($saved['operation'] ?? '', ['renew','renew_force','certificate_delete'], true) ? $this->managedNodeCertificateResult($job, $status) : '';
         // Full update: whether the node's Git clone advanced or kept local edits.
         $checkout = ($saved['operation'] ?? '') === 'upgrade' && in_array($job['checkout'] ?? '', ['updated', 'current', 'kept'], true) ? $job['checkout'] : '';
-        $this->managedNodeFinish($id, $saved, static function (&$node) use ($status, $saved, $certificateResult, $checkout) {
-            $node['job'] = null; $node['status'] = $status; $node['checked'] = time(); $node['backup_time'] = time(); unset($node['error'], $node['error_stage']);
+        $this->managedNodeFinish($id, $saved, static function (&$node) use ($status, $saved, $certificateResult, $checkout, $backedUp) {
+            $node['job'] = null; $node['status'] = $status; $node['checked'] = time(); unset($node['error'], $node['error_stage'], $node['error_reason']);
+            if ($backedUp) { $node['backup_time'] = time(); unset($node['backup_stale']); }
+            else $node['backup_stale'] = true;
             $node['last_operation'] = ['operation'=>$saved['operation'] ?? '', 'subject'=>$saved['subject'] ?? '', 'time'=>time(), 'ok'=>true, 'certificate_result'=>$certificateResult];
             // Only a confirmed generation proves that the node runs these lists.
             if (isset($saved['lists_sent'])) $node['lists_sent'] = $saved['lists_sent'];
@@ -421,6 +471,58 @@ trait BotManagedNodes
             // A restored snapshot brings its own lists: the controller copy is not on the node until applied again.
             if (($saved['operation'] ?? '') === 'restore') unset($node['recovery_required'], $node['lists_sent']);
         });
+    }
+
+    /** A confirmed change whose copy failed: retry each minute until the saved copy matches the node. */
+    private function managedNodeBackupRetry(string $id): void
+    {
+        $this->managedNodeLocked($id, function () use ($id) {
+            $node = $this->managedNodes()[$id] ?? [];
+            if (empty($node['backup_stale']) || !empty($node['job']) || empty($node['connected']) || !empty($node['recovery_required'])
+                || !empty($node['status']['pending']) || !$this->managedNodeSnapshotSaved($id)) return;
+            $this->managedNodeWrite($id, static function (&$saved) { if ($saved) { $saved['backup_time'] = time(); unset($saved['backup_stale']); } });
+        });
+    }
+
+    /** Short dates: time alone today, day and time otherwise. */
+    private static function managedNodeTime(int $time, bool $seconds = false): string
+    {
+        return date(date('Y-m-d', $time) === date('Y-m-d') ? ($seconds ? 'H:i:s' : 'H:i') : 'd.m.Y H:i', $time);
+    }
+
+    /** What the node or the traffic check refused, and what to do about it. */
+    private function managedNodeFailureText(array $node): string
+    {
+        $what = match (($node['error'] ?? '') === 'probe_failed' ? 'probe_failed' : (string) ($node['error_reason'] ?? '')) {
+            'probe_failed' => $this->t('нода применила изменение, но проверка трафика через неё не прошла. Нода сама возвращается к прежним настройкам',
+                'the node applied the change, but the traffic check through it failed. The node returns to its previous settings by itself'),
+            'config_too_large' => $this->t('конфигурация ядра получилась больше лимита ноды. Уменьшите списки «Блокировка» и WARP',
+                'the core configuration exceeds the node limit. Make the Block and WARP lists smaller'),
+            'warp' => $this->t('нода не получила профиль WARP: Cloudflare не ответил или порт закрыт. Попробуйте другой порт в «🌐 WARP»',
+                'the node could not get its WARP profile: Cloudflare did not answer or the port is blocked. Try another port in 🌐 WARP'),
+            'warp_register' => $this->t('регистрация WARP не удалась: Cloudflare не ответил или ключ WARP+ не принят. Прежний аккаунт оставлен',
+                'WARP registration failed: Cloudflare did not answer or the WARP+ key was rejected. The previous account stays'),
+            'compile' => $this->t('нода не собрала конфигурацию из этих настроек', 'the node could not build a configuration from these settings'),
+            'core_test' => $this->t('ядро Xray отклонило новую конфигурацию', 'the Xray core rejected the new configuration'),
+            'firewall' => $this->t('правила nftables ноды не прошли проверку', 'the node nftables rules failed the check'),
+            'start' => $this->t('ядро не запустилось с новой конфигурацией', 'the core did not start with the new configuration'),
+            'certificate' => $this->t('сертификат не выпущен: домен должен указывать на ноду, а TCP/80 — быть доступен снаружи',
+                'no certificate: the domain must point to the node and TCP/80 must be reachable from outside'),
+            default => null,
+        };
+        if ($what === null) return $this->t('Последнее изменение не подтверждено; проверьте связь и состояние отката.', 'The last change was not confirmed; check connectivity and rollback status.');
+        return '↩️ ' . $this->t('Изменение не применено: ', 'Change not applied: ') . $what . '.'
+            . (($node['error'] ?? '') === 'probe_failed' ? '' : $this->t(' Нода работает на прежних настройках.', ' The node runs its previous settings.'));
+    }
+
+    private function managedNodeSnapshotSaved(string $id): bool
+    {
+        try {
+            return ($this->managedNodeTransport($id, 'snapshot')['saved'] ?? false) === true;
+        } catch (Throwable $error) {
+            error_log('managed node ' . $id . ': snapshot not saved (' . get_class($error) . ')');
+            return false;
+        }
     }
 
     private function managedNodeFinish(string $id, array $saved, callable $edit): void
@@ -436,6 +538,23 @@ trait BotManagedNodes
         });
     }
 
+    private int $managedNodeJobsAt = 0;
+
+    /**
+     * Poll only nodes with a running job, at most every 5 seconds and not before the node
+     * can have applied anything. Cheap when idle: one read of the PAC.
+     */
+    public function managedNodeJobsTick(): void
+    {
+        if (time() - $this->managedNodeJobsAt < 5) return;
+        $this->managedNodeJobsAt = time();
+        foreach ($this->managedNodes() as $id => $node) {
+            if (empty($node['job']) || time() - (int) ($node['job']['started'] ?? 0) < 15) continue;
+            try { $this->managedNodePoll((string) $id); }
+            catch (Throwable $error) { error_log('managed node ' . $id . ': job poll failed (' . get_class($error) . ')'); }
+        }
+    }
+
     public function checkManagedNodes(): void
     {
         if ($this->managedNodeCronAt && time() - $this->managedNodeCronAt < 15) return;
@@ -448,11 +567,14 @@ trait BotManagedNodes
                     $current=$this->managedNodes()[$id];
                     if ($current['connected'] && !$current['job'] && time()-(int)($current['status_attempt'] ?? 0)>=60) {
                         $this->managedNodeCheckStatus((string)$id);
+                        $this->managedNodeBackupRetry((string)$id);
                         $this->syncControllerIps((string)$id);
+                        $this->syncNodeRoutes((string)$id);
                     }
                 }
             }
-            catch (Throwable $error) { /* Retry without logging private requests or responses. */ }
+            // Retry without logging private requests or responses: the class is enough to tell failures apart.
+            catch (Throwable $error) { error_log('managed node ' . $id . ': check failed (' . get_class($error) . ')'); }
         }
     }
 
@@ -509,49 +631,64 @@ trait BotManagedNodes
             $options = $status['options'] ?? [];
             $fresh = !empty($node['checked']) && time()-(int)$node['checked']<=180;
             $failed = !empty($node['status_error']) || ($fresh && empty($status['running']));
+            // Read top-down: state, what needs attention, then details grouped by subject.
             $text[] = $this->t('Состояние: ', 'State: ') . ($failed ? $this->t('🔴 не отвечает или остановлена', '🔴 unavailable or stopped')
-                : ($fresh ? $this->t('🟢 работает', '🟢 running') : $this->t('⚪ проверка устарела', '⚪ stale check')));
-            $text[] = $this->t('Проверка состояния — каждую минуту; последняя: ', 'Status checked every minute; last check: ')
-                . (!empty($node['status_attempt']) ? date('Y-m-d H:i:s', (int)$node['status_attempt']) : $this->t('ожидается', 'pending'));
-            $text[] = self::esc(strtoupper((string) ($options['transport'] ?? '')) . ' · ' . $this->managedNodeValueLabel($id, 'core', $options['core'] ?? 'origin')
-                . ' · VPN IPv' . ($options['connect_family'] ?? '?') . ' → IPv' . ($options['family'] ?? '?'));
-            if (!empty($options['wireguard']['enabled'])) $text[] = !empty($options['wireguard']['active'])
-                ? $this->t('Связь с основным ботом: WireGuard UDP/51820.', 'Main bot link: WireGuard UDP/51820.')
-                : str_replace('VLESS', self::managedNodeDirectLabel($options), $this->t('Резерв WireGuard разрешён; основной бот использует VLESS.', 'WireGuard backup enabled; the main bot uses VLESS.'));
-            if (!empty($options['amnezia']['enabled'])) $text[] = !empty($options['amnezia']['active'])
-                ? str_replace('VLESS', self::managedNodeDirectLabel($options), $this->t('Связь с основным ботом: VLESS через AmneziaWG UDP/51821.', 'Main bot link: VLESS over AmneziaWG UDP/51821.'))
-                : $this->t('Резерв AmneziaWG разрешён.', 'AmneziaWG backup enabled.');
-            array_push($text, ...$this->managedNodeCardDetails($id, $node));
-            array_push($text, ...$this->managedNodeDomainSummary($node));
-            $text[] = $this->t('Копия состояния ноды: ', 'Node state snapshot: ') . (!empty($node['backup_time'])
-                ? date('Y-m-d H:i', (int) $node['backup_time']) : $this->t('ещё не создана', 'not created yet'));
+                : ($fresh ? $this->t('🟢 работает', '🟢 running') : $this->t('⚪ проверка устарела', '⚪ stale check')))
+                . ' · ' . (!empty($node['status_attempt']) ? $this->t('проверено ', 'checked ') . self::managedNodeTime((int) $node['status_attempt'], true)
+                    : $this->t('проверка ожидается', 'check pending')) . $this->t(' (каждую минуту)', ' (every minute)');
+            $alerts = [];
+            if ($node['job']) $alerts[] = $this->managedNodeOperationLabel($node['job']) . ': ' . $this->t('⏳ выполняется изменение. Подтверждение — после проверки трафика; при отказе нода откатится автоматически.',
+                '⏳ a change is in progress. It is confirmed after a traffic test; the node rolls back automatically on failure.');
+            if (($node['error'] ?? '') === 'code_upgrade_failed') $alerts[] = $this->managedNodeUpgradeFailure((string) ($node['error_stage'] ?? ''));
+            elseif (!empty($node['error']) && !$node['job']) $alerts[] = $this->managedNodeFailureText($node);
             if (!empty($node['recovery_required'])) {
-                $text[] = $this->t('Запрошено восстановление после переустановки. Проверьте SSH и восстановите сохранённую копию ноды: до этого её автоматическое обновление и остальные изменения заблокированы.',
+                $alerts[] = $this->t('Запрошено восстановление после переустановки. Проверьте SSH и восстановите сохранённую копию ноды: до этого её автоматическое обновление и остальные изменения заблокированы.',
                     'Recovery after reinstall was requested. Verify SSH and restore the saved node snapshot: automatic snapshot refresh and other changes are blocked until then.');
                 $data[] = [['text' => $this->t('Восстановить копию ноды', 'Restore node snapshot'), 'callback_data' => "/nodeRestore $id"]];
             }
-            if (isset($node['draft'])) $text[] = $this->t('Есть черновик настроек. Перед обслуживанием или изменением внешних подключений примените либо отмените его в «Xray и подключение».', 'A settings draft is pending. Apply or discard it in Xray and connection before maintenance or external peer changes.');
-            if (!empty($node['last_operation']) && empty($node['error']) && !$node['job']) {
-                $last = $node['last_operation'];
-                if (!empty($last['certificate_result']) && empty($node['error']) && !$node['job']) $text[] = $this->managedNodeCertificateNotice($last['certificate_result']);
-                else $text[] = $this->t('✅ Последнее подтверждённое изменение: ', '✅ Last confirmed change: ') . self::esc($this->managedNodeOperationLabel($last))
-                    . ' · ' . date('Y-m-d H:i', (int) ($last['time'] ?? 0));
-                if (($last['operation'] ?? '') === 'rotate') $text[] = $this->t('Основной бот получил обновлённый профиль автоматически. После смены общих ключей REALITY, Encryption или ML-DSA обновите профили во внешних панелях. Секретные ключи в карточке не публикуются.',
-                    'The main bot received the updated profile automatically. After rotating shared REALITY, Encryption or ML-DSA keys, update profiles in external panels. Secret keys are not published in this card.');
-            }
-            if ($node['job']) $text[] = $this->managedNodeOperationLabel($node['job']) . ': ' . $this->t('⏳ Выполняется изменение. Подтверждение — после проверки трафика; при отказе нода откатится автоматически.',
-                '⏳ A change is in progress. It is confirmed after a traffic test; the node rolls back automatically on failure.');
-            if (($node['error'] ?? '') === 'code_upgrade_failed') $text[] = $this->managedNodeUpgradeFailure((string) ($node['error_stage'] ?? ''));
-            elseif (!empty($node['error'])) $text[] = $this->t('Последнее изменение не подтверждено; проверьте связь и состояние отката.', 'The last change was not confirmed; check connectivity and rollback status.');
-            if (($node['last_operation']['checkout'] ?? '') === 'kept' && empty($node['error']) && !$node['job']) $text[] = $this->t('Код ноды обновлён. Каталог /root/vpnbot на ноде оставлен без изменений: в нём локальные правки, другая ветка или более новый коммит.',
+            if (isset($node['draft'])) $alerts[] = $this->t('📝 Есть черновик настроек. Перед обслуживанием или изменением внешних подключений примените либо отмените его в «Xray и подключение».', '📝 A settings draft is pending. Apply or discard it in Xray and connection before maintenance or external peer changes.');
+            if (!empty($node['last_operation']['certificate_result']) && empty($node['error']) && !$node['job']) $alerts[] = $this->managedNodeCertificateNotice($node['last_operation']['certificate_result']);
+            if (($node['last_operation']['operation'] ?? '') === 'rotate' && empty($node['error']) && !$node['job']) $alerts[] = $this->t('Основной бот получил обновлённый профиль автоматически. После смены общих ключей REALITY, Encryption или ML-DSA обновите профили во внешних панелях. Секретные ключи в карточке не публикуются.',
+                'The main bot received the updated profile automatically. After rotating shared REALITY, Encryption or ML-DSA keys, update profiles in external panels. Secret keys are not published in this card.');
+            if (($node['last_operation']['checkout'] ?? '') === 'kept' && empty($node['error']) && !$node['job']) $alerts[] = $this->t('Код ноды обновлён. Каталог /root/vpnbot на ноде оставлен без изменений: в нём локальные правки, другая ветка или более новый коммит.',
                 'Node code was updated. The /root/vpnbot directory on the node was left unchanged: it has local edits, another branch or a newer commit.');
+            $sections = $this->managedNodeCardSections($id, $node);
+            if ($sections['guard'] !== '') $alerts[] = $sections['guard'];
+            array_push($text, ...$alerts);
+            $link = [self::esc(strtoupper((string) ($options['transport'] ?? '')) . ' · ' . $this->managedNodeValueLabel($id, 'core', $options['core'] ?? 'origin')
+                . ' · VPN IPv' . ($options['connect_family'] ?? '?') . ' → IPv' . ($options['family'] ?? '?'))];
+            if (!empty($options['wireguard']['enabled'])) $link[] = !empty($options['wireguard']['active'])
+                ? $this->t('Связь с основным ботом: WireGuard UDP/51820.', 'Main bot link: WireGuard UDP/51820.')
+                : str_replace('VLESS', self::managedNodeDirectLabel($options), $this->t('Резерв WireGuard разрешён; основной бот использует VLESS.', 'WireGuard backup enabled; the main bot uses VLESS.'));
+            if (!empty($options['amnezia']['enabled'])) $link[] = !empty($options['amnezia']['active'])
+                ? str_replace('VLESS', self::managedNodeDirectLabel($options), $this->t('Связь с основным ботом: VLESS через AmneziaWG UDP/51821.', 'Main bot link: VLESS over AmneziaWG UDP/51821.'))
+                : $this->t('Резерв AmneziaWG разрешён.', 'AmneziaWG backup enabled.');
+            if (($options['warp_mode'] ?? 'off') !== 'off') $link[] = 'WARP: ' . self::esc($this->managedNodeWarpModeName((string) $options['warp_mode'], (string) ($options['warp_http'] ?? 'h3')))
+                . (isset($options['warp_port']) ? $this->t(' · порт ', ' · port ') . (int) $options['warp_port'] : '');
+            array_push($link, ...$this->managedNodeDomainSummary($node));
+            $service = [$sections['version']];
+            $service[] = $this->t('Копия состояния ноды: ', 'Node state snapshot: ') . (!empty($node['backup_time'])
+                ? self::managedNodeTime((int) $node['backup_time']) : $this->t('ещё не создана', 'not created yet'))
+                . (!empty($node['backup_stale']) ? $this->t(' · последнее изменение ещё не сохранено, повтор каждую минуту', ' · the last change is not saved yet, retried every minute') : '');
+            if (!empty($node['last_operation']) && empty($node['error']) && !$node['job'] && empty($node['last_operation']['certificate_result'])) {
+                $service[] = $this->t('✅ Последнее подтверждённое изменение: ', '✅ Last confirmed change: ') . self::esc($this->managedNodeOperationLabel($node['last_operation']))
+                    . ' · ' . self::managedNodeTime((int) ($node['last_operation']['time'] ?? 0));
+            }
+            foreach ([[$this->t('Подключение', 'Connection'), $link], [$this->t('Проверка трафика', 'Traffic check'), $sections['check']],
+                    [$this->t('Трафик', 'Traffic'), $sections['traffic']], [$this->t('Пользователи', 'Users'), $sections['users']],
+                    [$this->t('Сервер ноды', 'Node server'), $sections['server']], [$this->t('Служебное', 'Service'), $service]] as [$title, $lines]) {
+                $lines = array_values(array_filter($lines, static fn($line) => $line !== ''));
+                if ($lines) $text[] = '<b>' . $title . '</b>' . "\n" . implode("\n", $lines);
+            }
             if (!empty($node['status']['shared_routes']) || !empty($node['status']['named_policy'])) {
                 $lists = $this->nodeRoutesSource($node);
                 $count = static fn(array $list) => count(array_filter($list['routes'])) + count(array_filter($list['rulesets'], static fn($set) => !empty($set['on'])));
                 $data[] = [['text' => $this->t('⛔ Блокировка', '⛔ Block') . ' · ' . $count($lists['block']), 'callback_data' => "/nlist $id block 0"],
                     ['text' => 'WARP · ' . $count($lists['warp']), 'callback_data' => "/nlist $id warp 0"]];
             }
-            $data[] = [['text' => $this->t('⚙️ Xray и подключение', '⚙️ Xray and connection'), 'callback_data' => "/nodeSettings $id"]];
+            $data[] = !empty($node['status']['warp_egress'])
+                ? [['text' => $this->t('⚙️ Xray и подключение', '⚙️ Xray and connection'), 'callback_data' => "/nodeSettings $id"], ['text' => '🌐 WARP', 'callback_data' => "/nodeWarp $id"]]
+                : [['text' => $this->t('⚙️ Xray и подключение', '⚙️ Xray and connection'), 'callback_data' => "/nodeSettings $id"]];
             $data[] = [['text' => $this->t('🧭 Маршруты и наборы', '🧭 Routes and rule sets'), 'callback_data' => "/nr $id"],
                 ['text' => $this->t('👥 Пользователи', '👥 Users'), 'callback_data' => "/nuUsers $id 0"]];
             $data[] = [['text' => $this->t('📊 Диагностика', '📊 Diagnostics'), 'callback_data' => "/ndDiag $id"],
@@ -727,7 +864,8 @@ trait BotManagedNodes
             'renew_force'=>['ru'=>'принудительный выпуск сертификата','en'=>'forced certificate issuance'], 'certificate_delete'=>['ru'=>'удаление сертификата','en'=>'certificate deletion'],
             'rotate_controller'=>['ru'=>'ключ клиента основного бота','en'=>'main bot client identity'], 'rotate_reality'=>['ru'=>'ключи REALITY','en'=>'REALITY keys'],
             'rotate_encryption'=>['ru'=>'ключи VLESS Encryption','en'=>'VLESS Encryption keys'], 'rotate_mldsa'=>['ru'=>'ключи ML-DSA','en'=>'ML-DSA keys'],
-            'rotate_wireguard'=>['ru'=>'ключи WireGuard','en'=>'WireGuard keys'], 'rotate_amnezia'=>['ru'=>'ключи AmneziaWG','en'=>'AmneziaWG keys']];
+            'rotate_wireguard'=>['ru'=>'ключи WireGuard','en'=>'WireGuard keys'], 'rotate_amnezia'=>['ru'=>'ключи AmneziaWG','en'=>'AmneziaWG keys'],
+            'warp_account'=>['ru'=>'аккаунт WARP','en'=>'WARP account']];
         return $this->t(...($labels[$name] ?? ['ru'=>'изменение ноды','en'=>'node change']));
     }
 

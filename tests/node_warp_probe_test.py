@@ -14,6 +14,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import node_warp_probe  # noqa: E402
 
 
+class WarpTrace(unittest.TestCase):
+    def test_only_well_formed_trace_fields_are_reported(self):
+        body = (b'fl=1\nh=www.cloudflare.com\nip=203.0.113.9\nts=1\ncolo=FRA\nloc=FI\nwarp=plus\n'
+                b'gateway=off\nuag=<script>\n')
+        self.assertEqual(node_warp_probe.trace_fields(body), {'ip': '203.0.113.9', 'colo': 'FRA', 'loc': 'FI', 'warp': 'plus'})
+        self.assertEqual(node_warp_probe.trace_fields(b'ip=1.2.3.4 <b>\ncolo=fra\nwarp=yes\n'), {})
+
+
 class WarpProbeTls(unittest.TestCase):
     def test_context(self):
         context = node_warp_probe.tls_context()

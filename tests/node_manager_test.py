@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Restricted RPC, transactional host failures and controller key separation."""
 import copy
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -39,6 +40,18 @@ class Backend:
         self.pruned = getattr(self, 'pruned', 0) + 1
         return 0
 
+    def prune_warp_accounts(self):
+        self.accounts_pruned = getattr(self, 'accounts_pruned', 0) + 1
+
+    def warp_register(self, value, account, key=None):
+        self.registered = getattr(self, 'registered', []) + [(account, key)]
+
+    def ensure_keys(self, value, rotate=None):
+        pass
+
+    def ensure_images(self, value):
+        pass
+
 
 class NodeManager(unittest.TestCase):
     def setUp(self):
@@ -61,6 +74,49 @@ class NodeManager(unittest.TestCase):
         self.assertNotIn('adguard', active['options'])
         self.assertNotIn('ad', active['images'])
         self.assertFalse(any('ad' in images for images in acquired))
+
+    def test_submit_fills_lists_named_by_digest_from_running_generation(self):
+        import node_policy
+        running = copy.deepcopy(VALUE)
+        running['options']['policy'] = {'routes': {'block': {'domain': ['full:ads.test'], 'ip': ['192.0.2.0/24']}}}
+        generation = self.store.create(running)
+        self.store.activate(generation)
+        named = VALUE['options'] | {'policy': {'routes_digest': node_policy.routes_digest(running['options']['policy']['routes']),
+                                               'counts': {'block': {'domain': 1, 'ip': 1}}}}
+        with patch('node_manager.command'):
+            self.manager.submit({'operation': 'configure', 'value': named, 'generation': generation})
+        self.assertEqual(self.store.read('request.json')['value']['policy'], running['options']['policy'])
+        self.assertEqual(self.manager.rpc({'action': 'routes'}), {'routes': running['options']['policy']['routes']})
+        state.atomic(self.store.root/'job.json', state.encode({'id': 'a' * 32, 'state': 'done', 'time': 0}))
+        stale = VALUE['options'] | {'policy': {'routes_digest': 'f' * 64}}
+        with patch('node_manager.command'), self.assertRaisesRegex(ValueError, 'lists_missing'):
+            self.manager.submit({'operation': 'configure', 'value': stale, 'generation': generation})
+
+    def test_new_warp_account_is_named_by_the_new_generation_only(self):
+        warp = copy.deepcopy(VALUE)
+        warp['options'] |= {'family': 4, 'warp_mode': 'wireguard'}
+        warp['identity'] = dict(warp['identity'], warp_uuid='22222222-2222-4222-8222-222222222222')
+        warp['images'] = dict(warp['images'], wg='ghcr.io/axiomshiftbit/vpnbot-wg@sha256:' + 'b' * 64)
+        generation = self.store.create(warp)
+        self.store.activate(generation)
+        for wrong in ({'action': 'license'}, {'action': 'license', 'key': 'bad key'}, {'action': 'register', 'key': 'AAAA-BBBB'},
+                      {'action': 'delete'}, 'register'):
+            with self.subTest(wrong=wrong), self.assertRaises(ValueError):
+                manager.operation({'operation': 'warp_account', 'value': wrong})
+        self.manager.execute({'operation': 'warp_account', 'value': {'action': 'license', 'key': 'AAAA-BBBB-CCCC'}})
+        account, key = self.backend.registered[-1]
+        self.assertEqual(key, 'AAAA-BBBB-CCCC')
+        pending = self.store.pending()
+        self.assertEqual(self.store.load(pending['after'])['identity']['warp_account'], account)
+        self.assertNotIn('warp_account', self.store.load(pending['before'])['identity'], 'rollback keeps the old account')
+        self.assertNotIn('AAAA-BBBB-CCCC', (self.store.path(pending['after'])/'snapshot.json').read_text())
+        self.manager.rpc({'action': 'confirm', 'nonce': pending['nonce']})
+        self.assertEqual(self.backend.accounts_pruned, 1)
+        off = copy.deepcopy(VALUE)
+        generation = self.store.create(off)
+        self.store.activate(generation)
+        with self.assertRaisesRegex(ValueError, 'WARP is disabled'):
+            self.manager.execute({'operation': 'warp_account', 'value': {'action': 'register'}})
 
     def test_unknown_rpc_fields_and_commands_rejected(self):
         for request in ({'action': 'shell', 'command': 'id'}, {'action': 'ping', 'args': []},
@@ -167,6 +223,23 @@ class NodeManager(unittest.TestCase):
         self.assertEqual(self.backend.applied, [])
         with self.assertRaises(ValueError):
             self.manager.submit(request)
+
+    def test_failed_job_names_the_stage_without_the_error_text(self):
+        for error, stage, reason in ((ValueError('snapshot exceeds size limit'), 'compile', 'config_too_large'),
+                                     (RuntimeError('DO-NOT-LOG core'), 'core_test', 'core_test'),
+                                     (RuntimeError('DO-NOT-LOG other'), 'bogus', 'unexpected')):
+            with self.subTest(reason=reason):
+                with patch('node_manager.command'):
+                    self.manager.submit({'operation': 'restart', 'value': None})
+
+                def execute(request, error=error, stage=stage):
+                    self.backend.stage = stage
+                    raise error
+                with patch.object(self.manager, 'execute', side_effect=execute):
+                    self.manager.worker()
+                job = self.store.read('job.json')
+                self.assertEqual((job['state'], job['error'], job['reason']), ('failed', 'operation_failed', reason))
+                self.assertNotIn('DO-NOT-LOG', json.dumps(job))
 
     def test_worker_failure_is_private_and_recoverable(self):
         with patch('node_manager.command'):

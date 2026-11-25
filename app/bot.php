@@ -972,6 +972,27 @@ class Bot
                     'Apply' => $this->nodeRoutesApply($m[2], $m[3]),
                 };
                 break;
+            case preg_match('~^/nodeWarp ([a-f0-9]{8})$~D', $this->input['callback'], $m):
+                $this->managedNodeWarp($m[1]);
+                break;
+            case preg_match('~^/nwMode ([a-f0-9]{8}) (off|wireguard|masque)$~D', $this->input['callback'], $m):
+                $this->managedNodeWarpMode($m[1], $m[2]);
+                break;
+            case preg_match('~^/nwPorts ([a-f0-9]{8})$~D', $this->input['callback'], $m):
+                $this->managedNodeWarpPorts($m[1]);
+                break;
+            case preg_match('~^/nwPort ([a-f0-9]{8}) (default|\d{3,4})$~D', $this->input['callback'], $m):
+                $this->managedNodeWarpPort($m[1], $m[2]);
+                break;
+            case preg_match('~^/nwHttp ([a-f0-9]{8}) (h2|h3)$~D', $this->input['callback'], $m):
+                $this->managedNodeWarpHttp($m[1], $m[2]);
+                break;
+            case preg_match('~^/nwKey ([a-f0-9]{8})$~D', $this->input['callback'], $m):
+                $this->managedNodeWarpKeyPrompt($m[1]);
+                break;
+            case preg_match('~^/nwReg(Yes)? ([a-f0-9]{8})$~D', $this->input['callback'], $m):
+                $this->managedNodeWarpRegister($m[2], ($m[1] ?? '') === 'Yes');
+                break;
             case preg_match('~^/nodeSettings ([a-f0-9]{8})(?: ([a-z]+))?$~D', $this->input['callback'], $m):
                 $this->managedNodeSettingsMenu($m[1], $m[2] ?? 'root');
                 break;
@@ -2415,6 +2436,15 @@ class Bot
                 break;
             case preg_match('~^/warpPlus$~', $this->input['callback'], $m):
                 $this->warpPlus();
+                break;
+            case preg_match('~^/warpPorts$~', $this->input['callback'], $m):
+                $this->warpPorts();
+                break;
+            case preg_match('~^/warpPort (auto|\d{3,4})$~D', $this->input['callback'], $m):
+                $this->warpPort($m[1]);
+                break;
+            case preg_match('~^/warpReg(Yes)?$~D', $this->input['callback'], $m):
+                $this->warpReregister(($m[1] ?? '') === 'Yes');
                 break;
             case preg_match('~^/xray(?: (\d+))?$~', $this->input['callback'], $m):
                 $this->xray(($m[1] ?? '') ?: 0);
@@ -7642,6 +7672,9 @@ NFT;
                 } catch (\Throwable $e) {
                     error_log("cron[$step]: " . $e->getMessage());
                 }
+                // A node change waits for this loop to confirm it. Between the long
+                // maintenance steps, poll running node jobs instead of once per pass.
+                if ($group !== 'access') $this->managedNodeJobsTick();
             }
             sleep($this->cronPeriod);
         }
@@ -30997,7 +31030,7 @@ DNS-over-HTTPS with IP:
                     // $restore() вернёт его вместе с аккаунтом WireGuard.
                     if (!$step('registering MASQUE device', "WARP_LICENSE_KEY='$key' WARP_LICENSE_STRICT=1 sh /warp_masque.sh register")) { $restore(); return; }
                     $registered = true;
-                    if (!$off && !$step('checking MASQUE connection', 'sh /warp_masque.sh check ' . ($this->warpMasqueH2($before) ? 'h2' : 'h3'))) { $restore(); return; }
+                    if (!$off && !$step('checking MASQUE connection', 'sh /warp_masque.sh check ' . ($this->warpMasqueH2($before) ? 'h2' : 'h3 ' . ($this->warpSelectedPort(['warp_mode' => 'masque'] + $before) ?? 443)))) { $restore(); return; }
                 } elseif (!$off && !$step('starting warp', self::WARP_UP)) { $restore(); return; }
                 $save($off, true);
             } catch (\Throwable $e) {
@@ -31210,6 +31243,7 @@ DNS-over-HTTPS with IP:
             . 'hs=$(wg show wgcf-profile latest-handshakes 2>/dev/null | awk \'{print $2}\' | sort -n | tail -1); '
             . 'echo "hs=${hs:-0}"; echo "now=$(date +%s)"', 'wp');
         $text[] = $this->i18n('warp mode') . ': <b>' . $this->warpModeName($mode, $h2) . '</b>';
+        $text[] = $this->warpPortLine($p);
         if (preg_match('~socks=([01])~', $state, $ms) && preg_match('~hs=(\d+)~', $state, $mh) && preg_match('~now=(\d+)~', $state, $mn)) {
             $age    = (int) $mh[1] > 0 ? max(0, (int) $mn[1] - (int) $mh[1]) : null;
             if ($mode === 'masque') {
@@ -31266,6 +31300,8 @@ DNS-over-HTTPS with IP:
                 'callback_data' => '/warpMasqueHttp',
             ]];
         }
+        $data[] = [['text' => $this->t('🔌 Порт', '🔌 Port'), 'callback_data' => '/warpPorts'],
+            ['text' => $this->t('🔄 Новый аккаунт', '🔄 New account'), 'callback_data' => '/warpReg']];
         $data[] = $this->menuHelpButton('warp');
         $data[] = [
             [

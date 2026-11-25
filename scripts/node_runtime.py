@@ -260,6 +260,25 @@ class Runtime:
         for image in value['images'].values():
             self.pull(image)
 
+    def warp_register(self, value, account, key=None):
+        node_warp.register(value['options']['warp_mode'], value['images']['wg'], self.store.root, account, key, command)
+
+    def prune_warp_accounts(self):
+        """Remove WARP accounts no kept generation names: current, previous (manual rollback) and a pending change."""
+        try:
+            pending = self.store.pending()
+            generations = {self.store.current(), self.store.read('previous.json')} | ({pending['before'], pending['after']} if pending else set())
+            keep = {self.store.load(generation)['identity'].get('warp_account') for generation in generations if generation}
+            directory = self.store.root/'warp'/'accounts'
+            state.trusted(directory)
+            if not directory.is_dir():
+                return
+            for path in directory.iterdir():
+                if path.name not in keep and re.fullmatch(r'[a-f0-9]{16}', path.name) and path.is_dir() and not path.is_symlink():
+                    shutil.rmtree(path)
+        except (OSError, ValueError, KeyError):
+            pass
+
     def prune_images(self):
         """Keep only the VPNBot images of the current generation and of a pending change.
 
@@ -342,13 +361,18 @@ class Runtime:
         mode = value['options'].get('warp_mode', 'off')
         if mode == 'masque' and not node_warp.masque_supported(self.core_command(value['images']['xr'], value['options']['core'], 'version').stdout):
             raise ValueError('MASQUE WARP requires Xray 26.10.10 or newer')
-        warp = node_warp.outbound(mode, value['images']['wg'], self.store.root, command) if mode != 'off' else None
+        options = value['options']
+        self.stage = 'warp'
+        warp = node_warp.outbound(mode, value['images']['wg'], self.store.root, command, value['identity'].get('warp_account'),
+                                  options.get('warp_port'), options.get('warp_http', 'h3')) if mode != 'off' else None
+        self.stage = 'compile'
         body = config.core_config(value['options'], self.routed_host(), value['identity'], value['peers'], warp)
         strict = node_warp.isolate_resolver(body, value['identity']['warp_uuid']) if warp is not None else None
-        node_policy.compile_policy(body, strict, value)
+        # Both cores load the lists' geodata from their own /node directory.
+        geodata = node_policy.compile_policy(body, strict, value)
         if strict:
-            self.write_runtime(self.store.path(generation)/'runtime/warp', {'xray.json': state.encode(strict, state.CORE_CONFIG_BYTES)})
-        files = {'xray.json': state.encode(body, state.CORE_CONFIG_BYTES)}
+            self.write_runtime(self.store.path(generation)/'runtime/warp', {'xray.json': state.encode(strict, state.CORE_CONFIG_BYTES)} | geodata)
+        files = {'xray.json': state.encode(body, state.CORE_CONFIG_BYTES)} | geodata
         certificates = {name: base64.b64decode(encoded, validate=True) for name, encoded in value['tls'].items()}
         if value['options'].get('cover'):
             cover = self.store.path(generation)/'runtime/cover'
@@ -398,7 +422,8 @@ class Runtime:
                 *[arg for resolver in resolvers for arg in ('--dns', resolver)],
                 '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
                 '--pids-limit', '128', '--memory', '384m', '--memory-swap', '384m',
-                '--env', 'GODEBUG=multipathtcp=0', '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size=8m',
+                '--env', 'GODEBUG=multipathtcp=0', '--env', 'XRAY_LOCATION_ASSET=/node',
+                '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size=8m',
                 '--mount', f'type=bind,src={directory},dst=/node,readonly',
                 '--entrypoint', config.CORES[value['options']['core']], value['images']['xr']]
 
@@ -416,6 +441,9 @@ class Runtime:
 
     def validate(self, generation):
         self.prepare(generation)
+        # Manager.apply validates and then activates the same generation: prepare once.
+        self.prepared = generation
+        self.stage = 'core_test'
         command(['docker', 'run', '--rm', *self.docker_arguments(generation), 'run', '-test', '-c', '/node/xray.json'], timeout=30)
         if self.store.load(generation)['options'].get('warp_mode', 'off') != 'off':
             command(['docker', 'run', '--rm', *self.docker_arguments(generation, warp=True), 'run', '-test', '-c', '/node/xray.json'], timeout=30)
@@ -423,6 +451,7 @@ class Runtime:
             command(['docker', 'run', '--rm', *self.cover_arguments(generation), '-t', '-c', '/node/nginx.conf'])
         if self.store.load(generation)['options'].get('amnezia', {}).get('enabled'):
             command(['docker', 'run', '--rm', *self.amnezia_arguments(generation), '-n', '-c', '/node/carrier.conf'])
+        self.stage = 'firewall'
         rules = config.firewall(self.store.load(generation)['options'], self.routed_host())
         command(['nft', '-c', '-f', '-'], data=self.transaction(rules).encode())
 
@@ -445,7 +474,10 @@ class Runtime:
 
     def apply(self, generation):
         value = self.store.load(generation)
-        self.prepare(generation)
+        if getattr(self, 'prepared', None) != generation:
+            self.prepare(generation)
+        self.prepared = None
+        self.stage = 'start'
         self.container()
         self.container(COVER_CONTAINER)
         self.container(AWG_CONTAINER)
@@ -585,6 +617,9 @@ class Runtime:
         options.setdefault('domain_aliases', [])
         options.setdefault('cover', False)
         options.setdefault('connect_family', 4 if self.host['public4'] else 6)
+        # Expanded lists reach megabytes: the per-minute status carries their digests.
+        if isinstance(options.get('policy'), dict):
+            options['policy'] = node_policy.summary(options['policy'])
         return {'running': running,
                 'options': options, 'public4': self.host['public4'], 'public6': self.host['public6'],
                 'sources': self.host['sources'], 'peers': value['peers'], 'generation': self.store.current(),

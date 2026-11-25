@@ -64,19 +64,33 @@ handshake() {
     wg-quick down "$WGCF_CONF" 2>/dev/null || true
     return 1
 }
+set_port() {
+    # В профиле закрытый ключ: временная копия только для root.
+    tmp="$WGCF_CONF.port.$$"
+    if ! (umask 077; sed -E "s/^(Endpoint *= *.+):[0-9]+[[:space:]]*$/\1:$1/" "$WGCF_CONF" > "$tmp") || [ ! -s "$tmp" ]; then
+        rm -f "$tmp"
+        return 1
+    fi
+    cat "$tmp" > "$WGCF_CONF"
+    rm -f "$tmp"
+}
+# Порт, выбранный администратором в боте (официальные порты Cloudflare WARP):
+# только он, без перебора. Без выбора — автоматический перебор ниже.
+fixed=$(jq -r '.warp_port // empty' "${WARP_PAC:-/config/pac.json}" 2>/dev/null || true)
+case "$fixed" in
+    2408|500|1701|4500)
+        set_port "$fixed" || exit 1
+        handshake && exit 0
+        echo "[warp] no handshake on the selected UDP $fixed"
+        exit 1
+        ;;
+esac
 current=$(sed -n 's/^Endpoint *= *.*:\([0-9][0-9]*\)[[:space:]]*$/\1/p' "$WGCF_CONF" | head -n 1)
 handshake && exit 0
 [ -n "$current" ] || exit 1
 for port in 2408 500 1701 4500; do
     [ "$port" = "$current" ] && continue
-    # В профиле закрытый ключ: временная копия только для root.
-    tmp="$WGCF_CONF.port.$$"
-    if ! (umask 077; sed -E "s/^(Endpoint *= *.+):[0-9]+[[:space:]]*$/\1:$port/" "$WGCF_CONF" > "$tmp") || [ ! -s "$tmp" ]; then
-        rm -f "$tmp"
-        exit 1
-    fi
-    cat "$tmp" > "$WGCF_CONF"
-    rm -f "$tmp"
+    set_port "$port" || exit 1
     echo "[warp] no handshake on UDP $current, trying endpoint port $port"
     if handshake; then
         echo "[warp] endpoint port $port answers"

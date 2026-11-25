@@ -17,28 +17,63 @@ trait BotManagedNodeCard
     /** Lines for a connected node's card, below its state and transport. */
     public function managedNodeCardDetails(string $id, array $node): array
     {
+        $sections = $this->managedNodeCardSections($id, $node);
+        if (!isset($node['status']['running'])) return [];
+        return array_values(array_filter([$sections['version'], ...$sections['server'], ...$sections['check'], ...$sections['traffic'],
+            ...$sections['users'], $sections['guard']], static fn($line) => $line !== ''));
+    }
+
+    /** The card's details grouped by subject; empty groups stay empty. */
+    public function managedNodeCardSections(string $id, array $node): array
+    {
+        $result = ['version' => '', 'server' => [], 'check' => [], 'traffic' => [], 'users' => [], 'guard' => ''];
         $status = is_array($node['status'] ?? null) ? $node['status'] : [];
         // No successful status check yet: nothing is known about the node.
-        if (!isset($status['running'])) return [];
-        $lines = [$this->managedNodeVersionLine($status)];
+        if (!isset($status['running'])) return $result;
+        $result['version'] = $this->managedNodeVersionLine($status);
         $host = is_array($status['host'] ?? null) ? $status['host'] : null;
-        $checked = !empty($node['checked']) ? date('H:i:s', (int) $node['checked']) : '';
         if ($host === null) {
-            $lines[] = $this->t('Состояние сервера ноды: нет данных — код ноды их ещё не сообщает.', 'Node server state: no data — the node code does not report it yet.');
+            $result['server'][] = $this->t('Нет данных — код ноды их ещё не сообщает.', 'No data — the node code does not report it yet.');
         } else {
-            if (($server = $this->managedNodeServerLine($host)) !== '') $lines[] = $server . ($checked !== '' ? $this->t(' (проверка ', ' (check ') . $checked . ')' : '');
-            $lines[] = $this->managedNodeConnectionsBlock($host);
+            if (($server = $this->managedNodeServerLine($host)) !== '') $result['server'][] = $server;
+            $result['server'][] = $this->managedNodeConnectionsBlock($host);
         }
         $exit = $this->exitNodes()[$id] ?? null;
         if ($exit !== null) {
-            $lines[] = $this->t('Проверка трафика основным ботом: ', 'Main bot traffic check: ') . $this->exitStatusLine($id, $exit)
-                . (($history = $this->exitHistoryLine($this->exitStatus()[$id] ?? [])) !== '' ? "\n" . $history : '');
-            $lines[] = $this->exitTrafficLine($id);
-            if (isset($exit['managed_profile']['warp_uuid'])) $lines[] = $this->exitWarpHealthLine($id);
-            $lines[] = $this->managedNodeUsersLine($id);
-            $lines[] = $this->managedNodeIpGuardLine($node, $exit);
+            $result['check'][] = $this->t('Основной канал: ', 'Main channel: ') . $this->exitStatusLine($id, $exit);
+            if (($history = $this->exitHistoryLine($this->exitStatus()[$id] ?? [])) !== '') $result['check'][] = $history;
+            if (isset($exit['managed_profile']['warp_uuid'])) $result['check'][] = $this->managedNodeWarpHealthShort($id);
+            $result['traffic'][] = $this->managedNodeTrafficShort($id);
+            $result['users'][] = $this->managedNodeUsersLine($id);
+            $result['guard'] = $this->managedNodeIpGuardLine($node, $exit);
         }
-        return array_values(array_filter($lines, static fn($line) => $line !== ''));
+        return $result;
+    }
+
+    /** WARP checks in one line: HTTPS and DNS results at the time of the last check. */
+    private function managedNodeWarpHealthShort(string $id): string
+    {
+        $status = $this->exitStatus()[$id]['warp_health'] ?? [];
+        if (empty($status['time'])) return $this->t('WARP: ещё не проверялся', 'WARP: not checked yet');
+        $mark = static fn($value) => $value === 'ok' ? '✓' : '✗';
+        $ok = ($status['https'] ?? '') === 'ok' && ($status['udp'] ?? '') === 'ok';
+        return ($ok ? '🟢' : '🔴') . ' WARP: HTTPS ' . $mark($status['https'] ?? '') . ' · DNS (UDP) ' . $mark($status['udp'] ?? '')
+            . ' · ' . date('d.m H:i', (int) $status['time']) . (time() - (int) $status['time'] > 3 * self::EXIT_CRON_PERIOD ? $this->t(' · проверка устарела', ' · stale check') : '');
+    }
+
+    /** Node traffic in one line: total, then by controller channel. */
+    private function managedNodeTrafficShort(string $id): string
+    {
+        try { $t = $this->exitTraffic($id); }
+        catch (XrayStatsUnavailable $error) { return $this->t('Недоступен', 'Unavailable'); }
+        if (!$t['since']) return $this->t('Ещё не подсчитан (обновляется раз в минуту)', 'Not counted yet (updated once a minute)');
+        $line = $this->t('с ', 'since ') . date('d.m H:i', $t['since']) . ': ↑' . $this->getBytes($t['up']) . ' ↓' . $this->getBytes($t['down']);
+        if (!empty($t['modes']['since'])) {
+            foreach (['node' => $this->t('обычный', 'normal'), 'warp' => 'WARP'] as $mode => $label) {
+                $line .= ' · ' . $label . ' ↑' . $this->getBytes($t['modes'][$mode]['up']) . ' ↓' . $this->getBytes($t['modes'][$mode]['down']);
+            }
+        }
+        return $line;
     }
 
     /** Controller IP blocks take effect on the node only after it confirms the current list. */
@@ -107,7 +142,7 @@ trait BotManagedNodeCard
         if (is_array($network) && is_int($network['rx'] ?? null) && is_int($network['tx'] ?? null)) {
             $parts[] = $this->t('сеть с загрузки: ↓', 'network since boot: ↓') . $this->getBytes($network['rx']) . ' ↑' . $this->getBytes($network['tx']);
         }
-        return $parts ? $this->t('Сервер ноды: ', 'Node server: ') . implode(' · ', $parts) : '';
+        return $parts ? implode(' · ', $parts) : '';
     }
 
     private function managedNodeDuration(int $seconds): string
@@ -123,7 +158,8 @@ trait BotManagedNodeCard
     {
         $servers = array_values(array_filter((array) ($host['servers'] ?? []), static fn($s) => is_array($s)
             && filter_var($s['address'] ?? '', FILTER_VALIDATE_IP) && in_array($s['role'] ?? '', ['main', 'vpn'], true)));
-        $lines = [$this->t('Подключённые серверы (соединения с нодой при проверке):', 'Connected servers (connections to the node at the check):')];
+        $lines = [$this->t('Подключённые серверы (соединения при проверке):', 'Connected servers (connections at the check):')];
+        $idle = [];
         foreach (array_slice($servers, 0, self::NODE_CARD_SERVERS) as $server) {
             $tcp = $server['tcp'] ?? null; $udp = $server['udp'] ?? null;
             $online = (is_int($tcp) && $tcp > 0) || $udp === true;
@@ -133,12 +169,17 @@ trait BotManagedNodeCard
             if ($udp === true) $state[] = 'UDP WG/AWG';
             // No TCP and an unreadable UDP table: a WireGuard/AmneziaWG peer may still be connected.
             $partial = !$online && !$unknown && $udp === null;
+            if (!$online && !$unknown && !$partial) {
+                $idle[] = ($server['role'] === 'main' ? $this->t('основной бот ', 'main bot ') : '') . '<code>' . self::esc($server['address']) . '</code>';
+                continue;
+            }
             $lines[] = ($unknown || $partial ? '⚪ ' : ($online ? '🟢 ' : '⚫ '))
                 . ($server['role'] === 'main' ? $this->t('основной бот ', 'main bot ') : $this->t('VPN-сервер ', 'VPN server '))
                 . '<code>' . self::esc($server['address']) . '</code> — '
                 . ($unknown ? $this->t('нет данных', 'no data') : ($online ? implode(', ', $state)
                     : ($partial ? $this->t('TCP-соединений нет; UDP: нет данных', 'no TCP connections; UDP: no data') : $this->t('нет соединений', 'no connections'))));
         }
+        if ($idle) $lines[] = '⚫ ' . $this->t('без соединений: ', 'no connections: ') . implode(', ', $idle);
         if (count($servers) > self::NODE_CARD_SERVERS) $lines[] = $this->t('…и ещё ', '…and ') . (count($servers) - self::NODE_CARD_SERVERS) . $this->t(' (список — в «Серверы для VPN»)', ' more (see VPN servers)');
         if (!empty($host['local'])) $lines[] = $this->t('Внутри AmneziaWG (локально): TCP ', 'Inside AmneziaWG (local): TCP ') . (int) $host['local'];
         if (!empty($host['other'])) $lines[] = '⚠️ ' . $this->t('Соединения с адресов вне списка: ', 'Connections from addresses outside the list: ') . (int) $host['other'];
@@ -149,9 +190,9 @@ trait BotManagedNodeCard
     private function managedNodeUsersLine(string $id): string
     {
         $assigned = $this->exitNodeEmails($this->getXray() ?: [], $id);
-        if (!$assigned) return $this->t('Пользователи основного бота с маршрутом через ноду: нет.', 'Main bot users routed through the node: none.');
+        if (!$assigned) return $this->t('С маршрутом через ноду: нет.', 'Routed through the node: none.');
         $online = $this->managedNodeOnlineUsers();
-        $text = $this->t('Пользователи основного бота с маршрутом через ноду: ', 'Main bot users routed through the node: ') . count($assigned);
+        $text = $this->t('С маршрутом через ноду: ', 'Routed through the node: ') . count($assigned);
         if ($online === null) return $text . $this->t(', онлайн: нет данных', ', online: no data');
         $now = array_values(array_filter($assigned, static fn($email) => isset($online[$email])));
         $text .= $this->t(', онлайн сейчас: ', ', online now: ') . count($now);
