@@ -126,12 +126,16 @@ try {
         case 'lists-confirmed':
             $n = $bot->managedNodes()['aabbccdd'];
             $running = $bot->transport('rpc', ['action' => 'status']);
-            verify($n['lists_sent'] && !$running['pending'] && $n['status']['generation'] === $running['generation'], 'node confirms the submitted lists');
+            // Status carries only the lists' digest; the running lists come over the routes RPC.
+            $routes = $bot->transport('rpc', ['action' => 'routes'])['routes'] ?? null;
+            verify($n['lists_sent'] && !$running['pending'] && $n['status']['generation'] === $running['generation'] && is_array($routes)
+                && hash('sha256', json_encode($routes, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) === ($running['options']['policy']['routes_digest'] ?? ''),
+                'node confirms the submitted lists');
             $bot->testAddress = '11.77.0.200';
             verify(!$bot->exitProbe('aabbccdd')['ok'], 'confirmed block rejects previously reachable destination');
             $bot->testAddress = '11.77.0.128';
             verify($bot->exitProbe('aabbccdd')['ok'], 'allowed destination stays reachable with WARP disabled');
-            file_put_contents('/work/confirmed-routes.json', json_encode($running['options']['policy']['routes'], JSON_THROW_ON_ERROR));
+            file_put_contents('/work/confirmed-routes.json', json_encode($routes, JSON_THROW_ON_ERROR));
             break;
         case 'lists-health':
             $bot->saveNodeRoutes('full:www.gstatic.com', 'aabbccdd', 'block');
