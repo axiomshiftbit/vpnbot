@@ -407,7 +407,8 @@ try {
             $bot->checkManagedNodes();
             $node = $bot->managedNodes()['aabbccdd'];
             if ($node['job']) exit(2);
-            verify(($node['error'] ?? '') === 'rolled_back', 'watchdog rolls back after real confirmation deadline');
+            // The rollback followed a failed traffic check: the card keeps that reason.
+            verify(($node['error'] ?? '') === 'probe_failed' && empty($node['error_reason']), 'watchdog rolls back after real confirmation deadline');
             verify($bot->exitProbe('aabbccdd')['ok'] || $bot->exitProbe('aabbccdd')['ok'], 'original client carries traffic after automatic rollback');
             break;
         default: throw new RuntimeException('unknown fixture action');
