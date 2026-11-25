@@ -348,7 +348,7 @@ def nginx_findings(version):
         level = re.search(r'Severity:\s*(\w+)', text)
         vulnerable = re.search(r'^\s*Vulnerable:\s*(.+?)\s*$', text, re.M)
         safe = re.search(r'^\s*Not vulnerable:\s*(.+?)\s*$', text, re.M)
-        if not level or not vulnerable:
+        if not vulnerable:
             raise ValueError('unexpected nginx.org advisory entry')
         hit = False
         for part in (part.strip() for part in vulnerable.group(1).split(',')):
@@ -364,7 +364,10 @@ def nginx_findings(version):
         ident = re.search(r'CVE-\d{4}-\d{4,}', text)
         name = ident.group(0) if ident else 'nginx: ' + ' '.join(text.split('Severity')[0].split())[:60]
         # Исправлено, если выпуск с исправлением есть в этой же или более новой ветке.
-        found.append((name, NGINX_SEVERITY.get(level.group(1).lower(), 'UNKNOWN'), any(fix > current for fix in fixes)))
+        # С 25.11.2026 nginx.org не указывает уровень: затронутая версия без уровня
+        # блокирует как HIGH, а не проходит незамеченной.
+        severity = NGINX_SEVERITY.get(level.group(1).lower(), 'UNKNOWN') if level else 'HIGH'
+        found.append((name, severity, any(fix > current for fix in fixes)))
     return sorted(set(found))
 
 

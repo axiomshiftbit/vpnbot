@@ -342,6 +342,19 @@ class ComponentsTest(unittest.TestCase):
         self.assertIn('BLOCK CVE-2099-0001 MEDIUM (nginx.org)', text)
         self.assertIn('note  CVE-2099-0003 LOW (nginx.org)', text)
 
+    def test_nginx_entries_without_severity_still_block(self):
+        # Формат nginx.org с 25.11.2026: без строки «Severity:».
+        pinned = components.pins()['nginx']
+        major, minor, level = components.numbers(pinned)[:3]
+        fixed = f'{major}.{minor}.{level + 1}'
+        quiet = QUIET_NGINX.replace('Severity: medium<br>', '')
+        page = quiet.replace('</ul>', f'<li><p>Excessive CPU usage<br><a href="x">Advisory</a><br><a href="y">CVE-2099-0007</a><br>'
+                                      f'Not vulnerable: {fixed}+<br>Vulnerable: 0.1.0-{pinned}</p></li></ul>')
+        rows, blocked = self.run_check(Api(nginx=page, releases={'nginx/nginx': [('release-' + fixed, False)]}))
+        self.assertEqual([(b[2], b[3], b[5]) for b in blocked], [('CVE-2099-0007', 'HIGH', 'nginx.org')])
+        rows, blocked = self.run_check(Api(nginx=quiet))
+        self.assertEqual(blocked, [])
+
     def test_nginx_page_that_cannot_be_read_is_not_a_clean_bill(self):
         for page in ('<html>maintenance</html>', QUIET_NGINX.replace('Vulnerable:', 'Affected:'),
                      QUIET_NGINX.replace('0.1.0-0.8.14', '0.1.0 to 0.8.14')):
