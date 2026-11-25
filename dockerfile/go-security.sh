@@ -33,4 +33,5 @@ github.com/smallstep/certificates v0.30.2
 go.opentelemetry.io/otel v1.47.0
 go.opentelemetry.io/otel/sdk v1.47.0
 github.com/go-chi/chi/v5 v5.5.0
+github.com/insomniacslk/dhcp v0.0.0-20260719225207-c76316d4aa82
 PINS
