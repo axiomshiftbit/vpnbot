@@ -49,8 +49,10 @@ class Base(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         root = Path(self.tmp.name)
         self.config, self.lists, self.backups, self.daemon = root / 'nftables.conf', root / 'list', root / 'backups', root / 'daemon.json'
-        for name, value in (('CONFIG', self.config), ('LISTS', self.lists), ('BACKUPS', self.backups), ('DAEMON', self.daemon)):
-            p = patch.object(installer, name, value)
+        self.candidate = root / 'nftables.conf.vpnbot-candidate'
+        for name, value in (('CONFIG', self.config), ('LISTS', self.lists), ('BACKUPS', self.backups), ('DAEMON', self.daemon),
+                            ('CANDIDATE', self.candidate)):
+            p = patch.object(installer, name, value, create=True)
             p.start()
             self.addCleanup(p.stop)
         self.calls = []
@@ -214,7 +216,7 @@ class Apply(Base):
         original = installer.run
 
         def failing(args, data=None, check=True, timeout=120):
-            if list(map(str, args)) == ['nft', '-f', str(self.config)]:
+            if list(map(str, args)) == ['nft', '-f', str(self.candidate)]:
                 raise ValueError('Команда не выполнена: nft')
             return original(args, data, check, timeout)
         with patch.object(installer, 'run', failing), self.assertRaises(ValueError):
@@ -290,16 +292,110 @@ class State(Base):
         (self.lists / 'my_server/geoip-ipv4.nft').write_text('# own list\n')
         self.config.write_text('# debian default\n')
         calls = []
-        with patch.object(installer, 'run', fake_run(calls)), patch('builtins.print'):
-            installer.install_node()
-        # Нода: Docker без своих правил, маршрутизации и userland-proxy, затем перезапуск.
-        self.assertEqual({'ip-forward': False, 'ip6tables': False, 'iptables': False, 'userland-proxy': False},
-                         json.loads(self.daemon.read_text()))
-        self.assertIn(['systemctl', 'restart', 'docker.service'], calls)
+        with patch.object(installer, 'run', fake_run(calls)), patch('builtins.print'), \
+                patch.object(installer.shutil, 'which', return_value='/usr/bin/docker'):
+            self.assertTrue(installer.install_node())
+        # Аудит 26.11.2026 (В03): Docker настраивает установщик ноды после проверки хоста,
+        # а не этот шаг до неё.
+        self.assertFalse(self.daemon.exists())
+        self.assertNotIn(['systemctl', 'restart', 'docker.service'], calls)
+        self.assertIn(['docker', 'ps', '--format', '{{.Names}}'], calls)
         self.assertIn(installer.NODE_MARKER, self.config.read_text())
         self.assertEqual('# own list\n', (self.lists / 'my_server/geoip-ipv4.nft').read_text())
         self.assertTrue((self.lists / 'tg/geoip-ipv4.nft').exists())
         self.assertEqual('# debian default\n', self.config.with_name('nftables.conf.before-vpnbot').read_text())
+
+
+class AuditFixes(Apply):
+    """Аудит 26.11.2026: В03, С06–С09."""
+
+    def docker(self, names, labels=None, fail=False):
+        labels = labels or {}
+        def run(args, data=None, check=True, timeout=120):
+            args = list(map(str, args))
+            self.calls.append(args)
+            if args[:2] == ['docker', 'ps']:
+                return SimpleNamespace(returncode=1 if fail else 0, stdout='\n'.join(names), stderr='')
+            if args[:2] == ['docker', 'inspect']:
+                return SimpleNamespace(returncode=0, stdout=labels.get(args[-1], ''), stderr='')
+            return fake_run(self.calls)(args, data, check, timeout)
+        return run
+
+    def test_foreign_containers_stop_the_node_template_before_any_change(self):
+        self.config.write_text('# debian default\n')
+        for names, labels, fail in ((['web'], {}, False), (['vpnbot-node-xray'], {'vpnbot-node-xray': ''}, False), ([], {}, True)):
+            with self.subTest(names=names, fail=fail), patch.object(installer, 'run', self.docker(names, labels, fail)), \
+                    patch.object(installer.shutil, 'which', return_value='/usr/bin/docker'), patch('builtins.print'):
+                try:
+                    self.assertFalse(installer.install_node())
+                except ValueError:
+                    self.assertTrue(fail, 'only an unreachable daemon raises')
+            self.assertEqual('# debian default\n', self.config.read_text())
+            self.assertFalse(self.lists.exists() or self.daemon.exists())
+        with patch.object(installer, 'run', self.docker(['vpnbot-node-xray'], {'vpnbot-node-xray': '1'})), \
+                patch.object(installer.shutil, 'which', return_value='/usr/bin/docker'), patch('builtins.print'):
+            self.assertTrue(installer.install_node(), 'containers of this node do not block it')
+
+    def test_foreign_profile_without_terminal_needs_an_explicit_choice(self):
+        self.config.write_text('#!/usr/sbin/nft -f\n# own profile\n')
+        for mode in ('full', 'node'):
+            with self.subTest(mode=mode), patch.object(sys, 'argv', ['nft_profile_install.py', '--mode', mode]), \
+                    patch.object(installer.os, 'geteuid', return_value=0), patch.object(sys.stdin, 'isatty', return_value=False), \
+                    patch.dict(os.environ, {'VPNBOT_NFT_REPLACE': ''}), \
+                    patch.object(installer, 'run', side_effect=AssertionError('nothing may run')), patch('builtins.print'):
+                self.assertIs(False, installer.main())
+            self.assertEqual('#!/usr/sbin/nft -f\n# own profile\n', self.config.read_text())
+        with patch.object(sys, 'argv', ['nft_profile_install.py', '--mode', 'node']), patch.object(installer.os, 'geteuid', return_value=0), \
+                patch.object(sys.stdin, 'isatty', return_value=False), patch.dict(os.environ, {'VPNBOT_NFT_REPLACE': 'yes'}), \
+                patch.object(installer, 'run', self.docker([])), patch.object(installer.shutil, 'which', return_value='/usr/bin/docker'), \
+                patch('builtins.print'):
+            self.assertIs(True, installer.main())
+        self.assertIn(installer.NODE_MARKER, self.config.read_text())
+
+    def test_rolled_back_attempt_leaves_no_trusted_list(self):
+        self.start(self.prepare())
+        with patch.object(installer, 'confirmed', return_value=False):
+            self.assertFalse(installer.install_full(True))
+        self.assertFalse((self.lists / 'my_server').exists(), 'C06: the next attempt must not inherit these addresses')
+        # The backup directory is named by the second: the retry gets its own.
+        with patch.object(installer, 'confirmed', return_value=True), patch.object(installer.time, 'strftime', return_value='retry'):
+            self.assertTrue(installer.install_full(True))
+        self.assertIn('198.51.100.7/32', (self.lists / 'my_server/geoip-ipv4.nft').read_text())
+
+    def test_boot_file_changes_only_after_confirmation(self):
+        self.start(self.prepare())
+        seen = []
+        def confirm(seconds):
+            seen.append((self.config.read_text(), self.candidate.exists()))
+            return False
+        with patch.object(installer, 'confirmed', side_effect=confirm):
+            self.assertFalse(installer.install_full(True))
+        self.assertEqual(seen, [('# previous\n', True)], 'C07: a reboot in the window boots the previous profile')
+        self.assertFalse(self.candidate.exists())
+        self.assertIn(['nft', '-f', str(self.candidate)], self.calls)
+
+    def test_daemon_json_mode_is_never_widened(self):
+        for before, expected in ((0o600, 0o600), (0o640, 0o600), (None, 0o600)):
+            self.daemon.unlink(missing_ok=True)
+            self.daemon.with_name('daemon.json.before-vpnbot').unlink(missing_ok=True)
+            if before is not None:
+                self.daemon.write_text('{"proxies": {"http-proxy": "http://user:synthetic@198.51.100.9:3128"}}')
+                os.chmod(self.daemon, before)
+            with self.subTest(before=before), patch.object(installer, 'run', fake_run(self.calls)):
+                installer.docker_rules()
+                self.assertEqual(self.daemon.stat().st_mode & 0o777, expected)
+                if before is not None:
+                    self.assertEqual(self.daemon.with_name('daemon.json.before-vpnbot').stat().st_mode & 0o777, 0o600)
+
+    def test_ssh_port_published_by_dnat_is_refused(self):
+        values = dict(HOST, sources6=[], admins=['198.51.100.7/32'])
+        for port, service in ((443, 'UPSTREAM_INPUT'), (8388, 'SS_INPUT'), (9443, 'TELEMT_INPUT')):
+            with self.subTest(port=port), self.assertRaises(ValueError) as error:
+                installer.render_full(dict(values, ssh_port=port))
+            self.assertIn(service, str(error.exception))
+        self.assertIn('define SSH_PORT = 2222', installer.render_full(dict(values, ssh_port=2222)))
+        # UDP-only Hysteria does not take TCP.
+        self.assertIn('define SSH_PORT = 5443', installer.render_full(dict(values, ssh_port=5443)))
 
 
 if __name__ == '__main__':

@@ -16,6 +16,7 @@ Docker переводится на правила профиля (iptables/ip6ta
 Без терминала значения берутся из окружения: VPNBOT_NFT_WAN, VPNBOT_NFT_PUBLIC4,
 VPNBOT_NFT_PUBLIC6, VPNBOT_NFT_SSH_PORT, VPNBOT_NFT_ADMINS. Применение полного
 профиля требует подтверждения в терминале; без него профиль не меняется.
+Чужой /etc/nftables.conf без терминала заменяется только при VPNBOT_NFT_REPLACE=yes.
 """
 import argparse
 import ipaddress
@@ -41,11 +42,14 @@ LISTS = Path('/opt/maxmind/list')
 BACKUPS = Path('/var/backups/vpnbot-nftables')
 DAEMON = Path('/etc/docker/daemon.json')
 DOCKER_SETTINGS = {'iptables': False, 'ip6tables': False, 'userland-proxy': False}
-# Нода: контейнеры в сети хоста, маршрутизация не нужна (node_setup.py
-# требует iptables/ip6tables/ip-forward=false и сам их проверяет).
-NODE_DOCKER_SETTINGS = {'ip-forward': False, 'ip6tables': False, 'iptables': False, 'userland-proxy': False}
 CONFIRM_SECONDS = 120
 NODE_MARKER = '# VPNBOT_MANAGED_NODE_HOST'
+# Проверяемый профиль загружается отсюда; /etc/nftables.conf меняется только после
+# подтверждения, поэтому перезагрузка в окне проверки поднимает прежние правила.
+CANDIDATE = Path('/etc/nftables.conf.vpnbot-candidate')
+# Контейнеры ноды (scripts/node_runtime.py): только они не мешают установке ноды.
+NODE_CONTAINERS = ('vpnbot-node-xray', 'vpnbot-node-cover', 'vpnbot-node-amnezia', 'vpnbot-node-warp', 'vpnbot-node-adguard')
+NODE_LABEL = 'org.vpnbot.managed-node'
 
 
 def run(args, data=None, check=True, timeout=120):
@@ -171,17 +175,34 @@ def my_server(networks, mark='MY_SERVER'):
 
 
 def install_lists(admins=None):
-    """Списки из nftables/list; существующие списки администратора не заменяются."""
+    """Списки из nftables/list; существующие списки администратора не заменяются.
+
+    Возвращает каталоги, созданные этим вызовом: откат установки удаляет их."""
+    created = []
     for source in sorted((TEMPLATES / 'list').iterdir()):
         target = LISTS / source.name
         if target.exists():
+            if source.name == 'my_server' and admins:
+                # Действует сохранённый список, а не ответы этой попытки: показываем его.
+                current = re.findall(r'(?m)^\s*([0-9][0-9./]*)\s*:', (target / 'geoip-ipv4.nft').read_text(errors='replace')) \
+                    if (target / 'geoip-ipv4.nft').exists() else []
+                print('[INFO] Список my_server уже есть и не изменяется. Действующие адреса SSH: '
+                      + (', '.join(current) if current else 'нет') + '. Изменить: ' + str(target / 'geoip-ipv4.nft'))
             continue
         target.mkdir(parents=True, mode=0o755)
+        created.append(target)
         for item in source.iterdir():
             shutil.copyfile(item, target / item.name)
             os.chmod(target / item.name, 0o644)
         if source.name == 'my_server' and admins:
             sets.atomic(target / 'geoip-ipv4.nft', my_server(admins), 0o644)
+    return created
+
+
+def drop_lists(created):
+    """Откат: списки этой попытки, иначе следующая попытка унаследовала бы её адреса."""
+    for target in created:
+        shutil.rmtree(target, ignore_errors=True)
 
 
 def render_full(values):
@@ -189,12 +210,45 @@ def render_full(values):
     text, n = re.subn(r'(?m)^(define SSH_PORT\s*=\s*)\d+', lambda m: m[1] + str(values['ssh_port']), text)
     if n != 1:
         raise ValueError('В шаблоне нет определения SSH_PORT')
+    busy = ssh_dnat_conflicts(text, values['ssh_port'])
+    if busy:
+        # Входящий IPv4 на этот порт уйдёт в контейнер до цепочки input: SSH станет недоступен.
+        raise ValueError('Порт SSH ' + str(values['ssh_port']) + ' уже занят входом VPN (DNAT TCP): ' + ', '.join(busy)
+                         + '. Перенесите sshd на другой порт или измените этот вход в nftables/nftables.conf')
     return text
+
+
+def ssh_dnat_conflicts(text, port):
+    """Имена входов, которые DNAT-ят TCP-порт SSH на публичном IPv4 (правила без комментария)."""
+    defines = {m[1]: m[2] for m in re.finditer(r'(?m)^define\s+([A-Z0-9_]+)\s*=\s*([^#\n]+?)\s*(?:#.*)?$', text)}
+
+    def ports(value, depth=0):
+        result = set()
+        for item in re.split(r'[\s,{}]+', value.strip()):
+            if not item:
+                continue
+            if item.startswith('$') and depth < 4:
+                result |= ports(defines.get(item[1:], ''), depth + 1)
+            elif re.fullmatch(r'\d+-\d+', item):
+                low, high = map(int, item.split('-'))
+                result |= set(range(low, high + 1)) if high - low < 65536 else set()
+            elif item.isdigit():
+                result.add(int(item))
+        return result
+
+    names = []
+    for line in text.splitlines():
+        rule = line.split('#', 1)[0]
+        match = re.search(r'\btcp dport (\$[A-Z0-9_]+|\d+|\{[^}]*\})', rule)
+        if 'dnat to' in rule and 'ip daddr $PUBLIC_IP' in rule and match and port in ports(match[1]):
+            names.append(match[1].lstrip('$'))
+    return sorted(set(names))
 
 
 def restore(directory):
     """Вернуть правила и файл, сохранённые до применения."""
     try:
+        CANDIDATE.unlink(missing_ok=True)
         dump = directory / 'ruleset.nft'
         # Flush и загрузка выполняются одной транзакцией ядра. При отказе
         # действующий фильтр остаётся на месте; отдельный flush недопустим.
@@ -245,14 +299,35 @@ def docker_rules(settings=DOCKER_SETTINGS):
         raise ValueError('/etc/docker/daemon.json не JSON-объект')
     if all(value.get(k) is v for k, v in settings.items()):
         return False
+    # daemon.json может хранить, например, реквизиты прокси: права не расширяются,
+    # новый файл и копия доступны только root.
+    mode = 0o600
     if DAEMON.exists():
+        mode = DAEMON.stat().st_mode & 0o600
         backup = DAEMON.with_name(DAEMON.name + '.before-vpnbot')
         if not backup.exists():
-            shutil.copyfile(DAEMON, backup)
+            sets.atomic(backup, DAEMON.read_text(), 0o600)
     DAEMON.parent.mkdir(mode=0o755, exist_ok=True)
-    sets.atomic(DAEMON, json.dumps(value | settings, indent=2, sort_keys=True) + '\n', 0o644)
+    sets.atomic(DAEMON, json.dumps(value | settings, indent=2, sort_keys=True) + '\n', mode)
     run(['systemctl', 'restart', 'docker.service'], timeout=180)
     return True
+
+
+def foreign_containers():
+    """Работающие контейнеры не этой ноды: их сеть не должна меняться установщиком ноды."""
+    if not shutil.which('docker'):
+        return False
+    listed = run(['docker', 'ps', '--format', '{{.Names}}'], check=False)
+    if listed.returncode:
+        # Без ответа демона неизвестно, что запущено: ничего не меняем.
+        raise ValueError('Docker не ответил; установка ноды не меняет Docker и nftables без проверки контейнеров')
+    for name in listed.stdout.split():
+        if name not in NODE_CONTAINERS:
+            return True
+        label = run(['docker', 'inspect', '--format', '{{index .Config.Labels "' + NODE_LABEL + '"}}', name], check=False)
+        if label.returncode or label.stdout.strip() != '1':
+            return True
+    return False
 
 
 def install_full(interactive):
@@ -261,9 +336,13 @@ def install_full(interactive):
               'Запустите scripts/nft_profile_install.py --mode full из SSH-сессии.')
         return False
     values = collect(True)
-    install_lists(values['admins'])
-    text = render_full(values)
-    nft.compile_rules(text)  # проверка в отдельном network namespace
+    created = install_lists(values['admins'])
+    try:
+        text = render_full(values)
+        nft.compile_rules(text)  # проверка в отдельном network namespace
+    except BaseException:
+        drop_lists(created)
+        raise
     directory = BACKUPS / time.strftime('%Y%m%d-%H%M%S')
     directory.mkdir(parents=True, mode=0o700)
     (directory / 'ruleset.nft').write_text(run(['nft', 'list', 'ruleset']).stdout)
@@ -272,10 +351,15 @@ def install_full(interactive):
     guard = subprocess.Popen([sys.executable, '-I', __file__, '--watchdog', str(directory), '--after', str(CONFIRM_SECONDS)],
                              start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL)
+    ok = False
     try:
-        sets.atomic(CONFIG, text, 0o600)
-        run(['nft', '-f', str(CONFIG)])
+        sets.atomic(CANDIDATE, text, 0o600)
+        run(['nft', '-f', str(CANDIDATE)])
         ok = confirmed(CONFIRM_SECONDS - 5)
+        if ok:
+            # Загрузочный файл меняется только после подтверждённого входа.
+            sets.atomic(CONFIG, text, 0o600)
+            CANDIDATE.unlink(missing_ok=True)
     except BaseException:
         ok = False
         raise
@@ -283,9 +367,11 @@ def install_full(interactive):
         if ok:
             (directory / 'confirmed').write_text('1\n')
             guard.terminate()
-        elif not (directory / 'rolled-back').exists():
-            restore(directory)
-            guard.terminate()
+        else:
+            if not (directory / 'rolled-back').exists():
+                restore(directory)
+                guard.terminate()
+            drop_lists(created)
     if not ok:
         print('[INFO] Подтверждения нет: прежние правила восстановлены, профиль не установлен.')
         return False
@@ -296,15 +382,20 @@ def install_full(interactive):
 
 
 def install_node():
-    """Шаблон для установщика ноды: адреса и применение — в node_setup.py."""
+    """Шаблон для установщика ноды: адреса и применение — в node_setup.py.
+
+    Docker здесь не перезапускается: его настраивает node_setup.py после своей
+    проверки хоста. До записи файлов отказ оставляет сервер нетронутым."""
+    if foreign_containers():
+        print('[ОТКАЗ] nftables: на сервере работают другие контейнеры. Установка ноды не меняет их сеть, '
+              '/etc/nftables.conf и Docker; сначала подготовьте перенос существующей установки.', file=sys.stderr)
+        return False
     install_lists()
     if CONFIG.exists():
         backup = CONFIG.with_name(CONFIG.name + '.before-vpnbot')
         if not backup.exists():
             shutil.copyfile(CONFIG, backup)
     sets.atomic(CONFIG, (TEMPLATES / 'noda.conf').read_text(), 0o600)
-    # Новая нода: контейнеров ещё нет, перезапуск Docker ничего не прерывает.
-    docker_rules(NODE_DOCKER_SETTINGS)
     print('[OK] Шаблон nftables ноды записан в /etc/nftables.conf; адреса задаст установщик ноды')
     return True
 
@@ -326,6 +417,11 @@ def main():
         print('[OK] /etc/nftables.conf уже содержит профиль VPNBot — адреса согласует установщик')
         return True
     interactive = sys.stdin.isatty()
+    if not interactive and state == 'foreign' and os.environ.get('VPNBOT_NFT_REPLACE', '').strip().lower() not in ('yes', 'да'):
+        # Без терминала чужой профиль не заменяется молча: нужен явный выбор.
+        print('[INFO] nftables: /etc/nftables.conf не профиль VPNBot и оставлен без изменений. '
+              'Чтобы заменить его профилем из nftables/ (прежний сохранится), задайте VPNBOT_NFT_REPLACE=yes.')
+        return False
     if interactive and state == 'foreign':
         answer = input('/etc/nftables.conf не профиль VPNBot. Заменить профилем из nftables/ (прежний сохранится)? [y/N]: ')
         if answer.strip().lower() not in ('y', 'yes', 'д', 'да'):

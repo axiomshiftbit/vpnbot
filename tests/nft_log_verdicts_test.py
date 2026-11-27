@@ -42,5 +42,16 @@ class VerdictEvidence(unittest.TestCase):
                 self.assertEqual(MODULE.verdicts(document([{'log': {'prefix': prefix}}, {'drop': None}])), {})
 
 
+class LaterProjectRules(unittest.TestCase):
+    """Audit 26.11.2026 (H06)."""
+    def test_h06_origin_guard_drop_is_known_before_the_guard_loads(self):
+        self.assertEqual(MODULE.with_later(MODULE.verdicts({'nftables': []})).get('BR-ORIGIN-DROP:'), 'DROP')
+        self.assertEqual(MODULE.with_later({'BR-ORIGIN-DROP:': 'UNKNOWN'})['BR-ORIGIN-DROP:'], 'UNKNOWN', 'live rules win')
+        source = (PATH.parents[2]/'scripts/container_origin_guard.py').read_text()
+        denied = source[source.index("' chain denied {'"):source.index("' }']", source.index("' chain denied {'"))]
+        self.assertIn('BR-ORIGIN-DROP: ', denied)
+        self.assertIn('counter drop', denied, 'the fallback matches the rule that follows the log')
+
+
 if __name__ == '__main__':
     unittest.main()

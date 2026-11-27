@@ -36,6 +36,12 @@ def packet(v):
         pos = 6
     else:
         body = struct.pack('!BBHI', v.get('type', 128 if family == 6 else 8), v.get('code', 0), 0, 0) + b'nft-test'
+        if 'inner' in v:
+            # ICMP error quoting a packet of a tracked flow: IPv4 header and 8 bytes of TCP.
+            i = v['inner']
+            quoted = struct.pack('!BBHHHBBH', 69, 0, 1500, 1, 0x4000, 64, 6, 0) + socket.inet_aton(i['src']) + socket.inet_aton(i['dst'])
+            quoted = quoted[:10] + struct.pack('!H', checksum(quoted)) + quoted[12:]
+            body = struct.pack('!BBHHH', v['type'], v.get('code', 0), 0, 0, 1280) + quoted + struct.pack('!HHL', i['sport'], i['dport'], 1)
         if 'nd_target' in v:
             body = struct.pack('!BBHI', v['type'], v.get('code', 0), 0, 0x60000000 if v['type'] == 136 else 0) + socket.inet_pton(socket.AF_INET6, v['nd_target'])
             if v['type'] == 136: body += b'\x02\x01' + bytes.fromhex(v['smac'].replace(':', ''))
@@ -216,6 +222,14 @@ try:
         check('main-spoof-'+src,wan,src,'11.77.0.10')
     for flags in (0,1,3,4,6,16,41): check('main-tcp-flags-'+str(flags),wan,'11.77.0.2','11.77.0.10',flags=flags)
     check('main-ip-options',wan,'11.77.0.2','11.77.0.10',options=True)
+    # Audit 26.11.2026 (H05): a blacklisted packet to a service is counted by that service's chain.
+    def chain_packets(name):
+        data=json.loads(run(['nft','-j','list','chain','ip','filter',name]))
+        return sum(e['counter']['packets'] for x in data['nftables'] for e in x.get('rule',{}).get('expr',[]) if 'counter' in e)
+    for name,port,proto in [('drop_fwd_ss_bl',8388,'tcp'),('drop_fwd_hysteria_bl',5443,'udp'),('drop_fwd_telemt_bl',9443,'tcp')]:
+        before=chain_packets(name)
+        check('main-blacklist-'+name,wan,'11.77.0.4','11.77.0.10',port,proto)
+        rows.append(dict(case='main-blacklist-counted-'+name,passed=chain_packets(name)>before))
     check('main-fragments-trusted',wan,'11.77.0.2','11.77.0.10',51820,'udp',True,fragments=True)
     check('main-fragments-alien',wan,'11.77.0.200','11.77.0.10',51820,'udp',fragments=True)
     check('main-fragments-spoof',wan,'10.10.0.7','11.77.0.10',51820,'udp',fragments=True)
@@ -254,6 +268,17 @@ try:
     outgoing=subprocess.Popen(['python3','-B','/probes/packets.py','flow','41002','11.77.0.2','11.77.0.10'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True);processes.append(outgoing)
     outgoing_ready=outgoing.stdout.readline().strip()=='connected'
     rows.append(dict(case='main-outgoing-connection-control',passed=outgoing_ready))
+    # Audit 26.11.2026 (C05): fragmentation-needed from the provider's private router
+    # address about a tracked flow reaches the host and the DNAT container; an
+    # unrelated error from the same address stays dropped.
+    if outgoing_ready:
+        check('main-related-icmp-private-router-host',wan,'192.168.77.1','11.77.0.10',proto='icmp',type=3,code=4,expected=True,
+              inner=dict(src='11.77.0.10',dst='11.77.0.2',sport=41002,dport=443))
+    if started:
+        check('main-related-icmp-private-router-dnat',wan,'192.168.77.1','11.77.0.10',proto='icmp',type=3,code=4,expected=True,
+              inner=dict(src='11.77.0.10',dst='11.77.0.2',sport=443,dport=41000))
+    check('main-unrelated-icmp-private-router',wan,'192.168.77.1','11.77.0.10',proto='icmp',type=3,code=4,
+          inner=dict(src='11.77.0.10',dst='11.77.0.2',sport=41999,dport=443))
     echo_host=subprocess.Popen(['python3','-B','/probes/packets.py','echo','22'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);processes.append(echo_host)
     time.sleep(.1)
     hostflow=subprocess.Popen(['nsenter','-t',str(wan['pid']),'-n','python3','-B','/probes/packets.py','flow','41003','11.77.0.10','11.77.0.2','22'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True);processes.append(hostflow)

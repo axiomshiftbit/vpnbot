@@ -7,6 +7,11 @@ import subprocess
 import sys
 
 PREFIX = re.compile(r"(?:(?:INPUT6?|FORWARD6?|OUTPUT6?|FWD|DOCKER|RELAY|PREROUTE|BR)-[A-Z0-9-]+|IPTABLES-RK): ")
+# Правила проекта, которые загружаются уже после настройки журналов: защита
+# происхождения контейнерного трафика (scripts/container_origin_guard.py, цепочка
+# denied: log, затем drop) появляется позже установки rsyslog. Действие
+# берётся из живых правил, если они есть, иначе — отсюда.
+LATER = {"BR-ORIGIN-DROP:": "DROP"}
 
 
 def terminal(expressions, matched):
@@ -55,12 +60,17 @@ def verdicts(document):
             for prefix, actions in sorted(found.items())}
 
 
+def with_later(actions):
+    """Карта для rsyslog: правила проекта, загружаемые позже, получают своё действие."""
+    return {prefix: action for prefix, action in LATER.items() if prefix not in actions} | actions
+
+
 def main():
     try:
         # --terse исключает содержимое IP-наборов; firewall только читается.
         result = subprocess.run(["nft", "-j", "-s", "-t", "list", "ruleset"],
                                 check=True, capture_output=True, text=True, timeout=30)
-        actions = verdicts(json.loads(result.stdout))
+        actions = with_later(verdicts(json.loads(result.stdout)))
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         print("Не удалось прочитать действия nftables: " + type(error).__name__, file=sys.stderr)
         return 1
