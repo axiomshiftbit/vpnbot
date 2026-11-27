@@ -310,11 +310,24 @@ trait BotManagedNodeCard
         }
     }
 
+    /** Node snapshots and WARP+ keys are secrets: they are asked for and accepted only in the admin's private chat. */
+    protected function managedNodePrivateChat(): bool
+    {
+        return (int) ($this->input['from'] ?? 0) > 0 && (string) $this->input['from'] === (string) ($this->input['chat'] ?? '');
+    }
+
+    protected function managedNodePrivateOnly(): string
+    {
+        return $this->t('🔐 Это делается только в личном чате с ботом: в группе файл или ключ увидят её участники. Откройте личный чат командой /start и повторите там.',
+            '🔐 This is done only in a private chat with the bot: in a group its members would see the file or key. Open a private chat with /start and retry there.');
+    }
+
     public function managedNodeImportPrompt(string $id): void
     {
         if (!isset($this->managedNodes()[$id])) return;
-        $this->exitPrompt($this->t('пришлите файл копии этой ноды (.json из «Скачать копию ноды»). Он заменит сохранённую копию; ноду бот изменит только после вашего подтверждения восстановления. Сообщение с файлом будет удалено.',
-            'send this node’s snapshot file (.json from Download node snapshot). It replaces the saved snapshot; the node changes only after you confirm the restore. The message with the file is deleted.'), 'managedNodeImportFile', [$id]);
+        if (!$this->managedNodePrivateChat()) { $this->managedNodeMaintenance($id, $this->managedNodePrivateOnly()); return; }
+        $this->exitPrompt($this->t('пришлите файл копии этой ноды (.json из «Скачать копию ноды»). Сохранённая копия останется прежней до успешного восстановления; ноду бот изменит только после вашего подтверждения. Сообщение с файлом будет удалено.',
+            'send this node’s snapshot file (.json from Download node snapshot). The saved snapshot stays as it is until the restore succeeds; the node changes only after you confirm. The message with the file is deleted.'), 'managedNodeImportFile', [$id]);
     }
 
     // The file from Telegram; tests replace it.
@@ -350,6 +363,8 @@ trait BotManagedNodeCard
     {
         $id = (string) $id;
         if (!isset($this->managedNodes()[$id])) return;
+        // A reply in a group is never read: its members could take the keys from the file.
+        if (!$this->managedNodePrivateChat()) { $this->managedNodeMaintenance($id, $this->managedNodePrivateOnly()); return; }
         $notice = '';
         try {
             $key = (string) ($this->managedNodeTransport($id, 'public')['public_key'] ?? '');

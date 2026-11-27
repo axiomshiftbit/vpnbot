@@ -126,6 +126,18 @@ trait BotManagedNodes
         }
     }
 
+    /** What ties a node's PAC record, its exit profile and its saved snapshot to one generation. */
+    public function managedNodeBackupMark(): string
+    {
+        $pac = $this->getPacConf();
+        $mark = [];
+        foreach ($this->managedNodes($pac) as $id => $node) {
+            $mark[$id] = [!empty($node['connected']), $node['status']['generation'] ?? null, $node['job']['id'] ?? null, $node['job']['phase'] ?? null,
+                array_intersect_key($pac['exits'][$id] ?? [], array_flip(['link', 'managed_profile', 'policy']))];
+        }
+        return hash('sha256', json_encode($mark, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+    }
+
     public function managedNodeBackupCheck(?array $nodes = null): void
     {
         foreach ($nodes ?? $this->managedNodes() as $id => $node) {
@@ -158,7 +170,7 @@ trait BotManagedNodes
             ($action === 'import' && isset($value['snapshot']->options->policy))
             || ($action === 'rpc' && ($value['action'] ?? '') === 'submit' && (isset($value['request']['value']['policy']) || isset($value['request']['value']['options']['policy'])))
         );
-        $limit = in_array($action,['rpc','saved','saved-routes','rebind','reconnect'],true) ? 4 * 1024 * 1024 + 4096 : 65536;
+        $limit = in_array($action,['rpc','saved','restore-source','saved-routes','rebind','reconnect'],true) ? 4 * 1024 * 1024 + 4096 : 65536;
         if ($large) $body = '#' . $body;
         if (strlen($body) > ($large ? 4 * 1024 * 1024 + 4096 : 65536)) throw new RuntimeException('Node request too large');
         $process = proc_open(['python3', '-I', __DIR__ . '/node_ssh.py'],
@@ -208,13 +220,21 @@ trait BotManagedNodes
         return $this->managedNodeTransport($id, 'rpc', $request);
     }
 
-    protected function managedNodeWrite(string $id, callable $edit): void
+    /**
+     * Only adding a node creates a record. A stale button, a status check or cron racing with a
+     * deletion edits a missing node: nothing is written, so a deleted card never comes back.
+     */
+    protected function managedNodeWrite(string $id, callable $edit, bool $create = false): void
     {
-        $saved = $this->withLock('pac', function () use ($id, $edit) {
+        $saved = $this->withLock('pac', function () use ($id, $edit, $create) {
             $pac = $this->getPacConf();
             if (!is_array($pac)) throw new RuntimeException('Node settings unavailable');
             $nodes = $this->managedNodes($pac);
             $node = $nodes[$id] ?? null;
+            if ($create) {
+                // The limit and a unique ID are checked in the same locked snapshot that adds the node.
+                if ($node !== null || isset($pac['managed_nodes'][$id]) || isset($pac['exits'][$id]) || count($nodes) >= self::EXIT_MAX) return false;
+            } elseif ($node === null) return true;
             if ($edit($node) === false) return true;
             if ($node === null) unset($pac['managed_nodes'][$id]);
             else $pac['managed_nodes'][$id] = $node;
@@ -300,22 +320,41 @@ trait BotManagedNodes
         $this->managedNodeLocked($id, fn() => $this->managedNodeSubmitLocked($id, $operation, $value, $expectedGeneration));
     }
 
-    private function managedNodeSubmitLocked(string $id, string $operation, $value, ?string $expectedGeneration = null, bool $applyLists = true): void
+    /** Apply the settings draft as it is under the node lock, never a copy read before waiting for it. */
+    public function managedNodeSubmitDraft(string $id): void
+    {
+        $this->managedNodeLocked($id, function () use ($id) {
+            $node = $this->managedNodes()[$id] ?? null;
+            if (!$node || !isset($node['draft'])) throw new RuntimeException('No settings draft');
+            $this->managedNodeSubmitLocked($id, 'configure', $node['draft']);
+        });
+    }
+
+    /**
+     * $replaceLists: the admin applies the card's lists explicitly, also over lists the node runs
+     * without this card's source. $autoLists: digest of an automatic resend of refreshed sources.
+     */
+    private function managedNodeSubmitLocked(string $id, string $operation, $value, ?string $expectedGeneration = null, bool $applyLists = true,
+        bool $replaceLists = false, ?string $autoLists = null): void
     {
         $node = $this->managedNodes()[$id] ?? null;
         if (!$node || !$node['connected'] || $node['job']) throw new RuntimeException('Node is not ready');
+        // Lists of unknown origin are kept by every other change: an absent local list is not an empty one.
+        if ($operation === 'configure' && $applyLists && !$replaceLists && $this->nodeRoutesForeign($node)) $applyLists = false;
         // A node that reports digests keeps its running lists when a request names them by digest.
         $byDigest = $operation === 'configure' && !empty($node['status']['policy_summary']);
         try {
-            $this->managedNodeSubmitRequest($id, $node, $operation, $value, $expectedGeneration, $applyLists, $byDigest);
+            $this->managedNodeSubmitRequest($id, $node, $operation, $value, $expectedGeneration, $applyLists, $byDigest, $autoLists);
         } catch (NodeListsDigestException $error) {
             // The node rejected a digest of lists it no longer runs: send them in full once.
-            $this->managedNodeSubmitRequest($id, $node, $operation, $value, $expectedGeneration, $applyLists, false);
+            $this->managedNodeSubmitRequest($id, $node, $operation, $value, $expectedGeneration, $applyLists, false, $autoLists);
         }
     }
 
-    private function managedNodeSubmitRequest(string $id, array $node, string $operation, $value, ?string $expectedGeneration, bool $applyLists, bool $byDigest): void
+    private function managedNodeSubmitRequest(string $id, array $node, string $operation, $value, ?string $expectedGeneration, bool $applyLists, bool $byDigest, ?string $autoLists = null): void
     {
+        // Only a request that carries the draft itself consumes it; any other change leaves a newer draft in place.
+        $usesDraft = $operation === 'configure' && isset($node['draft']) && $value === $node['draft'];
         $listsSent = null;
         $running = is_array($node['status']['options']['policy'] ?? null) ? $node['status']['options']['policy'] : [];
         if ($operation === 'configure' && $applyLists) {
@@ -350,7 +389,7 @@ trait BotManagedNodes
         if (!empty($node['recovery_required']) && $operation !== 'restore') throw new RuntimeException('Restore the saved node first');
         $exit = $this->exitNodes()[$id] ?? null;
         if (!$exit) throw new RuntimeException('Node route is missing');
-        $generation = $expectedGeneration ?? ($operation === 'configure' ? ($node['draft_generation'] ?? $node['status']['generation'] ?? '') : ($node['status']['generation'] ?? ''));
+        $generation = $expectedGeneration ?? ($usesDraft ? ($node['draft_generation'] ?? $node['status']['generation'] ?? '') : ($node['status']['generation'] ?? ''));
         if (!preg_match('~^[a-f0-9]{32}$~D', $generation)) throw new RuntimeException('Refresh the node before changing it');
         $request = ['action' => 'submit', 'request' => ['operation' => $operation, 'value' => $value, 'generation' => $generation]];
         if ($operation === 'configure' && isset($value['policy'])) {
@@ -363,13 +402,15 @@ trait BotManagedNodes
         $job = $this->managedNodeRpc($id, $request);
         if (!preg_match('~^[a-f0-9]{32}$~D', (string) ($job['job'] ?? ''))) throw new RuntimeException('Invalid node job');
         $before = array_intersect_key($exit, array_flip(['link', 'managed_profile', 'policy']));
-        $draft = $operation === 'configure' ? array_intersect_key($node, array_flip(['draft', 'draft_generation'])) : [];
+        $draft = $usesDraft ? array_intersect_key($node, array_flip(['draft', 'draft_generation'])) : [];
         $origin = array_intersect_key($this->input ?? [], array_flip(['chat','message_id']));
         $subject = $operation === 'rotate' && is_string($value) ? $value : '';
-        $this->managedNodeWrite($id, static function (&$node) use ($job, $before, $operation, $origin, $subject, $draft, $listsSent) {
+        $this->managedNodeWrite($id, static function (&$node) use ($job, $before, $operation, $origin, $subject, $draft, $listsSent, $autoLists) {
             $node['job'] = ['id' => $job['job'], 'operation' => $operation, 'before' => $before, 'phase' => 'waiting', 'started' => time(), 'origin' => $origin, 'subject' => $subject, 'draft' => $draft];
             if ($listsSent !== null) $node['job']['lists_sent'] = $listsSent;
-            unset($node['draft'], $node['draft_generation'], $node['error'], $node['error_reason']);
+            if ($autoLists !== null) $node['job']['lists_auto'] = $autoLists;
+            if ($draft && ($node['draft'] ?? null) === $draft['draft']) unset($node['draft'], $node['draft_generation']);
+            unset($node['error'], $node['error_reason']);
         });
     }
 
@@ -423,6 +464,8 @@ trait BotManagedNodes
                 // The stage the node failed in (no error text): the card tells what to check.
                 if (preg_match('~^[a-z_]{1,24}$~D', (string) ($job['reason'] ?? ''))) $node['error_reason'] = $job['reason'];
                 else unset($node['error_reason']);
+                // A refused automatic resend of refreshed sources is retried daily, not hourly.
+                if (isset($saved['lists_auto'])) $node['lists_auto'] = ['digest' => $saved['lists_auto'], 'time' => time()];
             });
             return;
         }
@@ -467,6 +510,7 @@ trait BotManagedNodes
             $node['last_operation'] = ['operation'=>$saved['operation'] ?? '', 'subject'=>$saved['subject'] ?? '', 'time'=>time(), 'ok'=>true, 'certificate_result'=>$certificateResult];
             // Only a confirmed generation proves that the node runs these lists.
             if (isset($saved['lists_sent'])) $node['lists_sent'] = $saved['lists_sent'];
+            if (($saved['operation'] ?? '') === 'configure') unset($node['lists_auto']);
             if ($checkout !== '') $node['last_operation']['checkout'] = $checkout;
             // A restored snapshot brings its own lists: the controller copy is not on the node until applied again.
             if (($saved['operation'] ?? '') === 'restore') unset($node['recovery_required'], $node['lists_sent']);
@@ -527,6 +571,11 @@ trait BotManagedNodes
 
     private function managedNodeFinish(string $id, array $saved, callable $edit): void
     {
+        // The node has taken or refused the restored copy: an uploaded candidate is not offered again.
+        if (($saved['operation'] ?? '') === 'restore') {
+            try { $this->managedNodeTransport($id, 'import-clear'); }
+            catch (Throwable $error) { error_log('managed node ' . $id . ': uploaded snapshot not cleared (' . get_class($error) . ')'); }
+        }
         // SSH and traffic probes have finished. Serialize only the final state
         // write and Telegram redraw with navigation of this origin message.
         $this->managedNodeScreenLocked($saved['origin'] ?? [], function () use ($id, $saved, $edit) {
@@ -605,8 +654,17 @@ trait BotManagedNodes
         }
         $id = self::exitNewId();
         try {
-            $this->managedNodeTransport($id, 'public');
-            $this->managedNodeWrite($id, static function (&$node) use ($name) { $node = ['name' => $name, 'connected' => false]; });
+            // Reserve the slot first: two parallel additions cannot both pass the limit.
+            try { $this->managedNodeWrite($id, static function (&$node) use ($name) { $node = ['name' => $name, 'connected' => false]; }, true); }
+            catch (RuntimeException $error) {
+                $this->managedNodesMenu($this->t('Введите название длиной 1–40 символов; допускается не более 8 нод.', 'Use a name of 1–40 characters; at most 8 nodes are supported.')); return;
+            }
+            try { $this->managedNodeTransport($id, 'public'); }
+            catch (Throwable $error) {
+                // Release the reserved slot of this attempt only.
+                $this->managedNodeWrite($id, static function (&$node) { if ($node && empty($node['connected'])) $node = null; });
+                throw $error;
+            }
             $this->managedNodeMenu($id);
         } catch (Throwable $error) { $this->managedNodesMenu($this->t('Не удалось подготовить ключ ноды.', 'Could not prepare the node key.')); }
     }
@@ -794,7 +852,7 @@ trait BotManagedNodes
                 $parts = preg_split('~\s+~', trim((string) $text));
                 if (count($parts) !== 4 || !preg_match('~^[0-9]{1,5}$~D', $parts[1]) || $this->exitAddressProblem($parts[0]) !== '') throw new RuntimeException('Invalid endpoint');
                 if (str_contains($parts[0], ':') && !$this->exitIpv6Network()) throw new RuntimeException('IPv6 is not prepared');
-                $this->managedNodeTransport($id, 'saved');
+                $this->managedNodeTransport($id, 'restore-source');
                 // Persist protection before changing the endpoint. A crash must
                 // never let cron overwrite the recovery source with defaults.
                 $this->managedNodeWrite($id, static function (&$node) { $node['recovery_required'] = true; });
@@ -965,7 +1023,8 @@ trait BotManagedNodes
                 if (!$node || !$node['connected'] || $node['job']) throw new RuntimeException('Node not ready');
                 // Read the chosen backup before asking the remote for current
                 // state. Refreshing a backup here would destroy the restore source.
-                $saved = $this->managedNodeTransport($id, 'saved');
+                // An uploaded copy waits beside the confirmed one and is restored first.
+                $saved = $this->managedNodeTransport($id, 'restore-source');
                 if (!is_array($saved['snapshot'] ?? null) || !preg_match('~^[a-f0-9]{16}$~D', (string) ($saved['hash'] ?? ''))) {
                     throw new RuntimeException('Invalid saved snapshot');
                 }
@@ -973,6 +1032,10 @@ trait BotManagedNodes
                     $text = $this->t('Восстановить сохранённую копию ноды? Будут заменены настройки Xray, сертификат и ключи подключений, включая внешние панели. SSH и адреса сервера остаются прежними. Возможен краткий обрыв соединений. Основной бот проверит трафик до подтверждения.',
                         'Restore the saved node snapshot? This replaces Xray settings, certificate and connection identities, including external panels. SSH and server addresses stay as they are. Connections may briefly drop. The main bot tests traffic before confirming.');
                     if (!empty($node['backup_time'])) $text .= "\n\n" . date('Y-m-d H:i', (int) $node['backup_time']);
+                    // The WARP registration lives on the node, outside the snapshot.
+                    if (($saved['snapshot']['options']['warp_mode'] ?? 'off') !== 'off') $text .= "\n\n" . $this->t(
+                        '⚠️ Регистрация WARP хранится на самой ноде и в копию не входит. На переустановленном сервере нода зарегистрирует новое бесплатное устройство WARP: ключ WARP+ введите заново (🌐 WARP → 🔑 Ключ WARP+) и проверьте тип аккаунта.',
+                        '⚠️ The WARP registration is kept on the node itself and is not in the snapshot. On a reinstalled server the node registers a new free WARP device: enter the WARP+ key again (🌐 WARP → 🔑 WARP+ key) and check the account type.');
                     $this->update($this->input['chat'], $this->input['message_id'], $text,
                         [[['text' => $this->t('Восстановить эту копию', 'Restore this snapshot'), 'callback_data' => "/nodeRestore $id {$saved['hash']}"]],
                          [['text' => $this->i18n('back'), 'callback_data' => "/nodeMaintenance $id"]]]);

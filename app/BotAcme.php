@@ -198,8 +198,8 @@ trait BotAcme
             $text[] = $notice;
         }
         $text[] = $this->t(
-            'Порт 80 закрыт firewall и открывается службой хоста только на время проверки Let\'s Encrypt (не дольше 10 минут). Автообновление продлевает сертификат, когда остаётся треть срока; неудачные попытки повторяются через 1, 2, 4 и затем каждые 6 часов.',
-            'Port 80 is closed by the firewall; the host service opens it only for the Let\'s Encrypt check (10 minutes at most). Auto-renewal renews a certificate when a third of its lifetime is left; failed attempts are retried after 1, 2, 4 and then every 6 hours.'
+            'Порт 80 закрыт firewall и открывается службой хоста только на время проверки Let\'s Encrypt (не дольше 10 минут). Закрытие окна не принимает новые подключения; соединение, уже открытое к NGINX за время окна, может завершиться само, как и обычное HTTP-соединение. Автообновление продлевает сертификат, когда остаётся треть срока; неудачные попытки повторяются через 1, 2, 4 и затем каждые 6 часов.',
+            'Port 80 is closed by the firewall; the host service opens it only for the Let\'s Encrypt check (10 minutes at most). Closing the window refuses new connections; a connection to NGINX opened during the window may finish on its own like any HTTP connection. Auto-renewal renews a certificate when a third of its lifetime is left; failed attempts are retried after 1, 2, 4 and then every 6 hours.'
         );
         $data = [];
         foreach ($this->acmeStates() as $name => $s) {

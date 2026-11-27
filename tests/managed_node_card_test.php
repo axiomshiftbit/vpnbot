@@ -20,11 +20,14 @@ class CardFixtureBot extends ManagedFixtureBot
         if ($action === 'public') return ['public_key' => $this->controllerKey];
         if ($action === 'import') {
             $this->imported[] = json_encode($value, JSON_UNESCAPED_SLASHES);
-            file_put_contents($this->managedNodeRoot . "/$id/snapshot.json", json_encode($value['snapshot'], JSON_UNESCAPED_SLASHES));
+            // The upload waits beside the confirmed copy (audit 26.11.2026, C19).
+            file_put_contents($this->managedNodeRoot . "/$id/snapshot.import.json", json_encode($value['snapshot'], JSON_UNESCAPED_SLASHES));
             return ['hash' => str_repeat('e', 16)];
         }
-        if ($action === 'saved') {
-            $raw = (string) file_get_contents($this->managedNodeRoot . "/$id/snapshot.json");
+        if ($action === 'saved' || $action === 'restore-source') {
+            $path = $this->managedNodeRoot . "/$id/snapshot.import.json";
+            if ($action === 'saved' || !is_file($path)) $path = $this->managedNodeRoot . "/$id/snapshot.json";
+            $raw = (string) file_get_contents($path);
             return ['snapshot' => json_decode($raw, true), 'hash' => substr(hash('sha256', $raw), 0, 16)];
         }
         return parent::managedNodeTransport($id, $action, $value);

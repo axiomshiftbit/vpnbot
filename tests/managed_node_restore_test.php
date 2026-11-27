@@ -10,7 +10,7 @@ class RestoreMenuFixture extends ManagedFixtureBot {
         $this->remoteStatus['generation'] = str_repeat('e', 32);
     }
     protected function managedNodeTransport(string $id, string $action, $value = null): array {
-        if ($action === 'saved') { $this->events[] = $action; return $this->saved; }
+        if ($action === 'restore-source') { $this->events[] = $action; return $this->saved; }
         return parent::managedNodeTransport($id, $action, $value);
     }
     protected function managedNodeRpc(string $id, array $request): array {

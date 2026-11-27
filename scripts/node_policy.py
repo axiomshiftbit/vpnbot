@@ -90,6 +90,10 @@ def php_json(value):
 
 
 def routes_digest(routes):
+    # Snapshots keep sorted keys; a request may carry another order of the same lists.
+    if isinstance(routes, dict):
+        routes = {name: dict(sorted(parts.items())) if isinstance(parts, dict) else parts
+                  for name, parts in sorted(routes.items())}
     return hashlib.sha256(php_json(routes).encode()).hexdigest()
 
 

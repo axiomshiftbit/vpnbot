@@ -50,9 +50,22 @@ trait BotNodeRoutes
     /** Edited lists that the node has not confirmed yet. */
     private function nodeRoutesPending(array $node): bool
     {
+        if ($this->nodeRoutesForeign($node)) return true;
         $lists = $this->nodeRoutesSource($node);
         $empty = !array_filter($lists, static fn($list) => $list['routes'] || $list['rulesets']);
         return ($node['lists_sent'] ?? ($empty ? self::nodeRoutesDigest($lists) : '')) !== self::nodeRoutesDigest($lists);
+    }
+
+    /**
+     * The node runs lists this card never applied: it was connected through a new card or a
+     * snapshot was restored. Their source is unknown here, so an absent local list is not an
+     * empty list. They stay on the node until the admin applies the card's lists explicitly.
+     */
+    private function nodeRoutesForeign(array $node): bool
+    {
+        if (isset($node['lists_sent'])) return false;
+        $running = $node['status']['options']['policy']['routes_digest'] ?? null;
+        return is_string($running) && $running !== self::nodeRoutesDigest([]);
     }
 
     private function nodeRoutesWrite(string $id, callable $edit): void
@@ -119,6 +132,9 @@ trait BotNodeRoutes
                 $parts['domain'][($entry['kind'] === 'keyword' ? 'keyword:' : '') . $this->xrayDomainToken($entry)] = true;
             } else throw new NodeRoutesException('entry');
         }
+        // The node stores JSON with sorted keys and hashes it in that order: the first entry's
+        // kind (IP or domain) must not decide the field order, or the digests never match.
+        ksort($parts, SORT_STRING);
         return array_map('array_keys', $parts);
     }
 
@@ -230,7 +246,16 @@ trait BotNodeRoutes
         if ($kind === 'warp' && ($status['options']['warp_mode'] ?? 'off') !== 'off' && (int) ($status['options']['family'] ?? 4) === 4) {
             $text[] = $this->t('В режиме ForceIPv4 адреса IPv6 из списка WARP блокируются.', 'In ForceIPv4 mode IPv6 destinations in the WARP list are blocked.');
         }
-        if ($this->nodeRoutesPending($node)) $text[] = $this->t('Есть изменения, которые ещё не применены на ноде.', 'Some changes are not applied on the node yet.');
+        $refused = $node['lists_auto'] ?? [];
+        if (!empty($refused['time']) && ($refused['digest'] ?? null) !== ($status['options']['policy']['routes_digest'] ?? null)) {
+            $text[] = sprintf($this->t('⚠️ Обновлённые .dat и наборы не применены: нода отклонила изменение %s. Нода работает на прежних списках; бот повторит попытку через сутки.',
+                '⚠️ Refreshed .dat files and sets are not applied: the node refused the change at %s. The node runs its previous lists; the bot retries in a day.'), self::managedNodeTime((int) $refused['time']));
+        }
+        if ($this->nodeRoutesForeign($node)) {
+            $running = (int) array_sum((array) ($status['options']['policy']['counts'][$kind] ?? []));
+            $text[] = sprintf($this->t('⚠️ Нода применяет списки, которых нет в этой карточке (подключение через новую карточку или восстановление копии). В этом списке на ноде записей: %d. Изменение настроек ноды их сохраняет. «✅ Применить на ноде» заменит оба списка ноды записями карточки.',
+                '⚠️ The node runs lists that are not in this card (connected through a new card or restored from a snapshot). Entries of this list on the node: %d. Changing node settings keeps them. ✅ Apply on the node replaces both node lists with the card’s entries.'), $running);
+        } elseif ($this->nodeRoutesPending($node)) $text[] = $this->t('Есть изменения, которые ещё не применены на ноде.', 'Some changes are not applied on the node yet.');
         $text[] = $this->t('Оба списка вместе после разворачивания категорий .dat и наборов — до 3 МБ (около 150–200 тыс. записей). Обновлённые .dat и наборы применённых списков нода получает сама: бот сверяет их раз в час.',
             'Both lists together, after expanding .dat categories and sets, may take up to 3 MB (about 150–200 thousand entries). The node receives refreshed .dat files and sets of applied lists by itself: the bot compares them hourly.');
         if ($notice !== '') $text[] = '<b>' . self::esc($notice) . '</b>';
@@ -418,10 +443,12 @@ trait BotNodeRoutes
             try { $routes = $this->nodeRoutesPolicy($node, null)['routes'] ?? []; }
             catch (Throwable $error) { return; }
             $digest = self::nodeRoutesDigest($routes);
-            // A refused expansion is not retried until a source changes it again.
-            if ($digest === $running || $digest === ($node['lists_auto_digest'] ?? null)) return;
-            $this->managedNodeWrite($id, static function (&$saved) use ($digest) { if ($saved) $saved['lists_auto_digest'] = $digest; });
-            $this->managedNodeSubmitLocked($id, 'configure', $node['status']['options'], $node['status']['generation'] ?? null);
+            if ($digest === $running) return;
+            // The node refused (or rolled back) this very expansion: retry it once a day, not hourly.
+            $refused = $node['lists_auto'] ?? [];
+            if (($refused['digest'] ?? null) === $digest && time() - (int) ($refused['time'] ?? 0) < 86400) return;
+            // A busy or unreachable node throws here and records nothing: the next hourly check retries.
+            $this->managedNodeSubmitLocked($id, 'configure', $node['status']['options'], $node['status']['generation'] ?? null, true, false, $digest);
         });
     }
 
@@ -429,9 +456,13 @@ trait BotNodeRoutes
     public function nodeRoutesApply(string $id, string $kind): void
     {
         try {
-            $node = $this->managedNodes()[$id] ?? null;
-            if (!$node || empty($node['connected']) || $node['job']) throw new RuntimeException('Node is not ready');
-            $this->managedNodeSubmit($id, 'configure', $node['draft'] ?? $node['status']['options'], isset($node['draft']) ? ($node['draft_generation'] ?? null) : null);
+            // The draft is read under the node lock: a newer edit cannot be replaced by an older copy.
+            $this->managedNodeLocked($id, function () use ($id) {
+                $node = $this->managedNodes()[$id] ?? null;
+                if (!$node || empty($node['connected']) || $node['job']) throw new RuntimeException('Node is not ready');
+                $this->managedNodeSubmitLocked($id, 'configure', $node['draft'] ?? $node['status']['options'],
+                    isset($node['draft']) ? ($node['draft_generation'] ?? null) : null, true, true);
+            });
             $this->managedNodeMenu($id);
         } catch (Throwable $e) {
             $this->nodeRoutesMenu($id, $kind, 0, $this->nodeRoutesError($e) ?: $this->t('Не применено: нода занята, не на связи или отклонила изменение.',

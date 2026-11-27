@@ -136,11 +136,14 @@ print('{"ok":true,"result":{"schema":1}}')
     def test_uploaded_snapshot_replaces_saved_one_only_with_fixed_fields(self):
         with tempfile.TemporaryDirectory() as tmp:
             client = transport.Client('aabbccdd', Path(tmp)/'nodes')
-            path = client.directory/'snapshot.json'
-            path.write_text('{"fixture":1}')
+            confirmed = client.directory/'snapshot.json'
+            confirmed.write_text('{"fixture":1}')
+            # Audit 26.11.2026 (C19): the upload waits beside the last confirmed copy.
+            path = client.directory/transport.IMPORTED
             value = {'schema': 1, 'options': {'amnezia': {'parameters': {}}}, 'identity': {}, 'peers': [], 'images': {'xr': 'x'}, 'tls': {}}
             result = client.store(value)
-            self.assertEqual(client.saved(), result)
+            self.assertEqual(client.saved(True), result)
+            self.assertEqual(confirmed.read_text(), '{"fixture":1}')
             self.assertEqual(transport.decode(path.read_bytes()), value)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             for bad in ([], value | {'extra': 1}, {k: v for k, v in value.items() if k != 'tls'}, value | {'schema': True}, value | {'schema': 2}):

@@ -25,7 +25,13 @@ def nginx(options, keys, ipv6):
                      ' proxy_set_header Host $host;', ' proxy_buffering off;', ' proxy_read_timeout 3600s;',
                      ' proxy_send_timeout 3600s;', ' proxy_intercept_errors on;', ' error_page 400 404 = @cover;', ' }']
     elif transport in ('grpc', 'xhttp', 'trojan-grpc'):
-        locations = ['location /'+keys['path']+' {', ' grpc_pass grpc://127.0.0.1:9444;',
+        # The tunnel's upload is one request body (gRPC stream, XHTTP stream-up) or a POST
+        # up to XHTTP scMaxEachPostBytes (16 000 000): the site's 2 MiB limit returned 413.
+        # Xray bounds each XHTTP POST itself, as behind the full bot's NGINX. The site's 15 s
+        # body timeout would also cut an idle upload stream (the full bot hit it at 60 s).
+        locations = ['location /'+keys['path']+' {', ' client_max_body_size 0;', ' client_body_timeout 3600s;',
+                     ' keepalive_requests 100000;',
+                     ' grpc_pass grpc://127.0.0.1:9444;',
                      ' grpc_read_timeout 3600s;', ' grpc_send_timeout 3600s;',
                      ' grpc_set_header Host $host;', ' grpc_socket_keepalive on;', ' }']
     return '\n'.join([

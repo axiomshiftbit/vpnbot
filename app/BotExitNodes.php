@@ -678,8 +678,10 @@ trait BotExitNodes
             $c['outbounds'][] = $outbound + ['tag' => $tag];
             // Вход проверки: узел напрямую, без запасного пути — «Проверить»
             // должен видеть сам узел, а не обход.
+            // Порт зависит от места узла в списке; учётная запись входа — от его ID. Проверка,
+            // попавшая на чужой порт после перестановки, не проходит вместо этого узла.
             $c['inbounds'][] = ['tag' => self::EXIT_PROBE_TAG . $id, 'listen' => '127.0.0.1', 'port' => $port,
-                'protocol' => 'socks', 'settings' => ['auth' => 'noauth', 'udp' => false]];
+                'protocol' => 'socks', 'settings' => ['auth' => 'password', 'accounts' => [self::exitProbeAccount($id)], 'udp' => false]];
             $groupTarget = $groupProbe = null;
             if ($node['kind'] === 'group') {
                 $fallback = $node['fallback'] === 'direct'
@@ -1080,8 +1082,20 @@ trait BotExitNodes
         $node = $this->exitNodes()[$id] ?? null;
         if ($port === null || $node === null) return ['time' => time(), 'ok' => false, 'error' => 'not found'];
         if (empty($node['enabled'])) return ['time' => time(), 'ok' => false, 'error' => 'disabled'];
-        $out = (string) $this->ssh($this->exitProbeCommand($node, $port, $full), 'xr');
+        $out = (string) $this->ssh($this->exitProbeCommand($node, $port, $full, $id), 'xr');
         return $this->exitProbeResult($id, $node, $full, $out, $this->sshFailed);
+    }
+
+    /** Вход проверки узла принимает только учётную запись своего узла. */
+    private static function exitProbeAccount(string $id): array
+    {
+        return ['user' => 'probe-' . $id, 'pass' => hash('sha256', 'vpnbot:exit-probe:' . $id)];
+    }
+
+    private static function exitProbeProxyUser(string $id): string
+    {
+        $account = self::exitProbeAccount($id);
+        return '--proxy-user ' . escapeshellarg($account['user'] . ':' . $account['pass']);
     }
 
     private static function exitWarpProbePassword(string $id, string $uuid): string
@@ -1122,9 +1136,10 @@ trait BotExitNodes
         return implode("\n", $lines);
     }
 
-    private function exitProbeCommand(array $node, int $port, bool $full): string
+    private function exitProbeCommand(array $node, int $port, bool $full, string $id): string
     {
         $proxy = "127.0.0.1:$port";
+        $user = self::exitProbeProxyUser($id);
         // Задержка — время до первого байта generate_204 через узел: time_connect
         // при --socks5-hostname — это подключение к самому входу на 127.0.0.1.
         // Узел не ответил — остальные запросы не делаем (иначе мёртвый узел
@@ -1144,7 +1159,7 @@ trait BotExitNodes
             } catch (InvalidArgumentException $e) {
             }
         }
-        $cmd = "c(){ curl -s --socks5-hostname $proxy --max-time 12 \"\$@\"; }; "
+        $cmd = "c(){ curl -s --socks5-hostname $proxy $user --max-time 12 \"\$@\"; }; "
             . "r=\$(c -o /dev/null -w 'probe=%{http_code} %{time_starttransfer}' " . self::EXIT_PROBE_URL . "); printf '%s\\n' \"\$r\"; "
             . "case \"\$r\" in probe=204*) $more;; *) $tcp;; esac; ";
         return $cmd . 'true';
@@ -1204,7 +1219,7 @@ trait BotExitNodes
                 $result[$id] = ['time' => time(), 'ok' => false, 'error' => 'disabled'];
                 continue;
             }
-            $commands[$id] = $this->exitProbeCommand($nodes[$id], $port, (bool) $full);
+            $commands[$id] = $this->exitProbeCommand($nodes[$id], $port, (bool) $full, $id);
         }
         foreach (array_chunk($commands, 4, true) as $batch) {
             // mktemp 0700, результаты не в общем /logs. trap удаляет только
@@ -1278,6 +1293,8 @@ trait BotExitNodes
             'parse' => $this->t('не разобран', 'not parsed'),
             'empty' => $this->t('пустой', 'empty'),
             'core' => $this->t('не принят ядром Xray', 'rejected by the Xray core'),
+            'save' => $this->t('не сохранён на диск: прежняя копия осталась', 'not saved to disk: the previous copy stays'),
+            'busy' => $this->t('обновляется другим процессом', 'being refreshed by another process'),
             '' => $this->t('не работает', 'not working'),
             default => $code,
         };
@@ -1464,7 +1481,21 @@ trait BotExitNodes
     public function exitRulesetRefresh(string $url, array $set): string
     {
         $key = self::exitRulesetKey($url, $set);
-        $cache = $this->exitRulesetView($url, $set);
+        $seen = $this->exitRulesetView($url, $set);
+        // Кэш одного набора общий для узлов и нод: обновления идут по одному. Иначе
+        // два обработчика, завершившись в обратном порядке, вернули бы старую копию,
+        // а неудачная попытка записала бы прежние записи из памяти поверх свежих.
+        return $this->withLock('exit-ruleset-' . substr(hash('sha256', $key), 0, 32), function () use ($url, $set, $key, $seen) {
+            $cache = $this->exitRulesetView($url, $set);
+            // Пока ждали блокировку, набор успешно обновил другой обработчик.
+            if ($cache !== $seen && (int) ($cache['time'] ?? 0) > (int) ($seen['time'] ?? 0)
+                && ($cache['error'] ?? '') === '' && !empty($cache['entries'])) return '';
+            return $this->exitRulesetRefreshLocked($url, $set, $key, $cache);
+        }, 400, 'busy');
+    }
+
+    private function exitRulesetRefreshLocked(string $url, array $set, string $key, array $cache): string
+    {
         $format = self::ruleSetFormat($url);
         $behavior = (string) ($set['behavior'] ?? 'domain');
         $parser = self::EXIT_RULESET_PARSER . ":$format:$behavior";
@@ -1497,7 +1528,13 @@ trait BotExitNodes
         @mkdir($this->exitRulesetDir(), 0700, true);
         $file = $this->exitRulesetFile($key);
         $tmp = @tempnam(dirname($file), '.ruleset-');
-        if ($tmp !== false && (@file_put_contents($tmp, json_encode($cache, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) === false || !@rename($tmp, $file))) @unlink($tmp);
+        $json = json_encode($cache, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        // Обновление состоялось, только когда файл опубликован: иначе в работе прежний набор.
+        if ($tmp === false || $json === false || @file_put_contents($tmp, $json) !== strlen($json) || !@rename($tmp, $file)) {
+            if ($tmp !== false) @unlink($tmp);
+            error_log('exit ruleset cache not saved');
+            return 'save';
+        }
         return $error;
     }
 
@@ -2057,7 +2094,7 @@ trait BotExitNodes
         if ($port === null || $node === null) return ['error' => 'not found'];
         if (empty($node['enabled'])) return ['error' => 'disabled'];
         $cmd = "s(){ curl -s -o /dev/null --max-time 20 -w '%{http_code} %{size_download} %{time_total}' \"\$@\" " . self::EXIT_SPEED_URL . "; rc=\$?; printf ' %s\\n' \"\$rc\"; }; "
-            . "printf 'node='; s --noproxy '' --socks5-hostname 127.0.0.1:$port; printf 'direct='; s --noproxy '*'; true";
+            . "printf 'node='; s --noproxy '' --socks5-hostname 127.0.0.1:$port " . self::exitProbeProxyUser($id) . "; printf 'direct='; s --noproxy '*'; true";
         $out = (string) $this->ssh($cmd, 'xr');
         if ($this->sshFailed) return ['error' => 'xray'];
         $result = [];
@@ -2444,8 +2481,14 @@ trait BotExitNodes
         if ($from !== 'move' || !isset($this->exitNodes()[$id])) return;
         // Повтор не включает уже выключенный маршрут. Удалять такой домен
         // из WARP нельзя: в узле он тоже не действует, трафик ушёл бы напрямую.
-        $moved = array_values(array_intersect($entries, array_map('strval', array_keys(array_filter($this->exitNodes()[$id]['routes'])))));
-        $ok = $this->changeRouteList('warplist', static function (&$warp) use ($moved) {
+        // Узел и его включённые маршруты сверяются в том же снимке PAC, где
+        // запись убирается из WARP: узел, выключенный или удалённый между
+        // копированием и удалением, ничего не забирает из WARP.
+        $moved = [];
+        $ok = $this->changeRouteList('warplist', function (&$warp) use ($entries, $id, &$moved) {
+            $node = $this->exitNodes()[$id] ?? null;
+            $moved = !$node || empty($node['enabled']) ? []
+                : array_values(array_intersect($entries, array_map('strval', array_keys(array_filter($node['routes'])))));
             foreach ($moved as $entry) unset($warp[$entry]);
         });
         $this->exitRoutesMenu($id, PHP_INT_MAX, $ok ? $this->t('Перенесено из WARP: ', 'Moved from WARP: ') . count($moved) : $this->t('Скопировано, но убрать из WARP не удалось', 'Copied, but removing from WARP failed'));

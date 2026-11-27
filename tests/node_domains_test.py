@@ -59,7 +59,8 @@ class NodeDomainsTest(unittest.TestCase):
             with patch.object(node_runtime.socket,'getaddrinfo',answers), patch.object(node_runtime,'command',command):
                 with self.assertRaises(RuntimeError): rt.certificate('node.example.test',['alt.example.test'])
             self.assertEqual(calls[0][0:3],['nft','add','element'])
-            self.assertEqual(calls[-1][0:3],['nft','delete','element'])
+            # The window is closed after the failure too (then read back, audit 26.11.2026).
+            self.assertIn(['nft','delete','element'], [c[0:3] for c in calls[2:]])
             names = [calls[1][n+1] for n,x in enumerate(calls[1]) if x=='-d']
             self.assertEqual(names,['node.example.test','alt.example.test'])
 

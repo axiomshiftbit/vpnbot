@@ -415,7 +415,9 @@ class NodeSetup(unittest.TestCase):
                     install_code.reset_mock()
                     setup.upgrade_code(root/'src', 'e'*32)
                     install_code.assert_called_once_with(root/'src')
-                    self.assertTrue((root/'code.json').exists())
+                    # Audit 26.11.2026 (C11): the previous commit no longer describes the
+                    # changed files; the full update records the new one only on success.
+                    self.assertFalse((root/'code.json').exists())
                     for job_id in ('f'*32,):
                         with self.subTest(job=job_id), self.assertRaises(ValueError):
                             setup.upgrade_code(root/'src', job_id)

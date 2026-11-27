@@ -27,6 +27,8 @@ from node_runtime import Runtime, command, HostOperationError, host_program, CON
 
 ROOT = Path('/var/lib/vpnbot-node')
 DOCKER_DAEMON = Path('/etc/docker/daemon.json')
+# ROOT/SETUP_MARK exists only while a first installation runs or after it was interrupted.
+SETUP_MARK = 'setup.json'
 
 
 DOCKER_SETTINGS = ('iptables', 'ip6tables', 'ip-forward')
@@ -168,9 +170,12 @@ def prepare_docker(daemon=DOCKER_DAEMON):
     except (ValueError, OSError):
         pass
     state.trusted(daemon)
+    # daemon.json can hold proxy credentials: never widen its mode; new files are root-only.
+    mode = 0o600
     if daemon.exists():
         if daemon.is_symlink() or not daemon.is_file() or daemon.stat().st_nlink != 1:
             raise ValueError('Docker firewall management is enabled')
+        mode = daemon.stat().st_mode & 0o600
         original = daemon.read_bytes()
         try:
             value = state.decode(original, 1024*1024)
@@ -186,7 +191,7 @@ def prepare_docker(daemon=DOCKER_DAEMON):
         daemon.parent.mkdir(mode=0o755, exist_ok=True)
         value = {}
     value.update(DOCKER_INSTALL)
-    state.atomic(daemon, json.dumps(value, indent=2, sort_keys=True).encode()+b'\n', 0o644)
+    state.atomic(daemon, json.dumps(value, indent=2, sort_keys=True).encode()+b'\n', mode)
     command(['systemctl', 'restart', 'docker.service'], timeout=120)
     docker_firewall_disabled(daemon)
     return True
@@ -328,10 +333,10 @@ def upgrade_code(source, job_id=None):
         if not store.current() or store.pending() or (job.get('state') in ('queued', 'running') and not owned) \
                 or (job_id is not None and not owned):
             raise ValueError('Нода не установлена или изменение ещё не завершено')
-        if job_id is None:
-            # Manually installed code is no longer the commit recorded by the
-            # bot's last full update; the next one compares with the clone.
-            (ROOT/'code.json').unlink(missing_ok=True)
+        # The recorded commit no longer describes the files once they change: a later
+        # failure must not leave the previous commit shown as verified. The bot's
+        # full update records the new commit only after every step succeeded.
+        (ROOT/'code.json').unlink(missing_ok=True)
         progress('docker')
         docker_firewall_disabled()
         progress('forwarding')
@@ -413,16 +418,25 @@ def setup(value, source, channel='latest', bundle=None):
     descriptor = os.open(ROOT/'lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # Written before the first change: an interrupted attempt of this
+        # installer is recognised and continued by the next one.
+        mark = ROOT/SETUP_MARK
+        state.trusted(mark)
+        resumed = mark.exists()
         previous = store.current()
-        if previous:
+        # A generation of an unfinished attempt (its rollback could not stop the
+        # containers) is this installer's own; a finished installation is not.
+        if previous and not resumed:
             raise ValueError('Нода уже установлена. Изменяйте настройки через основной бот')
+        if not resumed:
+            state.atomic(mark, state.encode({'schema': 1, 'time': int(time.time())}))
         # Only now: an installed node is never interrupted by a Docker restart.
         progress('docker')
         prepare_docker()
         progress('forwarding')
         disable_forwarding()
         progress('accounts')
-        account = install.accounts()
+        account = install.accounts(mark)
         host = config.deployment(value['deployment'] | {'uid': account.pw_uid, 'gid': account.pw_gid,
                                  'cover_uid': pwd.getpwnam(install.COVER).pw_uid, 'awg_uid': pwd.getpwnam(install.AWG).pw_uid})
         progress('code')
@@ -452,17 +466,22 @@ def setup(value, source, channel='latest', bundle=None):
         backend.ensure_keys(node)
         progress('firewall')
         existing = command(['nft', 'list', 'table', 'inet', 'vpnbot_node'], required=False).returncode == 0
-        if existing:
+        # Rules left by an interrupted attempt of this installer are its own; any other are not.
+        if existing and not resumed:
             raise ValueError('Найдены действующие правила ноды без её состояния; требуется восстановление')
         state.trusted(backend.guard)
-        previous_guard = backend.guard.read_bytes() if backend.guard.exists() else None
+        previous_guard = backend.guard.read_bytes() if backend.guard.exists() and not resumed else None
         previous_ssh = None
         try:
             # ACME is closed by default. Only certificate() creates a timed
             # TCP/80 element; SSH and VPN retain their source restrictions.
             rules = config.firewall(node['options'], backend.routed_host())
-            command(['nft', '-c', '-f', '-'], data=rules.encode())
-            command(['nft', '-f', '-'], data=rules.encode())
+            transaction = backend.transaction(rules)
+            command(['nft', '-c', '-f', '-'], data=transaction.encode())
+            # On disk before nftables.service may start below: its reload starts with
+            # flush ruleset and includes guard*.nft, so the guard and acme_http survive.
+            state.atomic(backend.guard, rules.encode())
+            command(['nft', '-f', '-'], data=transaction.encode())
             # The UID/source guard is active before adapting the base profile.
             # Both layers then use the validated enrollment addresses/SSH ports.
             nft_host_setup.configure(host=host, mode='node')
@@ -487,7 +506,10 @@ def setup(value, source, channel='latest', bundle=None):
             progress('verify')
             drop_stale_docker_rules()
             verify_firewall(backend)
-        except Exception as error:
+            backend.remember_guard()
+        # Ctrl-C and a terminal hangup roll back too: otherwise the next attempt
+        # would find this attempt's rules without node state.
+        except BaseException as error:
             failed_stage = CURRENT_STAGE
             report_error(error)
             progress('rollback')
@@ -500,17 +522,26 @@ def setup(value, source, channel='latest', bundle=None):
                      'vpnbot-node-watch.service', 'vpnbot-node-renew.service'], required=False)
             # If Docker cannot stop the node, retain its restrictive guard
             # and state for recovery instead of exposing a running container.
-            backend.stop()
-            if previous_guard is None:
-                backend.guard.unlink(missing_ok=True)
-            else:
-                state.atomic(backend.guard, previous_guard)
-            command(['nft', 'delete', 'table', 'inet', 'vpnbot_node'], required=False)
-            (store.root/'current.json').unlink(missing_ok=True)
+            try:
+                backend.stop()
+                stopped = True
+            except Exception:
+                stopped = False
+                if REPORT:
+                    REPORT.write('Docker не подтвердил остановку контейнеров ноды: защита nftables ноды и её состояние '
+                                 'сохранены. Когда Docker снова ответит, повторите установку: она продолжит эту попытку.')
+            if stopped:
+                if previous_guard is None:
+                    backend.guard.unlink(missing_ok=True)
+                else:
+                    state.atomic(backend.guard, previous_guard)
+                command(['nft', 'delete', 'table', 'inet', 'vpnbot_node'], required=False)
+                (store.root/'current.json').unlink(missing_ok=True)
             if previous_ssh is not None:
                 install.restore_ssh(previous_ssh)
             progress(failed_stage)
             raise
+        mark.unlink(missing_ok=True)
         progress('result')
         public = Path('/etc/ssh/ssh_host_ed25519_key.pub')
         fingerprint = command(['ssh-keygen', '-l', '-E', 'sha256', '-f', public]).stdout.decode().split()[1]

@@ -320,17 +320,25 @@ def served_serial(host, port, name):
 
 
 def check_dns(public_ip, names):
-    """Все имена должны указывать на этот сервер, иначе проверка заведомо не пройдёт."""
+    """Тот же критерий, что при настройке (setup_acme.dns_check): ровно один A — этот
+    сервер, и ни одной AAAA. Окно открыто только для IPv4; лишняя A или новая AAAA
+    увела бы проверку Let's Encrypt мимо окна уже после его открытия."""
     bad = []
     for n in names:
         try:
             addrs = {a[4][0] for a in socket.getaddrinfo(n, 80, socket.AF_INET, socket.SOCK_STREAM)}
         except OSError:
             addrs = set()
-        if public_ip not in addrs:
+        try:
+            addrs6 = {a[4][0] for a in socket.getaddrinfo(n, 80, socket.AF_INET6, socket.SOCK_STREAM)}
+        except socket.gaierror as error:
+            addrs6 = set() if error.errno in (socket.EAI_NONAME, socket.EAI_ADDRFAMILY, socket.EAI_NODATA) else {'?'}
+        except OSError:
+            addrs6 = {'?'}
+        if addrs != {public_ip} or addrs6:
             bad.append(n)
     if bad:
-        raise Fail('fail_dns', 'not %s: %s' % (public_ip, ', '.join(bad[:5])))
+        raise Fail('fail_dns', 'not only %s (A without AAAA): %s' % (public_ip, ', '.join(bad[:5])))
 
 
 # ── цели ──────────────────────────────────────────────────────────────────

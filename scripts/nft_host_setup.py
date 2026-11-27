@@ -250,6 +250,15 @@ def delta(before, after, live):
     commands, rollback = [], []
     tables = {(x['family'], x['name']) for x in objects(live, 'table')}
     missing = {(x['family'], x['name']) for x in objects(after, 'table')} - tables
+    # A live table of the profile's name that has none of its chains is not the profile:
+    # Docker's first start leaves "ip filter" with only its own DOCKER*/FORWARD chains.
+    # The profile's objects are added next to those leftovers, as for a missing table.
+    live_chains = {(x['family'], x['table'], x['name']) for x in objects(live, 'chain')}
+    wanted_chains = {}
+    for x in objects(after, 'chain'):
+        wanted_chains.setdefault((x['family'], x['table']), []).append(x['name'])
+    stale = {t for t, names in wanted_chains.items()
+             if t in tables and not any((t[0], t[1], name) in live_chains for name in names)}
     # A supplied, not-yet-loaded base profile can be installed without deleting
     # unrelated tables (including Docker and the test host's LAN guard).
     for item in after['nftables']:
@@ -257,9 +266,17 @@ def delta(before, after, live):
         obj = item[kind]
         if kind == 'metainfo': continue
         identity = obj['family'], obj['name'] if kind == 'table' else obj['table']
-        if identity in missing:
+        if identity in missing or (identity in stale and kind != 'table'):
             commands.append({'add': {kind: {k:v for k,v in obj.items() if k not in ('handle', 'index')}}})
     rollback += [{'delete': {'table': dict(family=f, name=t)}} for f, t in sorted(missing)]
+    for family, table in sorted(stale):
+        chains_added = [dict(family=family, table=table, name=x['name']) for x in objects(after, 'chain')
+                        if (x['family'], x['table']) == (family, table)]
+        rollback += [{'flush': {'chain': name}} for name in chains_added]
+        rollback += [{'delete': {'chain': name}} for name in chains_added]
+        rollback += [{'delete': {kind: dict(family=family, table=table, name=x['name'])}}
+                     for kind in ('set', 'map') for x in objects(after, kind) if (x['family'], x['table']) == (family, table)]
+    missing |= stale
     for kind in ('set', 'map'):
         current = {key(x): x for x in objects(live, kind)}
         for obj in objects(after, kind):

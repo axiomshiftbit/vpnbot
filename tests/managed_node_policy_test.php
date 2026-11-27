@@ -431,8 +431,12 @@ $syncBot->pacState['managed_nodes'][$id]['lists_checked'] = 0;
 $sync($id);
 $sent = $syncBot->submitted[0]['value']['policy']['routes'] ?? [];
 $check(count($syncBot->submitted) === 1 && ($sent['block']['ip'] ?? []) === ['192.0.2.0/24', '203.0.113.0/24'], 'refreshed source resent through a normal job');
-// A refused automatic resend is not repeated for the same expansion.
+// A refused automatic resend is not repeated for the same expansion: the poll of the
+// failed job records it (audit 26.11.2026: a busy or unreachable node is retried hourly).
+$refused = $syncBot->pacState['managed_nodes'][$id]['job']['lists_auto'] ?? null;
+$check(is_string($refused), 'the automatic job carries the expansion it sends');
 $syncBot->pacState['managed_nodes'][$id]['job'] = null;
+$syncBot->pacState['managed_nodes'][$id]['lists_auto'] = ['digest' => $refused, 'time' => time()];
 $syncBot->pacState['managed_nodes'][$id]['lists_checked'] = 0;
 $syncBot->submitted = [];
 $sync($id);

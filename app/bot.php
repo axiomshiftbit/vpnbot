@@ -8557,6 +8557,21 @@ NFT;
 
     private function exportBackup()
     {
+        // Снимки нод обновляются до чтения PAC; в конце состояние нод сверяется с
+        // начальным. Операция ноды, завершившаяся посреди копирования, иначе
+        // соединила бы в архиве прежний статус или профиль с новым snapshot.json.
+        $this->managedNodeBackupRefresh();
+        for ($attempt = 1; ; $attempt++) {
+            $mark = $this->managedNodeBackupMark();
+            $json = $this->exportBackupOnce();
+            if ($this->managedNodeBackupMark() === $mark) return $json;
+            if ($attempt >= 3) throw new RuntimeException($this->t('Нода изменилась во время резервного копирования. Повторите бэкап после завершения операции на ноде.',
+                'A node changed during the backup. Retry the backup after the node operation finishes.'));
+        }
+    }
+
+    private function exportBackupOnce()
+    {
         foreach ([$this->xrayConf, $this->hwid, '/config/xray.stats', '/config/ckserver.json', '/config/ckusers.json'] as $path) {
             // После миграции экспорт читает HWID из SQLite. Старый JSON
             // остаётся для отката и не должен блокировать актуальную копию.
@@ -8637,7 +8652,7 @@ NFT;
             'xraystats'     => $xraySnapshot[1],
             'managed_protocols' => $this->exportManagedProtocols(),
             'telemt_quota' => $telemtBackup['telemt_quota'],
-            'extra_files' => array_diff_key($this->backupExtraFiles(), ['stlsserver.json' => true]) + $ssSnapshot[4],
+            'extra_files' => array_diff_key($this->backupExtraFiles(false), ['stlsserver.json' => true]) + $ssSnapshot[4],
         ];
         foreach (['ad', 'hy', 'oc', 'ocu', 'tt'] as $key) {
             if ($conf[$key] === false) throw new RuntimeException($this->t('Не удалось прочитать раздел бэкапа: ', 'Could not read the backup section: ') . $key);
@@ -8785,9 +8800,9 @@ NFT;
         return $path;
     }
 
-    public function backupExtraFiles(): array
+    public function backupExtraFiles(bool $refresh = true): array
     {
-        $this->managedNodeBackupRefresh();
+        if ($refresh) $this->managedNodeBackupRefresh();
         $nodes = $this->managedNodes();
         $files = $this->withManagedNodeBackupLocks(array_keys($nodes), LOCK_SH, fn() => $this->backupExtraFilesLocked($nodes));
         return $files + $this->withShadowsocksLock(fn() => $this->backupSimpleTlsFileLocked());

@@ -138,19 +138,24 @@ trait BotManagedNodeWarp
     private function managedNodeWarpConfigure(string $id, callable $edit): void
     {
         try {
-            $node = $this->managedNodes()[$id] ?? null;
-            if (!$node || empty($node['connected']) || $node['job'] || empty($node['status']['warp_egress'])) throw new RuntimeException('Node is not ready');
-            // A settings draft must not ride along with a WARP change.
-            if (isset($node['draft'])) {
+            $draft = false;
+            // Checked under the node lock: a draft saved meanwhile is neither sent nor discarded.
+            $this->managedNodeLocked($id, function () use ($id, $edit, &$draft) {
+                $node = $this->managedNodes()[$id] ?? null;
+                if (!$node || empty($node['connected']) || $node['job'] || empty($node['status']['warp_egress'])) throw new RuntimeException('Node is not ready');
+                // A settings draft must not ride along with a WARP change.
+                if (isset($node['draft'])) { $draft = true; return; }
+                $options = $node['status']['options'];
+                $edit($options);
+                if (($options['warp_mode'] ?? 'off') === 'off') unset($options['warp_port'], $options['warp_http']);
+                if (($options['warp_http'] ?? 'h3') === 'h3') unset($options['warp_http']);
+                $this->managedNodeSubmitLocked($id, 'configure', $options);
+            });
+            if ($draft) {
                 $this->managedNodeWarp($id, $this->t('Есть черновик настроек: сначала примените или отмените его в «⚙️ Xray и подключение».',
                     'A settings draft is pending: apply or discard it in ⚙️ Xray and connection first.'));
                 return;
             }
-            $options = $node['status']['options'];
-            $edit($options);
-            if (($options['warp_mode'] ?? 'off') === 'off') unset($options['warp_port'], $options['warp_http']);
-            if (($options['warp_http'] ?? 'h3') === 'h3') unset($options['warp_http']);
-            $this->managedNodeSubmit($id, 'configure', $options);
             $this->managedNodeWarp($id);
         } catch (Throwable $error) {
             $this->managedNodeWarp($id, $this->nodeRoutesError($error) ?: $this->t('Не применено: нода занята, не на связи или отклонила изменение.',
@@ -191,6 +196,7 @@ trait BotManagedNodeWarp
 
     public function managedNodeWarpKeyPrompt(string $id): void
     {
+        if (!$this->managedNodePrivateChat()) { $this->managedNodeWarp($id, $this->managedNodePrivateOnly()); return; }
         $this->exitPrompt($this->t('пришлите ключ WARP+ (буквы, цифры и дефисы). Нода зарегистрирует новый аккаунт с этим ключом; если ключ не примется или WARP не ответит, останется прежний аккаунт. Сообщение с ключом бот сразу удалит.',
             'send the WARP+ key (letters, digits and hyphens). The node registers a new account with it; if the key is rejected or WARP does not answer, the previous account stays. The bot deletes the message with the key right away.'),
             'saveNodeWarpKey', [$id]);
@@ -199,6 +205,7 @@ trait BotManagedNodeWarp
     public function saveNodeWarpKey($key, $id): void
     {
         $id = (string) $id;
+        if (!$this->managedNodePrivateChat()) { $this->managedNodeWarp($id, $this->managedNodePrivateOnly()); return; }
         $key = trim((string) $key);
         if (!preg_match('~^[A-Za-z0-9-]{8,64}$~D', $key)) { $this->managedNodeWarp($id, $this->t('Ключ не подходит: нужны 8–64 буквы, цифры или дефисы.', 'The key does not fit: 8–64 letters, digits or hyphens are needed.')); return; }
         $this->managedNodeWarpAccount($id, ['action' => 'license', 'key' => $key]);

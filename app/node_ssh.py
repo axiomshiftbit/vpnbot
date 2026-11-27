@@ -22,6 +22,10 @@ import time
 LIMIT = 65536
 POLICY_LIMIT = 4 * 1024 * 1024
 POLICY_FRAME = POLICY_LIMIT + 4096
+# An uploaded snapshot waits here: the last confirmed copy (snapshot.json) stays until a restore succeeds.
+IMPORTED = 'snapshot.import.json'
+# The backup format holds at most this many archived controller keys of forgotten nodes.
+RETIRED_MAX = 256
 ROOT = Path('/ssh/nodes')
 # Controller keys of nodes removed from the bot. The node keeps trusting such a
 # key, so adding the same server again reuses it instead of a rejected new one.
@@ -454,6 +458,8 @@ class Client:
         trusted(directory.parent)
         directory.parent.mkdir(mode=0o700, exist_ok=True)
         trusted(directory)
+        if not directory.exists():
+            self._retired_room(directory.parent)
         directory.mkdir(mode=0o700, exist_ok=True)
         pair = {}
         for path in (private, public):
@@ -463,6 +469,25 @@ class Client:
                 raise ValueError('incomplete_controller')
         for name, body in pair.items():
             atomic(directory/name, body)
+
+    @staticmethod
+    def _retired_room(root):
+        """Keep the archive within the backup format: a new host replaces the longest-unused key.
+
+        Without this the 257th forgotten host made every later full backup fail."""
+        entries = []
+        for entry in root.iterdir():
+            if entry.is_symlink() or not entry.is_dir() or not re.fullmatch('[a-f0-9]{32}', entry.name):
+                raise ValueError('unsafe_path')
+            entries.append(entry)
+        entries.sort(key=lambda entry: (entry.stat().st_mtime, entry.name))
+        for entry in entries[:max(0, len(entries)-RETIRED_MAX+1)]:
+            for path in entry.iterdir():
+                trusted(path)
+                if path.name not in ('key', 'key.pub') or not path.is_file():
+                    raise ValueError('unsafe_path')
+                path.unlink()
+            entry.rmdir()
 
     @key_locked
     def reconnect(self, value):
@@ -493,8 +518,14 @@ class Client:
         return {'status': status}
 
     @key_locked
-    def saved(self):
+    def saved(self, candidate=False):
+        """The confirmed copy; for a restore (candidate) an uploaded copy waiting to be restored comes first."""
         path = self.directory/'snapshot.json'
+        if candidate:
+            imported = self.directory/IMPORTED
+            trusted(imported)
+            if imported.exists():
+                path = imported
         trusted(path)
         with path.open('rb') as stream:
             body = stream.read(POLICY_LIMIT+1)
@@ -507,20 +538,27 @@ class Client:
 
     @key_locked
     def store(self, snapshot):
-        """Replace the saved snapshot with one uploaded by the administrator.
+        """Keep a snapshot uploaded by the administrator as the restore candidate.
 
         Only the fixed snapshot fields are accepted here; the node validates
-        the full contents when the snapshot is restored."""
+        the full contents when the snapshot is restored. Until then the last
+        confirmed copy stays in snapshot.json for backups and another restore."""
         if not isinstance(snapshot, dict) or set(snapshot) != {'schema', 'options', 'identity', 'peers', 'images', 'tls'} \
                 or type(snapshot['schema']) is not int or snapshot['schema'] != 1:
             raise ValueError('snapshot')
-        atomic(self.directory/'snapshot.json', encode(snapshot,snapshot_limit(snapshot)))
-        return self.saved()
+        atomic(self.directory/IMPORTED, encode(snapshot,snapshot_limit(snapshot)))
+        return self.saved(True)
+
+    @key_locked
+    def clear_import(self):
+        path = self.directory/IMPORTED
+        trusted(path)
+        path.unlink(missing_ok=True)
 
     @key_locked
     def forget(self):
         # Only this node's fixed transport files; never recurse or follow links.
-        names = {'key', 'key.pub', 'endpoint.json', 'snapshot.json', 'known_hosts', 'xr_known_hosts'}
+        names = {'key', 'key.pub', 'endpoint.json', 'snapshot.json', IMPORTED, 'known_hosts', 'xr_known_hosts'}
         files = list(self.directory.iterdir())
         for path in files:
             trusted(path)
@@ -564,6 +602,11 @@ def main():
             result = client.request(value['value'])
         elif value['action'] == 'saved' and value['value'] is None:
             result = client.saved()
+        elif value['action'] == 'restore-source' and value['value'] is None:
+            result = client.saved(True)
+        elif value['action'] == 'import-clear' and value['value'] is None:
+            client.clear_import()
+            result = {'cleared': True}
         elif value['action'] == 'saved-routes' and value['value'] is None:
             policy = client.saved()['snapshot']['options'].get('policy', {})
             result = {'routes': policy.get('routes', {})}
@@ -581,7 +624,7 @@ def main():
             result = {'saved': True}
         else:
             raise ValueError('action')
-        sys.stdout.buffer.write(encode({'ok': True, 'result': result}, POLICY_FRAME if value['action'] in ('rpc','saved','saved-routes','rebind','reconnect') else LIMIT))
+        sys.stdout.buffer.write(encode({'ok': True, 'result': result}, POLICY_FRAME if value['action'] in ('rpc','saved','restore-source','saved-routes','rebind','reconnect') else LIMIT))
 
 
 if __name__ == '__main__':

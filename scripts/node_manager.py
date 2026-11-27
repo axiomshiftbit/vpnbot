@@ -419,15 +419,28 @@ class Manager:
     def watch(self):
         """15-second pass: dead worker, expired confirmation, stopped containers, lost guard."""
         self.recover_job()
-        pending = self.store.pending()
-        if pending and time.time() >= pending['deadline']:
-            self.recover()
-        elif not self.runtime.running():
-            self.runtime.apply(self.store.current())
+        failure = None
+        try:
+            pending = self.store.pending()
+            if pending and time.time() >= pending['deadline']:
+                self.recover()
+            elif not self.runtime.running():
+                self.runtime.apply(self.store.current())
+        except Exception as error:
+            # The guard is checked even when the containers cannot be restarted now.
+            failure = error
         # A failed `systemctl restart nftables` flushes the ruleset and loads
         # nothing; the running node would stay unfiltered until the next apply.
-        if not self.runtime.firewall_loaded():
-            self.runtime.load_firewall()
+        # A chain changed behind the table's name is reloaded the same way.
+        if not self.runtime.firewall_intact():
+            try:
+                self.runtime.load_firewall()
+            except Exception:
+                # Rebuilding needs the current routes; the persisted guard needs nothing.
+                self.runtime.restore_guard()
+                raise
+        if failure is not None:
+            raise failure
 
     def rpc(self, request):
         if not isinstance(request, dict) or not isinstance(request.get('action'), str):

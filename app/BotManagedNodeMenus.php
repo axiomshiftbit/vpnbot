@@ -409,7 +409,7 @@ trait BotManagedNodeMenus
             if (!$node || !isset($node['draft'])) return;
             $problem=$this->managedNodeNetworkProblem($node['draft'],$node);
             if ($problem !== '') { $this->managedNodeSettingsMenu($id,'network',$problem); return; }
-            $this->managedNodeSubmit($id, 'configure', $node['draft']);
+            $this->managedNodeSubmitDraft($id);
             $this->managedNodeMenu($id);
         } catch (Throwable $error) { $this->managedNodeSettingsMenu($id, 'root', ($this->nodeRoutesError($error) ?: $this->t('Изменение не принято. Проверьте совместимость настроек и доступность SSH.',
             'The change was not accepted. Check option compatibility and SSH availability.')) . $this->t(' Черновик сохранён.', ' The draft is kept.')); }

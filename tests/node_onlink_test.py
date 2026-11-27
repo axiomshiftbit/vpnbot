@@ -43,9 +43,16 @@ class OnLink(unittest.TestCase):
         self.assertFalse([net for net in onlink if net.endswith('/8')])
         self.assertFalse([net for net in onlink if net.startswith(('10.', 'fe80'))])
 
-    def test_route_failure_keeps_the_fixed_ranges(self):
+    def test_route_failure_stops_instead_of_dropping_the_segment(self):
+        # Audit 26.11.2026 (C04): an empty answer for a used family silently dropped the
+        # neighbours and the gateway from both the Xray and the nft blocks.
         with patch.object(node_runtime, 'command', lambda *_, **__: SimpleNamespace(returncode=1, stdout=b'')):
-            self.assertEqual(node_runtime.Runtime(None, HOST).routed_host()['onlink'], [])
+            with self.assertRaisesRegex(ValueError, 'route snapshot unavailable'):
+                node_runtime.Runtime(None, HOST).routed_host()
+        # A family without a public address of the node may be absent in the kernel.
+        reply = lambda args, **_: SimpleNamespace(returncode=1 if args[2] == '-6' else 0, stdout=b'[]')
+        with patch.object(node_runtime, 'command', reply):
+            self.assertEqual(node_runtime.Runtime(None, HOST | {'public6': ''}).routed_host()['onlink'], [])
 
     def test_both_layers_deny_the_segment_and_keep_real_internet(self):
         host = self.routed()

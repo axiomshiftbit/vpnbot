@@ -17,7 +17,10 @@ from node_config_test import HOST, OPTIONS
 
 class NodeTlsProbe(unittest.TestCase):
     def runtime(self, options=None):
-        return Runtime(Mock(load=lambda:{'options':OPTIONS | {'family':4,'cover':False} | (options or {})}), HOST)
+        runtime = Runtime(Mock(load=lambda:{'options':OPTIONS | {'family':4,'cover':False} | (options or {})}), HOST)
+        # The probe denies the WAN segment like ordinary traffic (audit 26.11.2026, H07).
+        runtime.routed_host = lambda: dict(runtime.host, onlink=[])
+        return runtime
 
     def test_resolved_private_mixed_own_and_mapped_addresses_cannot_be_probed(self):
         for address in ('127.0.0.1','10.0.0.1','169.254.169.254','::1','::ffff:127.0.0.1','fd42::1',HOST['public4'],HOST['public6']):

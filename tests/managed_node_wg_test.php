@@ -32,7 +32,7 @@ $bot->managedNodePoll('aabbccdd');
 if ($bot->exitNodeOutbound($bot->exitNodes()['aabbccdd'])['protocol'] !== 'wireguard' || $bot->managedNodes()['aabbccdd']['job'] !== null) throw new RuntimeException('FAIL WireGuard main route not confirmed');
 $count++;
 $method = new ReflectionMethod(Bot::class, 'exitProbeCommand');
-$cmd = $method->invoke($bot, $bot->exitNodes()['aabbccdd'], 10875, false);
+$cmd = $method->invoke($bot, $bot->exitNodes()['aabbccdd'], 10875, false, 'aabbccdd');
 if (str_contains($cmd, 'nc -z') || !str_contains($cmd, '--socks5-hostname')) throw new RuntimeException('FAIL WireGuard diagnosis must test tunnel traffic');
 $count++;
 $bot->events = [];

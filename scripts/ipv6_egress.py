@@ -72,6 +72,7 @@ def check_firewall(public, interface):
                  for item in objects if item.get('rule', {}).get('chain') == name]
         if rules != [expression]:
             raise ValueError('Отсутствует штатная защита SNAT/ULA для выбранного WAN: ' + name)
+    check_forward([item['rule']['expr'] for item in objects if item.get('rule', {}).get('chain') == 'forward'], interface)
     for item in objects:
         mapping = item.get('map', {})
         if mapping.get('name') == 'egress6_snat':
@@ -79,6 +80,33 @@ def check_firewall(public, interface):
                 if isinstance(pair, list) and len(pair) == 2 and pair[0] == SOURCE and ipaddress.IPv6Address(pair[1]) == ipaddress.IPv6Address(public):
                     return
     raise ValueError('egress6_snat не содержит выбранный публичный IPv6')
+
+
+def check_forward(rules, interface):
+    """Закрытая forward пропускает выделенный контейнер: выход в WAN и ответы ему.
+
+    Пустая цепочка с policy drop проходила проверку формы, и маркер готовности
+    появлялся без пути трафика. Правило засчитывается, только если до него нет
+    безусловного отказа."""
+    def has(expr, left, right):
+        return {'match': {'op': '==', 'left': left, 'right': right}} in expr
+    iif, oif = {'meta': {'key': 'iifname'}}, {'meta': {'key': 'oifname'}}
+    saddr, daddr = ({'payload': {'protocol': 'ip6', 'field': f}} for f in ('saddr', 'daddr'))
+    wanted = {
+        'egress': lambda e: has(e, iif, 'br-vpnbot6') and has(e, oif, interface) and has(e, saddr, SOURCE),
+        'reply': lambda e: has(e, iif, interface) and has(e, oif, 'br-vpnbot6') and has(e, daddr, SOURCE)
+                 and any('ct' in json.dumps(x) and 'established' in json.dumps(x) for x in e),
+    }
+    found = set()
+    for expr in rules:
+        verdicts = [x for x in expr if any(k in x for k in ('accept', 'drop', 'reject', 'jump', 'goto'))]
+        conditions = [x for x in expr if not any(k in x for k in ('accept', 'drop', 'reject', 'jump', 'goto', 'counter', 'log', 'limit'))]
+        if not conditions and verdicts and any(k in verdicts[-1] for k in ('drop', 'reject')):
+            break  # дальше правил цепочка не доходит
+        if verdicts and 'accept' in verdicts[-1]:
+            found |= {name for name, test in wanted.items() if test(expr)}
+    if found != set(wanted):
+        raise ValueError('В IPv6 forward нет пропуска выделенного контейнера Xray в WAN и ответов ему; загрузите адаптированный IPv6 firewall')
 
 
 def prepare(root, value):

@@ -94,6 +94,10 @@ class Runtime:
         networks = set()
         for version in (4, 6):
             result = command(['ip', '-j', '-'+str(version), 'route', 'show', 'dev', self.host['interface']], required=False)
+            if result.returncode and self.host['public'+str(version)]:
+                # An empty answer would silently drop the neighbours and the gateway from
+                # both the Xray and the nft blocks: keep the previous policy instead.
+                raise ValueError('route snapshot unavailable')
             for route in (json.loads(result.stdout or b'[]') if not result.returncode else []):
                 gateway, target = route.get('gateway'), route.get('dst', '')
                 if gateway:
@@ -118,7 +122,8 @@ class Runtime:
             address, port = ('127.0.0.1' if self.host['public4'] else '::1'), 8443
         else:
             answers = {entry[4][0] for entry in socket.getaddrinfo(name, 443, type=socket.SOCK_STREAM)}
-            denied = [ipaddress.ip_network(net) for net in config.PRIVATE4 + config.PRIVATE6]
+            # The same local segment as ordinary traffic: public neighbours and the gateway are not a mask.
+            denied = [ipaddress.ip_network(net) for net in config.PRIVATE4 + config.PRIVATE6 + self.routed_host()['onlink']]
             for address in answers:
                 config.public_ip(address)
                 ip = ipaddress.ip_address(address)
@@ -314,11 +319,15 @@ class Runtime:
         if command(['docker', 'image', 'inspect', image], required=False).returncode:
             command(['docker', 'pull', image], timeout=300)
 
-    def container(self, name=CONTAINER):
+    def container(self, name=CONTAINER, strict=False):
+        """strict: only Docker's answer that the container is missing counts as missing."""
         if name not in (CONTAINER, COVER_CONTAINER, AWG_CONTAINER, WARP_CONTAINER, LEGACY_DNS_CONTAINER):
             raise ValueError('unsupported container')
         result = command(['docker', 'inspect', '--format', '{{json .}}', name], required=False)
         if result.returncode:
+            # An unreachable daemon is not a stopped node: its processes may still run.
+            if strict and not re.search(rb'no such (?:object|container)', result.stderr.lower()):
+                raise HostOperationError('docker', result.returncode, result.stderr)
             return None
         info = json.loads(result.stdout)
         if info.get('Config', {}).get('Labels', {}).get(LABEL) != '1':
@@ -327,7 +336,7 @@ class Runtime:
 
     def stop(self):
         # Check ownership of every name before removing any container.
-        existing = [name for name in (CONTAINER, COVER_CONTAINER, AWG_CONTAINER, WARP_CONTAINER, LEGACY_DNS_CONTAINER) if self.container(name) is not None]
+        existing = [name for name in (CONTAINER, COVER_CONTAINER, AWG_CONTAINER, WARP_CONTAINER, LEGACY_DNS_CONTAINER) if self.container(name, strict=True) is not None]
         for name in existing:
             command(['docker', 'rm', '-f', name])
         self.remove_legacy_dns_filter()
@@ -464,6 +473,56 @@ class Runtime:
         tables = command(['nft', 'list', 'tables', 'inet']).stdout.decode().splitlines()
         return 'table inet vpnbot_node' in (line.strip() for line in tables)
 
+    @staticmethod
+    def guard_shape(document):
+        """Chains, hooks, policies, sets and rules in order; counters, handles and timed elements excluded."""
+        def clean(value):
+            if isinstance(value, list):
+                return [clean(item) for item in value]
+            if not isinstance(value, dict):
+                return value
+            return {key: (None if key == 'counter' else clean(item)) for key, item in value.items()
+                    if key not in ('handle', 'packets', 'bytes', 'expires')}
+        shape = []
+        for item in document.get('nftables', []):
+            kind = next(iter(item))
+            if kind == 'metainfo':
+                continue
+            value = dict(item[kind])
+            # The ACME window adds and removes timed elements; the set itself must stay.
+            if kind in ('set', 'map') and 'timeout' in value.get('flags', []):
+                value.pop('elem', None)
+            shape.append({kind: clean(value)})
+        return shape
+
+    def guard_live(self):
+        result = command(['nft', '-j', 'list', 'table', 'inet', 'vpnbot_node'], required=False)
+        return self.guard_shape(json.loads(result.stdout)) if not result.returncode else None
+
+    def remember_guard(self):
+        shape = self.guard_live()
+        if shape is not None:
+            state.atomic(self.store.root/'guard-live.json', state.encode(shape, state.CORE_CONFIG_BYTES))
+
+    def firewall_intact(self):
+        """The loaded guard equals the one loaded last: a changed chain or rule is not hidden behind its name."""
+        live = self.guard_live()
+        if live is None:
+            return False
+        try:
+            expected = state.decode((self.store.root/'guard-live.json').read_bytes(), state.CORE_CONFIG_BYTES)
+        except (OSError, ValueError):
+            return False
+        return live == expected
+
+    def restore_guard(self):
+        """Load the persisted guard as it is, when it cannot be rebuilt right now."""
+        state.trusted(self.guard)
+        transaction = self.transaction(self.guard.read_text())
+        command(['nft', '-c', '-f', '-'], data=transaction.encode())
+        command(['nft', '-f', '-'], data=transaction.encode())
+        self.remember_guard()
+
     def load_firewall(self, generation=None):
         """Build the guard from a generation with the installed code; check, persist, load atomically."""
         rules = config.firewall(self.store.load(generation)['options'], self.routed_host())
@@ -471,6 +530,7 @@ class Runtime:
         command(['nft', '-c', '-f', '-'], data=transaction.encode())
         state.atomic(self.guard, rules.encode())
         command(['nft', '-f', '-'], data=transaction.encode())
+        self.remember_guard()
 
     def apply(self, generation):
         value = self.store.load(generation)
@@ -478,11 +538,8 @@ class Runtime:
             self.prepare(generation)
         self.prepared = None
         self.stage = 'start'
-        self.container()
-        self.container(COVER_CONTAINER)
-        self.container(AWG_CONTAINER)
-        self.container(WARP_CONTAINER)
-        self.container(LEGACY_DNS_CONTAINER)
+        for name in (CONTAINER, COVER_CONTAINER, AWG_CONTAINER, WARP_CONTAINER, LEGACY_DNS_CONTAINER):
+            self.container(name, strict=True)
         self.load_firewall(generation)
         self.stop()
         if value['options'].get('warp_mode', 'off') != 'off':
@@ -557,11 +614,40 @@ class Runtime:
                      '--http-01-port', '8080', '--force-renewal' if force else '--keep-until-expiring', '--cert-name', 'vpnbot-node',
                      '--config-dir', root/'config', '--work-dir', root/'work', '--logs-dir', root/'logs',
                      *[arg for name in names for arg in ('-d', name)]], timeout=300)
-        finally:
-            command(['nft', 'delete', 'element', 'inet', 'vpnbot_node', 'acme_http', '{ 80 }'], required=False)
+        except BaseException:
+            # The issuance failure is what the admin must see; an element that cannot be
+            # removed now still expires with its 10-minute timeout.
+            try:
+                self.close_acme()
+            except Exception:
+                pass
+            raise
+        # A certificate is reported only with the window verifiably closed.
+        self.close_acme()
         # Certbot owns its symlinks; export only the two fixed PEM files from this isolated ACME directory.
         live = root/'config/live/vpnbot-node'
         return {name: base64.b64encode((live/name).read_bytes()).decode() for name in ('fullchain.pem', 'privkey.pem')}
+
+    def close_acme(self):
+        """Close the TCP/80 window and read it back; an expired element is already closed."""
+        for attempt in ('delete', 'flush'):
+            if attempt == 'delete':
+                command(['nft', 'delete', 'element', 'inet', 'vpnbot_node', 'acme_http', '{ 80 }'], required=False)
+            else:
+                # The set holds only the ACME element: flushing it closes nothing else.
+                command(['nft', 'flush', 'set', 'inet', 'vpnbot_node', 'acme_http'], required=False)
+            listed = command(['nft', '-j', 'list', 'set', 'inet', 'vpnbot_node', 'acme_http'], required=False)
+            if not listed.returncode:
+                try:
+                    sets = [item['set'] for item in json.loads(listed.stdout).get('nftables', []) if 'set' in item]
+                except (ValueError, AttributeError):
+                    sets = []
+                if sets and not sets[0].get('elem'):
+                    return
+            elif not self.firewall_loaded():
+                # Without the guard table there is no redirect to the ACME listener either.
+                return
+        raise RuntimeError('ACME window did not close')
 
     def delete_certificate(self):
         # The manager rejects this while TLS or the cover is in use. Historical

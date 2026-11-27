@@ -14,7 +14,7 @@ class RebindFixture extends ManagedFixtureBot {
             $this->events[] = 'rebind';
             return ['status' => $this->remoteStatus];
         }
-        if ($action === 'saved') return ['snapshot' => ['fixture' => true], 'hash' => '0123456789abcdef'];
+        if ($action === 'saved' || $action === 'restore-source') return ['snapshot' => ['fixture' => true], 'hash' => '0123456789abcdef'];
         return parent::managedNodeTransport($id, $action, $value);
     }
     public function withLock(string $name, callable $fn, int $timeout = 0, $busy = null) {

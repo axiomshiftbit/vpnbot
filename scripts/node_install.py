@@ -51,6 +51,9 @@ def ssh_configuration(effective):
             lines.append(('AllowUsers' if field == 'allowusers' else 'AllowGroups')+' '+CONTROL)
     lines += ['Match User '+CONTROL,
               '    AuthorizedKeysFile /etc/vpnbot-node/controller.pub',
+              # Only the controller's key file authorizes this account: no central key
+              # command and no user certificate of a CA trusted for other accounts.
+              '    AuthorizedKeysCommand none', '    PubkeyAcceptedAlgorithms ssh-ed25519',
               '    AuthenticationMethods publickey', '    PubkeyAuthentication yes',
               '    PasswordAuthentication no', '    KbdInteractiveAuthentication no',
               # PermitUserEnvironment is global-only. The root-owned empty home
@@ -105,15 +108,25 @@ def units():
     return result
 
 
-def accounts():
+def accounts(mark=None):
+    """mark: the installer's progress file; it names the accounts this installation created,
+    so a repeated attempt after an interruption takes them back instead of refusing."""
+    progress = {}
+    if mark is not None and mark.exists():
+        progress = state.decode(mark.read_bytes())
+    owned = set(progress.get('accounts', []))
     for name, shell in [(CONTROL, '/bin/sh'), (CORE, '/usr/sbin/nologin'), (COVER, '/usr/sbin/nologin'), (AWG, '/usr/sbin/nologin')]:
         try:
             account = pwd.getpwnam(name)
-            if not (ETC/'deployment.json').exists():
+            if not (ETC/'deployment.json').exists() and name not in owned:
                 raise ValueError('account name is already in use')
             if account.pw_uid < 100 or account.pw_shell != shell:
                 raise ValueError('incompatible service account')
         except KeyError:
+            if mark is not None:
+                # Recorded before creation: an interruption right after useradd stays recognisable.
+                owned.add(name)
+                state.atomic(mark, state.encode(progress | {'accounts': sorted(owned)}))
             command(['useradd', '--system', '--user-group', '--no-create-home', '--home-dir', '/var/empty/'+name,
                      '--shell', shell, name])
             # An impossible password permits key-only authentication even with UsePAM=no.
@@ -169,7 +182,9 @@ def install_ssh(key, sources):
         for source in sources:
             output = command(['sshd', '-T', '-C', f'user={CONTROL},host=node,addr={source}']).stdout.decode()
             expected = ['forcecommand '+RPC_COMMAND, 'disableforwarding yes', 'permittty no',
-                        'passwordauthentication no', 'authenticationmethods publickey', 'permituserrc no']
+                        'passwordauthentication no', 'authenticationmethods publickey', 'permituserrc no',
+                        'authorizedkeysfile /etc/vpnbot-node/controller.pub', 'authorizedkeyscommand none',
+                        'pubkeyacceptedalgorithms ssh-ed25519']
             if any(line not in output.splitlines() for line in expected):
                 raise ValueError('existing SSH policy overrides node restrictions')
         command(['systemctl', 'reload', 'ssh.service'])

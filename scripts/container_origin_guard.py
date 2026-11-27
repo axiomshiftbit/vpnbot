@@ -277,6 +277,21 @@ def baseline(bridges, prefixes=PREFIXES):
             'include "/run/vpnbot-origin/active*.nft"\n')
 
 
+def shape(document):
+    """Цепочки, хуки, политики и правила по порядку; без счётчиков и handle."""
+    def clean(value):
+        if isinstance(value, list):
+            return [clean(x) for x in value]
+        if not isinstance(value, dict):
+            return value
+        return {k: (None if k == 'counter' else clean(v)) for k, v in value.items() if k not in ('handle', 'packets', 'bytes')}
+    return [clean(item) for item in document.get('nftables', []) if 'metainfo' not in item]
+
+
+def remember(listing):
+    write(RUNTIME / 'active.json', json.dumps(shape(json.loads(listing)), sort_keys=True))
+
+
 def applied(transaction, bridges, prefixes):
     """None — таблицы нет; True — ядро, /run снимок и BASE уже такие. Без Docker."""
     current = subprocess.run(['nft', '-j', 'list', 'table', 'bridge', TABLE], capture_output=True, text=True)
@@ -286,9 +301,17 @@ def applied(transaction, bridges, prefixes):
         return False
     generation = re.search(r'comment "(origin:[a-f0-9]+)"', transaction).group(1)
     tables = [o['table'] for o in json.loads(current.stdout)['nftables'] if 'table' in o]
-    return (any(t.get('comment') == generation for t in tables) and
+    if not (any(t.get('comment') == generation for t in tables) and
             (RUNTIME / 'active.nft').read_text() == transaction and
-            BASE.is_file() and BASE.read_text() == baseline(bridges, prefixes))
+            BASE.is_file() and BASE.read_text() == baseline(bridges, prefixes)):
+        return False
+    # Комментарий поколения не доказывает содержимое: изменённая цепочка под
+    # тем же именем и комментарием перезагружается целиком.
+    try:
+        expected = json.loads((RUNTIME / 'active.json').read_text())
+    except (OSError, ValueError):
+        return False
+    return json.loads(json.dumps(shape(json.loads(current.stdout)), sort_keys=True)) == expected
 
 
 def sync(cfg, locked=False, report=None):
@@ -313,6 +336,7 @@ def sync(cfg, locked=False, report=None):
             write(CONFIG, json.dumps(cfg, indent=2) + '\n')
         write(BASE, baseline(bridges, prefixes), 0o600)
         run(['nft', '-f', '-'], live)
+        remember(run(['nft', '-j', 'list', 'table', 'bridge', TABLE]))
     return len(endpoints)
 
 

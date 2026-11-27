@@ -86,6 +86,16 @@ class Ipv6EgressTests(unittest.TestCase):
                 {'match': {'op': '==', 'left': source, 'right': {'prefix': {'addr': 'fc00::', 'len': 7}}}},
                 {'counter': {'packets': 0, 'bytes': 0}}, {'drop': None}]}},
         ])
+        # The dedicated container's path through the closed forward chain (audit 26.11.2026, C23).
+        meta = lambda key, value: {'match': {'op': '==', 'left': {'meta': {'key': key}}, 'right': value}}
+        daddr = {'payload': {'protocol': 'ip6', 'field': 'daddr'}}
+        objects.extend([
+            {'rule': {'chain': 'forward', 'expr': [meta('iifname', 'eth0'), meta('oifname', 'br-vpnbot6'),
+                {'match': {'op': '==', 'left': daddr, 'right': ipv6.SOURCE}},
+                {'match': {'op': 'in', 'left': {'ct': {'key': 'state'}}, 'right': 'established'}}, {'accept': None}]}},
+            {'rule': {'chain': 'forward', 'expr': [meta('iifname', 'br-vpnbot6'), meta('oifname', 'eth0'),
+                {'match': {'op': '==', 'left': source, 'right': ipv6.SOURCE}}, {'counter': None}, {'accept': None}]}},
+        ])
         mapping = {'map': {'name': 'egress6_snat', 'elem': [[ipv6.SOURCE, '2001:4860::1']]}}
         objects.append(mapping)
         with patch.object(ipv6.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps({'nftables': objects}))):

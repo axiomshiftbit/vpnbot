@@ -191,7 +191,18 @@ class Base(unittest.TestCase):
         self.write_config([{'name': 'vpnbot', 'kind': 'vpnbot', 'upstream': '10.10.0.2:80'}])
         env = {'PATH': f'{self.bin}:{os.environ["PATH"]}', 'FAKE_NFT_STATE': str(self.nft_state),
                'FAKE_DOCKER': str(self.scenario)}
+        # Имя localhost в тестовой среде есть и в A, и в AAAA (::1). Для службы оно
+        # имя этого сервера: только A 127.0.0.1, как требует проверка DNS окна.
+        resolve = acme.socket.getaddrinfo
+        self.aaaa = {}
+        def getaddrinfo(host, port, family=0, *args, **kwargs):
+            if host == 'localhost' and family == acme.socket.AF_INET6:
+                if host in self.aaaa:
+                    return [(family, acme.socket.SOCK_STREAM, 6, '', (self.aaaa[host], port, 0, 0))]
+                raise acme.socket.gaierror(acme.socket.EAI_NONAME, 'no AAAA')
+            return resolve(host, port, family, *args, **kwargs)
         for p in (patch.dict(os.environ, env), patch.object(acme, 'CONFIG_PATH', str(self.config)),
+                  patch.object(acme.socket, 'getaddrinfo', side_effect=getaddrinfo),
                   patch.object(acme, 'STATE_DIR', str(self.state_dir)),
                   patch.object(acme, 'served_serial', side_effect=lambda h, port, n: acme.cert_info(str(self.cert))['serial'])):
             p.start()
@@ -464,6 +475,26 @@ class AcmeWindowTests(Base):
         self.assertEqual(self.state()['vpnbot']['last_result'], 'fail_dns')
         self.assertEqual(self.adds(), [], 'окно не открывается до проверки DNS')
 
+    def test_renewal_rejects_aaaa_like_setup(self):
+        # Аудит 26.11.2026 (С25): окно только IPv4, а продление пропускало новую AAAA.
+        self.aaaa['localhost'] = '2001:db8::1'
+        acme.main(['run'])
+        self.assertEqual([c['op'] for c in self.calls()], ['check', 'notify'])
+        self.assertEqual(self.state()['vpnbot']['last_result'], 'fail_dns')
+        self.assertEqual(self.adds(), [], 'окно не открывается, пока у имени есть AAAA')
+
+    def test_renewal_rejects_extra_a_like_setup(self):
+        real = acme.socket.getaddrinfo
+        def extra(host, port, family=0, *args, **kwargs):
+            answer = real(host, port, family, *args, **kwargs)
+            if host == 'localhost' and family == acme.socket.AF_INET:
+                answer = answer + [(family, acme.socket.SOCK_STREAM, 6, '', ('198.51.100.7', port))]
+            return answer
+        with patch.object(acme.socket, 'getaddrinfo', side_effect=extra):
+            acme.main(['run'])
+        self.assertEqual(self.state()['vpnbot']['last_result'], 'fail_dns')
+        self.assertEqual(self.adds(), [], 'лишняя A-запись уводит проверку мимо окна')
+
     def test_not_letsencrypt_is_silent(self):
         self.write_docker(check=3)
         acme.main(['run'])
@@ -706,10 +737,21 @@ class AcmeWindowTests(Base):
 class AcmeWindowSignalTests(Base):
     """Отдельным процессом: сигнал и kill -9 посреди выпуска."""
 
+    # The service process resolves localhost like the in-process tests: A only (no AAAA ::1).
+    IPV4_ONLY = ('import runpy, socket, sys\n'
+                 'real = socket.getaddrinfo\n'
+                 'def only4(host, port, family=0, *a, **k):\n'
+                 '    if host == "localhost" and family == socket.AF_INET6:\n'
+                 '        raise socket.gaierror(socket.EAI_NONAME, "no AAAA")\n'
+                 '    return real(host, port, family, *a, **k)\n'
+                 'socket.getaddrinfo = only4\n'
+                 'sys.argv = sys.argv[1:]\n'
+                 'runpy.run_path(sys.argv[0], run_name="__main__")\n')
+
     def start(self):
         self.write_docker(issue='sleep')
         env = dict(os.environ, ACME_WINDOW_CONFIG=str(self.config), ACME_WINDOW_STATE=str(self.state_dir))
-        p = subprocess.Popen([sys.executable, str(ROOT / 'scripts/acme_window.py'), 'run'], env=env,
+        p = subprocess.Popen([sys.executable, '-c', self.IPV4_ONLY, str(ROOT / 'scripts/acme_window.py'), 'run'], env=env,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         deadline = time.time() + 30
         while time.time() < deadline and not self.calls('issue'):

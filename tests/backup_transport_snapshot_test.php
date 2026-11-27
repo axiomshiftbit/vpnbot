@@ -21,6 +21,9 @@ class TransportSnapshotBot extends Bot {
     public string $race = '';
     public bool $blocked = false;
     public $child = null;
+    public array $marks = []; public int $exports = 0;
+    // Node state seen before and after each export pass (audit 26.11.2026, C20).
+    public function managedNodeBackupMark(): string { return $this->marks ? array_shift($this->marks) : 'stable'; }
     public function __construct(public string $root) {
         $this->pac="$root/pac.json"; $this->clients="$root/clients.json"; $this->clients1="$root/clients1.json";
         $this->xrayConf="$root/xray.json"; $this->hwid="$root/hwid.json"; $this->adguard="$root/adguard.yaml";
@@ -44,12 +47,13 @@ class TransportSnapshotBot extends Bot {
     public function exportManagedProtocols(): array { return []; }
     public function validateBackup(array $json): void {}
     public function withOcUsersSnapshot(callable $fn) {
+        $this->exports++;
         if ($this->race==='wg-export') { $this->startWorker('wg'); $this->finishWorker(); }
         return ['telemt'=>['pac'=>$this->getPacConf(),'telemt_quota'=>null],'oc'=>'synthetic','ocu'=>''];
     }
-    public function backupExtraFiles(): array {
+    public function backupExtraFiles(bool $refresh = true): array {
         if ($this->race==='ss-export') { $this->startWorker('ss'); $this->finishWorker(); }
-        return parent::backupExtraFiles();
+        return parent::backupExtraFiles($refresh);
     }
     public function startWorker(string $action): void {
         $this->child=proc_open([PHP_BINARY,__FILE__,'worker',$this->root,$action],[0=>['file','/dev/null','r'],1=>['file','/dev/null','w'],2=>['file','/dev/null','w']],$pipes);
@@ -177,6 +181,12 @@ try {
         && json_decode(file_get_contents($b->clients),true)[0]['name']==='after' && json_decode(file_get_contents($b->clients1),true)[0]['name']==='after','WG clients travel with captured server generation');
     $check(array_keys($dump['wg'])===['server','clients'] && array_keys($dump['wg1'])===['server','clients'],'WG serialized schema unchanged');
     $now=$b->getPacConf(); $check($now['amnezia']===1 && $now['wg1_amnezia']===1 && $dump['pac']['concurrent']==='preserved','WG race control restores both instances and preserves other PAC updates');
+    // A node operation finishing during the export: the archive is taken again, never mixed.
+    $b=transportSeed($root); $b->marks=['generation-a','generation-b','generation-b','generation-b'];
+    $dump=json_decode((new ReflectionMethod(Bot::class,'exportBackup'))->invoke($b),true,512,JSON_THROW_ON_ERROR);
+    $check($b->exports===2 && is_array($dump),'C20: export is repeated once the node state changed');
+    $b=transportSeed($root); $b->marks=array_map(static fn($n)=>"g$n",range(1,12));
+    $check(!transportCall(fn()=>(new ReflectionMethod(Bot::class,'exportBackup'))->invoke($b)) && $b->exports===3,'C20: a node that keeps changing fails the export after three passes');
 } catch (Throwable $error) {
     // Exception class/line only; configs, credentials and HTML never reach output.
     $failures[]='fixture exception '.get_class($error).' at line '.$error->getLine();
