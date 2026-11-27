@@ -22,7 +22,9 @@ for image in (XR, NG): run(['docker', 'image', 'inspect', image])
 install.install_code('/lab/scripts')
 node_upgrade.record(Path('/var/lib/vpnbot-node'), Path('/lab/scripts'), True)
 account = install.accounts()
-host = HOST | {'uid': account.pw_uid, 'gid': account.pw_gid, 'cover_uid': pwd.getpwnam(install.COVER).pw_uid,
+# The host boots with --network none. The traffic fixture switches to mn-node
+# after creating its veth pair and restores this configuration during cleanup.
+host = HOST | {'interface': 'lo', 'uid': account.pw_uid, 'gid': account.pw_gid, 'cover_uid': pwd.getpwnam(install.COVER).pw_uid,
                'awg_uid': pwd.getpwnam(install.AWG).pw_uid, 'ssh_ports': [2222], 'sources': ['11.77.0.3'], 'admins': ['11.77.0.3']}
 state.atomic(install.ETC/'deployment.json', state.encode(host))
 work = Path('/run/lab-bootstrap'); work.mkdir(mode=0o700, exist_ok=True)

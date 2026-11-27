@@ -46,6 +46,11 @@ class NativeManagedBot extends Bot {
         $curl = curl_init('http://' . $this->testAddress . ':18089/probe');
         curl_setopt_array($curl, [CURLOPT_PROXY => 'socks5h://127.0.0.1:'.($this->testProbePort ?: $this->exitProbePort($id)),
             CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 4, CURLOPT_NOPROXY => '']);
+        if (!$this->testProbePort) {
+            $inbounds = array_column($this->getXray()['inbounds'], null, 'tag');
+            $account = $inbounds[self::EXIT_PROBE_TAG . $id]['settings']['accounts'][0] ?? throw new RuntimeException('Missing node probe account');
+            curl_setopt($curl, CURLOPT_PROXYUSERPWD, $account['user'] . ':' . $account['pass']);
+        }
         $body = curl_exec($curl);
         if ($body !== "managed-main-pass\n") {
             echo 'RETRY native traffic curl code '.curl_errno($curl).' HTTP '.(int)curl_getinfo($curl, CURLINFO_RESPONSE_CODE).PHP_EOL;
