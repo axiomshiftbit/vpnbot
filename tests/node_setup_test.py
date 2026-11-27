@@ -392,6 +392,13 @@ class NodeSetup(unittest.TestCase):
                 health.assert_called_once_with(runtime.return_value)
                 docker.assert_called_once_with()
                 forwarding.assert_called_once_with()
+                # A rejected preflight must retain the verified identity of unchanged code.
+                (root/'code.json').write_text('{"source":"unchanged"}')
+                with patch.object(setup, 'docker_firewall_disabled', side_effect=ValueError('preflight')):
+                    with self.assertRaisesRegex(ValueError, 'preflight'):
+                        setup.upgrade_code(root/'src')
+                self.assertTrue((root/'code.json').is_file())
+
                 # Docker managing the firewall stops the upgrade before any change.
                 docker.side_effect = ValueError('Docker firewall management is enabled')
                 install_code.reset_mock()

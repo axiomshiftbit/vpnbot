@@ -42,8 +42,15 @@ trait BotNodeRoutes
         return ['block' => ['routes' => $routes, 'rulesets' => []]];
     }
 
-    private static function nodeRoutesDigest(array $lists): string
+    private static function nodeRoutesDigest($lists): string
     {
+        // Match the node's canonical order of maps, including when compacting an older PAC.
+        // Matcher arrays and the entries of local route sources retain their order.
+        if (is_array($lists)) {
+            ksort($lists, SORT_STRING);
+            foreach ($lists as &$parts) if (is_array($parts)) ksort($parts, SORT_STRING);
+            unset($parts);
+        }
         return hash('sha256', json_encode($lists, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
     }
 
@@ -64,8 +71,13 @@ trait BotNodeRoutes
     private function nodeRoutesForeign(array $node): bool
     {
         if (isset($node['lists_sent'])) return false;
-        $running = $node['status']['options']['policy']['routes_digest'] ?? null;
-        return is_string($running) && $running !== self::nodeRoutesDigest([]);
+        return self::nodeRunningRoutesDigest($node['status'] ?? []) !== self::nodeRoutesDigest([]);
+    }
+
+    private static function nodeRunningRoutesDigest(array $status): string
+    {
+        $policy = $status['options']['policy'] ?? [];
+        return is_string($policy['routes_digest'] ?? null) ? $policy['routes_digest'] : self::nodeRoutesDigest($policy['routes'] ?? []);
     }
 
     private function nodeRoutesWrite(string $id, callable $edit): void

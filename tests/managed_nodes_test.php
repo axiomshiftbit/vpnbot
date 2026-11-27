@@ -44,7 +44,7 @@ class ManagedFixtureBot extends Bot
     public function exitProbe(string $id, bool $full = true): array { $this->events[] = 'probe'; return ['ok' => $this->probePass]; }
     protected function managedNodeTransport(string $id, string $action, $value = null): array {
         $this->events[] = $action;
-        if ($action === 'snapshot') { if (!$this->snapshotPass) throw new RuntimeException('fixture'); return ['saved' => true]; }
+        if ($action === 'snapshot') { if (!$this->snapshotPass) throw new RuntimeException('fixture'); return ['saved' => true, 'sha256' => hash('sha256', 'fixture')]; }
         if ($action === 'public') return ['public_key' => 'PUBLIC-FIXTURE'];
         throw new RuntimeException('Unexpected transport action');
     }

@@ -296,5 +296,140 @@ $run('С26', static function () use ($id, $digest, $fresh, $call, $cb, $check) {
     echo "PASS C26/H08 rule set cache\n";
 });
 
+$run('В01 full status', static function () use ($fresh, $id, $check) {
+    $routes = ['block' => ['domain' => ['full:keep.example']]];
+    $bot = $fresh();
+    $node = &$bot->pacState['managed_nodes'][$id];
+    unset($node['status']['policy_summary']);
+    $node['status']['options']['policy'] = ['routes' => $routes];
+    $bot->managedNodeChoice($id, 'transport', 'xhttp');
+    $bot->managedNodeApply($id);
+    $check(($bot->submitted[0]['value']['policy']['routes'] ?? null) === $routes,
+        'B01: an older status carrying full routes preserves the running lists during a settings change');
+});
+
+// Reconciliation can adopt a different confirmed generation after a controller backup was restored.
+$run('В01 reconciliation', static function () use ($fresh, $id, $call, $check) {
+    foreach (['missing', 'rollback'] as $mode) {
+        $bot = $fresh();
+        $node = &$bot->pacState['managed_nodes'][$id];
+        $node['lists_sent'] = $call($bot, 'nodeRoutesDigest', $call($bot, 'nodeRoutesSource', $node));
+        $node['job'] = ['id' => str_repeat('c', 32), 'operation' => $mode === 'rollback' ? 'rollback' : 'restart',
+            'phase' => 'waiting', 'before' => ['link' => $bot->profile['link']]];
+        $bot->remoteStatus['pending'] = null;
+        $bot->remoteStatus['options']['policy'] = ['routes_digest' => hash('sha256', 'different confirmed lists')];
+        if ($mode === 'missing') $bot->remoteJob = ['state' => 'missing'];
+        $bot->managedNodePoll($id);
+        $check($node['job'] === null && !isset($node['lists_sent']), "B01: $mode requires explicit ownership of changed lists");
+    }
+});
+$run('С14 stale refresh', static function () use ($fresh, $id, $check) {
+    $bot = $fresh();
+    unset($bot->pacState['managed_nodes'][$id]);
+    $bot->managedNodeRefresh($id);
+    $check(!in_array('status', $bot->events, true), 'C14: refreshing a removed card must not recreate its transport directory');
+});
+$run('С16 compact', static function () use ($fresh, $id, $call, $digest, $check) {
+    $bot = $fresh();
+    $rules = ['warp' => ['ip' => ['192.0.2.1']], 'block' => ['ip' => ['192.0.2.3'], 'domain' => ['full:one.example']]];
+    $compact = $call($bot, 'compactNodePolicy', ['routes' => $rules]);
+    $canonical = ['block' => ['domain' => ['full:one.example'], 'ip' => ['192.0.2.3']], 'warp' => ['ip' => ['192.0.2.1']]];
+    $check($compact['routes_digest'] === $digest($canonical), 'C16: compacting a restored policy uses the canonical node digest');
+});
+$run('С17 proxy environment', static function () use ($fresh, $call, $id, $check) {
+    $bot = $fresh();
+    $command = $call($bot, 'exitProbeCommand', $bot->pacState['exits'][$id], 10870, false, $id);
+    $check(str_contains($command, "--noproxy ''"), 'C17: a configured NO_PROXY must not turn the node probe into a direct request');
+});
+$run('С18 changed WARP entry', static function () use ($id, $check) {
+    $bot = new class extends AuditListsBot {
+        public function saveExitRoutes($text, $id, array $preset = []): bool {
+            foreach ($preset as $entry) $this->pacState['exits'][$id]['routes'][$entry] = 1;
+            $this->pacState['warplist']['changed.example'] = 0;
+            return true;
+        }
+        public function changeRouteList(string $type, callable $edit): bool {
+            $edit($this->pacState[$type]);
+            return true;
+        }
+        public function exitRoutesMenu(string $id, int $page = 0, string $notice = ''): void {}
+    };
+    $bot->pacState['warplist'] = ['changed.example' => 1, 'active.example' => 1];
+    $bot->exitCopyRoutes($id, 'move');
+    $check($bot->pacState['warplist'] === ['changed.example' => 0], 'C18: moving skips an entry another admin has just disabled in WARP');
+});
+$run('Н08 diagnostics', static function () use ($id, $check) {
+    $bot = new class extends AuditListsBot {
+        public function exitRulesetRefresh(string $url, array $set): string { return 'save'; }
+        public function exitDiagnosticsMenu(string $id, string $notice = ''): void { $this->screens[] = [$notice, []]; }
+    };
+    $bot->pacState['exits'][$id]['rulesets'] = ['https://lists.example/sample.srs' => ['on' => 1]];
+    $bot->exitRefresh($id);
+    $check(str_contains(end($bot->screens)[0], $bot->exitErrorText('save')), 'H08: the operator sees the cache write failure in diagnostics');
+});
+
+$run('С20 snapshot and status', static function () use ($id, $check) {
+    $bot = new class extends AuditListsBot {
+        public function isStale(): bool { try { $this->managedNodeBackupMark(); return false; } catch (RuntimeException $e) { return true; } }
+        protected function managedNodeTransport(string $id, string $action, $value = null): array {
+            $reply = parent::managedNodeTransport($id, $action, $value);
+            if ($action === 'snapshot' && !empty($reply['saved'])) {
+                $body = json_encode(['fixture' => $value]);
+                file_put_contents($this->managedNodeRoot . "/$id/snapshot.json", $body);
+                $reply['sha256'] = hash('sha256', $body);
+            }
+            return $reply;
+        }
+    };
+    $root = sys_get_temp_dir() . '/node-mark-' . bin2hex(random_bytes(6));
+    $bot->managedNodeRoot = $root;
+    mkdir("$root/$id", 0700, true);
+    try {
+        $snapshot = "$root/$id/snapshot.json";
+        file_put_contents($snapshot, '{"revision":"old fixture"}');
+        file_put_contents("$root/$id/endpoint.json", '{}');
+        $bot->snapshotPass = false;
+        $bot->managedNodePoll($id);
+        $check(!empty($bot->pacState['managed_nodes'][$id]['backup_stale']) && $bot->isStale(), 'C20: old file cannot accompany the new confirmed generation');
+        $bot->snapshotPass = true;
+        $bot->managedNodeBackupRefresh();
+        $confirmed = file_get_contents($snapshot);
+        $check(!$bot->isStale() && json_decode($confirmed, true)['fixture'] === $bot->remoteStatus['generation'], 'C20: export resumes after retry saves the confirmed generation');
+        $bot->snapshotPass = false;
+        $bot->managedNodeBackupRefresh();
+        $check(!$bot->isStale(), 'C20: a verified snapshot is still usable while the node is offline');
+        $binding = $bot->pacState['managed_nodes'][$id]['confirmed_snapshot'] ?? null;
+        unset($bot->pacState['managed_nodes'][$id]['confirmed_snapshot']['generation']);
+        $check($bot->isStale(), 'C20: a checksum without a generation cannot authorize offline export');
+        unset($bot->pacState['managed_nodes'][$id]['confirmed_snapshot']);
+        $check($bot->isStale(), 'C20: the first backup after a legacy upgrade must establish which generation the existing file belongs to');
+        $bot->snapshotPass = true;
+        $bot->profile['link'] .= '&fixture=changed';
+        $bot->managedNodeBackupRefresh();
+        $check($bot->isStale(), 'C20: migrating legacy state cannot bind a remote profile different from the installed one');
+        $bot->profile = $bot->pacState['exits'][$id]['managed_profile'];
+        $bot->pacState['managed_nodes'][$id]['confirmed_snapshot'] = $binding;
+        $before = $bot->managedNodeBackupMark();
+        file_put_contents($snapshot, '{"revision":"new fixture"}');
+        $check($bot->isStale(), 'C20: a crash after publishing a different snapshot cannot leave a mixed export');
+        file_put_contents($snapshot, $confirmed);
+        file_put_contents("$root/$id/endpoint.json", '{"revision":"new endpoint"}');
+        $check($bot->managedNodeBackupMark() !== $before, 'C20: changing the local endpoint while PAC is unchanged invalidates an export in progress');
+        $bot->pacState['managed_nodes'][$id]['status']['generation'] = str_repeat('d', 32);
+        $bot->snapshotPass = false;
+        $bot->managedNodeBackupRefresh();
+        $check($bot->isStale(), 'C20: status from another generation and a preserved offline snapshot cannot be archived together');
+        $bot->pacState['managed_nodes'][$id]['status']['generation'] = $bot->remoteStatus['generation'];
+        $bot->pacState['managed_nodes'][$id]['job'] = ['id' => str_repeat('c', 32), 'phase' => 'waiting'];
+        $check($bot->isStale(), 'C20: an in-flight job with an unconfirmed client profile cannot be archived');
+    } finally {
+        foreach (glob("$root/$id/*") ?: [] as $file) unlink($file);
+        rmdir("$root/$id");
+        foreach (glob("$root/.lock-*") ?: [] as $file) unlink($file);
+        if (file_exists("$root/.retired.lock")) unlink("$root/.retired.lock");
+        rmdir($root);
+    }
+});
+
 if ($failed) { fwrite(STDERR, "FAILED: " . implode(", ", $failed) . "\n"); exit(1); }
 echo "node_audit_lists_test OK\n";

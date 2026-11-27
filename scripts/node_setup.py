@@ -333,15 +333,15 @@ def upgrade_code(source, job_id=None):
         if not store.current() or store.pending() or (job.get('state') in ('queued', 'running') and not owned) \
                 or (job_id is not None and not owned):
             raise ValueError('Нода не установлена или изменение ещё не завершено')
-        # The recorded commit no longer describes the files once they change: a later
-        # failure must not leave the previous commit shown as verified. The bot's
-        # full update records the new commit only after every step succeeded.
-        (ROOT/'code.json').unlink(missing_ok=True)
         progress('docker')
         docker_firewall_disabled()
         progress('forwarding')
         disable_forwarding()
         progress('code')
+        # The recorded commit no longer describes the files once they change: a later
+        # failure must not leave the previous commit shown as verified. The bot's
+        # full update records the new commit only after every step succeeded.
+        (ROOT/'code.json').unlink(missing_ok=True)
         install.install_code(source)
         # The node status reports the installed commit and checks the files.
         node_upgrade.record(ROOT, source, job_id is None)
@@ -415,6 +415,14 @@ def setup(value, source, channel='latest', bundle=None):
     preflight(value, docker=False)
     progress('state')
     store = state.Store(ROOT)
+    # systemd takes the node lock during startup and rollback. Keep a distinct
+    # installer lock across those handoffs so a second setup cannot take over.
+    with os.fdopen(os.open(ROOT/'setup.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600), 'r+b') as installer_lock:
+        fcntl.flock(installer_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return setup_locked(value, source, channel, bundle, store)
+
+
+def setup_locked(value, source, channel, bundle, store):
     descriptor = os.open(ROOT/'lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -467,10 +475,11 @@ def setup(value, source, channel='latest', bundle=None):
         progress('firewall')
         existing = command(['nft', 'list', 'table', 'inet', 'vpnbot_node'], required=False).returncode == 0
         # Rules left by an interrupted attempt of this installer are its own; any other are not.
-        if existing and not resumed:
+        progress_record = state.decode(mark.read_bytes())
+        if existing and not progress_record.get('guard_started'):
             raise ValueError('Найдены действующие правила ноды без её состояния; требуется восстановление')
         state.trusted(backend.guard)
-        previous_guard = backend.guard.read_bytes() if backend.guard.exists() and not resumed else None
+        previous_guard = backend.guard.read_bytes() if backend.guard.exists() and not progress_record.get('guard_started') else None
         previous_ssh = None
         try:
             # ACME is closed by default. Only certificate() creates a timed
@@ -480,6 +489,7 @@ def setup(value, source, channel='latest', bundle=None):
             command(['nft', '-c', '-f', '-'], data=transaction.encode())
             # On disk before nftables.service may start below: its reload starts with
             # flush ruleset and includes guard*.nft, so the guard and acme_http survive.
+            state.atomic(mark, state.encode(progress_record | {'guard_started': True}))
             state.atomic(backend.guard, rules.encode())
             command(['nft', '-f', '-'], data=transaction.encode())
             # The UID/source guard is active before adapting the base profile.
@@ -494,8 +504,10 @@ def setup(value, source, channel='latest', bundle=None):
             progress('ssh')
             previous_ssh = install.install_ssh(value['controller_key'], host['sources'])
             progress('start')
-            backend.apply(generation)
+            # Persist the validated generation before its first listener can
+            # start. A power loss here must be recognisable by the next preflight.
             store.activate(generation)
+            backend.apply(generation)
             progress('services')
             command(['systemctl', 'enable', 'vpnbot-node.service', 'vpnbot-node-watch.timer', 'vpnbot-node-renew.timer'])
             # The boot service takes the same lock in its own process. State
@@ -535,7 +547,9 @@ def setup(value, source, channel='latest', bundle=None):
                     backend.guard.unlink(missing_ok=True)
                 else:
                     state.atomic(backend.guard, previous_guard)
-                command(['nft', 'delete', 'table', 'inet', 'vpnbot_node'], required=False)
+                removed = command(['nft', 'delete', 'table', 'inet', 'vpnbot_node'], required=False)
+                if removed.returncode == 0:
+                    state.atomic(mark, state.encode(progress_record | {'guard_started': False}))
                 (store.root/'current.json').unlink(missing_ok=True)
             if previous_ssh is not None:
                 install.restore_ssh(previous_ssh)

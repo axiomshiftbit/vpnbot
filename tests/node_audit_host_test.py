@@ -90,11 +90,15 @@ class Runtime(unittest.TestCase):
 
 
 class Setup(unittest.TestCase):
-    def install(self, root, backend_stop=None, fail=ValueError('nftables service is not active and enabled'), existing=False):
+    def install(self, root, backend_stop=None, fail=ValueError('nftables service is not active and enabled'), existing=False, on_apply=None, on_start=None, remove_fails=False):
         account = SimpleNamespace(pw_uid=59999, pw_gid=59999)
         calls, order = [], []
         def command(args, **kwargs):
             calls.append(args)
+            if on_start and args[:2] == ['systemctl', 'start']:
+                on_start()
+            if remove_fails and args[:3] == ['nft', 'delete', 'table']:
+                return done(returncode=1)
             if args[:3] == ['nft', 'list', 'table']:
                 return SimpleNamespace(stdout=b'', returncode=0 if existing else 1)
             if args[:2] == ['nft', '-f']:
@@ -123,6 +127,8 @@ class Setup(unittest.TestCase):
             backend.routed_host.return_value = setup.config.deployment(HOST)
             backend.transaction.side_effect = lambda rules: rules
             backend.guard = root/'guard.nft'
+            if on_apply:
+                backend.apply.side_effect = on_apply
             if backend_stop is not None:
                 backend.stop.side_effect = backend_stop
             try:
@@ -138,6 +144,41 @@ class Setup(unittest.TestCase):
         probe = node_setup_test.NodeSetup('test_public_enrollment')
         probe.setUp()
         return copy.deepcopy(probe.value)
+
+    def test_partial_activation_identifies_its_generation_before_listeners_open(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seen = []
+            self.install(root, on_apply=lambda generation: seen.append((root/'current.json').is_file()))
+            self.assertEqual(seen, [True])
+
+    def test_other_installer_cannot_enter_during_service_handoff(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            observed = []
+            def try_again():
+                error, backend, _order, _calls = self.install(root)
+                observed.append((isinstance(error, BlockingIOError), backend.apply.called))
+            self.install(root, on_start=try_again)
+            self.assertEqual(observed, [(True, False)])
+
+    def test_successful_cleanup_releases_table_ownership(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.install(root)
+            error, _, order, _ = self.install(root, existing=True)
+            self.assertIn('без её состояния', str(error))
+            self.assertEqual(order, [])
+
+    def test_retry_refuses_table_predating_installation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for attempt in range(2):
+                with self.subTest(attempt=attempt):
+                    error, _, order, calls = self.install(root, existing=True)
+                    self.assertIn('без её состояния', str(error))
+                    self.assertEqual(order, [])
+                    self.assertNotIn(['nft', 'delete', 'table', 'inet', 'vpnbot_node'], calls)
 
     def test_c01_guard_is_on_disk_before_nftables_service_may_reload(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -158,7 +199,7 @@ class Setup(unittest.TestCase):
     def test_c10_interrupt_rolls_back_and_the_next_attempt_resumes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            error, backend, _, calls = self.install(root, fail=KeyboardInterrupt())
+            error, backend, _, calls = self.install(root, fail=KeyboardInterrupt(), remove_fails=True)
             self.assertIsInstance(error, KeyboardInterrupt)
             backend.stop.assert_called_once_with()
             self.assertIn(['nft', 'delete', 'table', 'inet', 'vpnbot_node'], calls)
@@ -256,9 +297,14 @@ class Transport(unittest.TestCase):
                 for name in ('key', 'key.pub'):
                     (entry/name).write_text('x')
                 os.utime(entry, (1000+n, 1000+n))
-            transport.Client._retired_room(root)
+            current = root/('f'*32)
+            current.mkdir(mode=0o700)
+            staging = Path(tmp)/'staging'
+            staging.mkdir(mode=0o700)
+            ages = transport.Client._retired_ages(root, staging)
+            transport.Client._trim_retired(current, staging, ages)
             names = sorted(p.name for p in root.iterdir())
-            self.assertEqual(len(names), transport.RETIRED_MAX-1)
+            self.assertEqual(len(names), transport.RETIRED_MAX)
             self.assertNotIn('%032x' % 0, names, 'the longest unused key makes room')
 
 

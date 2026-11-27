@@ -3,6 +3,7 @@ require_once __DIR__ . '/../app/bot.php';
 class NodeBackupFixture extends Bot {
     public array $state = [];
     public function __construct(string $root) {
+        $this->lockDir = dirname($root).'/';
         $this->pac = "$root/config/pac.json"; $this->htpasswd = "$root/webapp/.htpasswd";
         $this->telemtDecoyDir = "$root/decoy"; $this->backupWarpRoot = "$root/warp";
         $this->managedNodeRoot = "$root/nodes";
@@ -61,6 +62,65 @@ try {
     }
     $check((fileperms(dirname($path)) & 0777) === 0700, 'retired directory private');
     $check($restored->backupExtraFiles() === $backup, 'retired archive round trip');
+    // Older releases could leave more than 256 pairs, including after an interrupted eviction.
+    for ($i = 0; $i < 256; $i++) {
+        $entry = $archiveBot->managedNodeRoot.'/retired/'.sprintf('%032x', $i);
+        mkdir($entry, 0700);
+        foreach (['key', 'key.pub'] as $name) file_put_contents("$entry/$name", 'fixture');
+        touch($entry, 1000 + $i);
+    }
+    $latest = $archiveBot->backupExtraFiles();
+    $check(count($latest) === 512 && isset($latest["nodes/retired/$archiveId/key"]) &&
+        !isset($latest['nodes/retired/'.str_repeat('0', 32).'/key']), 'backup selects newest 256 complete pairs from legacy archive');
+    $check(count($archiveBot->validateBackupExtraFiles($latest)) === 512, 'bounded legacy archive can be restored');
+    // IDs run opposite to age so lexical order cannot replace backup order.
+    for ($i = 0; $i < 256; $i++) touch($archiveBot->managedNodeRoot.'/retired/'.sprintf('%032x', $i), 5000 - $i);
+    $ordered = $archiveBot->backupExtraFiles();
+    $import = new NodeBackupFixture($root.'/ordered');
+    $import->restoreBackupExtraFiles(json_decode(json_encode($ordered), true));
+    $check(array_keys($import->backupExtraFiles()) === array_keys($ordered), 'restore preserves the complete order of the exported 256 pairs');
+    $local = $root.'/merged';
+    $merge = new NodeBackupFixture($local);
+    $foreign = $merge->managedNodeRoot.'/retired/'.str_repeat('e', 32);
+    mkdir($foreign, 0700, true);
+    foreach (['key', 'key.pub'] as $name) file_put_contents("$foreign/$name", 'locally retained fixture');
+    touch($foreign, 12000);
+    $merge->restoreBackupExtraFiles($ordered);
+    clearstatcache();
+    $check(filemtime($foreign) === 12000 && file_get_contents("$foreign/key") === 'locally retained fixture' &&
+        count(glob(dirname($foreign).'/*', GLOB_ONLYDIR)) === 257, 'import keeps other local pairs and their dates');
+    $check(filemtime($merge->managedNodeRoot."/retired/$archiveId") < filemtime($foreign), 'import does not displace existing local history');
+    $rollback = new class($local) extends NodeBackupFixture {
+        public bool $failWrite = true;
+        public function writePrivateKey(string $path, string $data): bool {
+            if ($this->failWrite && str_ends_with($path, '/key.pub')) { $this->failWrite = false; return false; }
+            return parent::writePrivateKey($path, $data);
+        }
+    };
+    try {
+        $rollback->restoreBackupExtraFiles(["nodes/retired/".str_repeat('e', 32).'/key' => base64_encode('incoming'),
+            "nodes/retired/".str_repeat('e', 32).'/key.pub' => base64_encode('incoming')]);
+        $failed = false;
+    } catch (Throwable $error) { $failed = true; }
+    clearstatcache();
+    $check($failed && filemtime($foreign) === 12000 && file_get_contents("$foreign/key") === 'locally retained fixture',
+        'failed import restores the original pair and its place in local history');
+    $rollback->failWrite = true;
+    $missing = str_repeat('f', 32);
+    try {
+        $rollback->restoreBackupExtraFiles(["nodes/retired/$missing/key" => base64_encode('incoming'),
+            "nodes/retired/$missing/key.pub" => base64_encode('incoming')]);
+        $failed = false;
+    } catch (Throwable $error) { $failed = true; }
+    $check($failed && !is_dir(dirname($foreign)."/$missing"), 'failed restore leaves no incomplete pair directory');
+    $ties = new NodeBackupFixture($root.'/ties');
+    foreach (['a', 'b'] as $prefix) {
+        $pair = $ties->managedNodeRoot.'/retired/'.str_repeat($prefix, 32);
+        mkdir($pair, 0700, true);
+        foreach (['key', 'key.pub'] as $name) file_put_contents("$pair/$name", 'fixture');
+        touch($pair, 3);
+    }
+    $check(array_key_first($ties->backupExtraFiles()) === 'nodes/retired/'.str_repeat('b', 32).'/key', 'equal seconds select greater ID first');
     $check($restored->validateBackupExtraFiles([]) === [], 'older backup without retired keys accepted');
     foreach ([array_slice($backup, 0, 1), array_replace($backup, ["nodes/retired/$archiveId/key" => base64_encode(str_repeat('x', 16385))]),
         ["nodes/retired/$archiveId/endpoint.json" => base64_encode('{}')], ['nodes/retired/../key' => base64_encode('fixture')]] as $bad) {

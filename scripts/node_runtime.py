@@ -375,7 +375,9 @@ class Runtime:
         warp = node_warp.outbound(mode, value['images']['wg'], self.store.root, command, value['identity'].get('warp_account'),
                                   options.get('warp_port'), options.get('warp_http', 'h3')) if mode != 'off' else None
         self.stage = 'compile'
-        body = config.core_config(value['options'], self.routed_host(), value['identity'], value['peers'], warp)
+        routed = self.routed_host()
+        body = config.core_config(value['options'], routed, value['identity'], value['peers'], warp)
+        self.prepared_rules = config.firewall(value['options'], routed)
         strict = node_warp.isolate_resolver(body, value['identity']['warp_uuid']) if warp is not None else None
         # Both cores load the lists' geodata from their own /node directory.
         geodata = node_policy.compile_policy(body, strict, value)
@@ -461,8 +463,7 @@ class Runtime:
         if self.store.load(generation)['options'].get('amnezia', {}).get('enabled'):
             command(['docker', 'run', '--rm', *self.amnezia_arguments(generation), '-n', '-c', '/node/carrier.conf'])
         self.stage = 'firewall'
-        rules = config.firewall(self.store.load(generation)['options'], self.routed_host())
-        command(['nft', '-c', '-f', '-'], data=self.transaction(rules).encode())
+        command(['nft', '-c', '-f', '-'], data=self.transaction(self.prepared_rules).encode())
 
     def transaction(self, rules):
         exists = command(['nft', 'list', 'table', 'inet', 'vpnbot_node'], required=False).returncode == 0
@@ -523,9 +524,10 @@ class Runtime:
         command(['nft', '-f', '-'], data=transaction.encode())
         self.remember_guard()
 
-    def load_firewall(self, generation=None):
-        """Build the guard from a generation with the installed code; check, persist, load atomically."""
-        rules = config.firewall(self.store.load(generation)['options'], self.routed_host())
+    def load_firewall(self, generation=None, rules=None):
+        """Check, persist and load the guard, using the same routes as the prepared core."""
+        if rules is None:
+            rules = config.firewall(self.store.load(generation)['options'], self.routed_host())
         transaction = self.transaction(rules)
         command(['nft', '-c', '-f', '-'], data=transaction.encode())
         state.atomic(self.guard, rules.encode())
@@ -540,7 +542,7 @@ class Runtime:
         self.stage = 'start'
         for name in (CONTAINER, COVER_CONTAINER, AWG_CONTAINER, WARP_CONTAINER, LEGACY_DNS_CONTAINER):
             self.container(name, strict=True)
-        self.load_firewall(generation)
+        self.load_firewall(generation, self.prepared_rules)
         self.stop()
         if value['options'].get('warp_mode', 'off') != 'off':
             command(['docker', 'run', '-d', '--name', WARP_CONTAINER, '--label', LABEL+'=1',

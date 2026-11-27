@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import base64
+import hashlib
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -13,6 +15,28 @@ KEY = 'ssh-ed25519 '+base64.b64encode(b'\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\
 
 
 class NodeSSH(unittest.TestCase):
+    def test_snapshot_published_only_for_requested_stable_generation(self):
+        wanted, other = 'a' * 32, 'b' * 32
+        with tempfile.TemporaryDirectory() as tmp:
+            client = transport.Client('aabbccdd', Path(tmp))
+            path = client.directory / 'snapshot.json'
+            before = b'{"fixture":"old"}'
+            path.write_bytes(before)
+            path.chmod(0o600)
+            cases = ((other, False, wanted, False), (wanted, True, wanted, False),
+                     (wanted, False, other, False), (wanted, False, wanted, True))
+            for first, pending, last, later_pending in cases:
+                replies = [{'generation': first, 'pending': pending}, {'fixture': 'new'},
+                           {'generation': last, 'pending': later_pending}]
+                with patch.object(client, 'request', side_effect=replies), self.assertRaises(ValueError):
+                    client.snapshot(wanted)
+                self.assertEqual(path.read_bytes(), before)
+            replies = [{'generation': wanted, 'pending': None}, {'fixture': 'new'}, {'generation': wanted, 'pending': None}]
+            with patch.object(client, 'request', side_effect=replies):
+                result = client.snapshot(wanted)
+            self.assertEqual(result, {'saved': True, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()})
+            self.assertEqual(transport.decode(path.read_bytes()), {'fixture': 'new'})
+
     def test_tls_probe_crosses_controller_transport_without_target_arguments(self):
         reply={'tls':'TLSv1.3','alpn':'h2','record':36,'name':'node.example.test','own':True,'transport':'reality'}
         with tempfile.TemporaryDirectory() as tmp:
@@ -150,6 +174,14 @@ print('{"ok":true,"result":{"schema":1}}')
                 with self.subTest(bad=bad), self.assertRaises(ValueError):
                     client.store(bad)
             self.assertEqual(transport.decode(path.read_bytes()), value)
+            first_hash = result['hash']
+            newer = client.store(value | {'peers': [{'fixture': 'newer'}]})
+            self.assertFalse(client.clear_import(first_hash))
+            self.assertEqual(client.saved(True)['hash'], newer['hash'])
+            self.assertTrue(client.clear_import(newer['hash']))
+            self.assertEqual(client.saved(True), client.saved())
+            self.assertFalse(client.clear_import(newer['hash']))
+            client.store(value)
             path.unlink()
             path.symlink_to(Path(tmp)/'elsewhere')
             with self.assertRaises(ValueError):
@@ -175,6 +207,34 @@ print('{"ok":true,"result":{"schema":1}}')
             self.assertFalse(client.directory.exists())
             self.assertEqual((other.directory/'key.pub').read_text(), 'other')
 
+    def test_existing_archive_survives_disk_sync_error_after_atomic_exchange(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            client = transport.Client('aabbccdd', Path(tmp)/'nodes')
+            archived = transport.retired_directory(client.root, KEY)
+            archived.mkdir(mode=0o700, parents=True)
+            for name in ('key', 'key.pub'):
+                transport.atomic(client.directory/name, b'new fixture')
+                transport.atomic(archived/name, b'old fixture')
+            transport.atomic(client.directory/'endpoint.json', transport.encode(dict(address='1.1.1.1', port=22, host_key=KEY)))
+            sync = transport.sync_directory
+            staged = archived.parent/'.staging'/'pair'
+
+            def refuse_sync(path):
+                if path == archived.parent and (archived/'key.pub').read_bytes() == b'new fixture':
+                    raise OSError('simulated persistent directory sync failure')
+                sync(path)
+
+            with patch.object(transport, 'sync_directory', side_effect=refuse_sync), self.assertRaises(OSError):
+                client.forget()
+            self.assertTrue((client.directory/'endpoint.json').is_file())
+            for name in ('key', 'key.pub'):
+                self.assertTrue((staged/name).is_file())
+                self.assertEqual((staged/name).read_bytes(), b'old fixture')
+            client.forget()
+            for name in ('key', 'key.pub'):
+                self.assertEqual((archived/name).read_bytes(), b'new fixture')
+            self.assertFalse(staged.parent.exists())
+
     def test_archive_failure_preserves_original_pair_and_retry(self):
         import errno
         for failed_name in ('key', 'key.pub'):
@@ -187,7 +247,7 @@ print('{"ok":true,"result":{"schema":1}}')
                         (client.directory/name).write_bytes(body)
                     atomic = transport.atomic
                     def fail(path, body):
-                        if transport.RETIRED in path.parts and path.name == failed_name:
+                        if path.parent != client.directory and path.name == failed_name:
                             raise OSError(code, 'injected archive failure')
                         return atomic(path, body)
                     with patch.object(transport, 'atomic', side_effect=fail), self.assertRaises(OSError):
@@ -199,6 +259,102 @@ print('{"ok":true,"result":{"schema":1}}')
                     for name in ('key', 'key.pub'):
                         self.assertEqual((retired/name).read_bytes(), original[name])
                         self.assertEqual((retired/name).stat().st_mode & 0o777, 0o600)
+
+    def test_archive_eviction_matches_backup_order_for_equal_seconds(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(transport, 'RETIRED_MAX', 2):
+            client = transport.Client('aabbccdd', Path(tmp)/'nodes')
+            root = client.root/transport.RETIRED
+            root.mkdir(mode=0o700)
+            for prefix, nanos in [('a', 800_000_000), ('b', 100_000_000)]:
+                pair = root/(prefix * 32)
+                pair.mkdir(mode=0o700, parents=True)
+                for name in ('key', 'key.pub'):
+                    transport.atomic(pair/name, b'fixture')
+                stamp = 3_000_000_000 + nanos
+                os.utime(pair, ns=(stamp, stamp))
+            for name in ('key', 'key.pub'):
+                transport.atomic(client.directory/name, b'current fixture')
+            transport.atomic(client.directory/'endpoint.json', transport.encode(dict(address='1.1.1.1', port=22, host_key=KEY)))
+            client.retire()
+            self.assertEqual(set(root.iterdir()), {root/('b' * 32), transport.retired_directory(client.root, KEY)})
+
+    def test_rapid_retirements_and_replacement_keep_actual_submission_order(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(transport, 'RETIRED_MAX', 2):
+            client = transport.Client('aabbccdd', Path(tmp)/'nodes')
+            keys = ['ssh-ed25519 ' + base64.b64encode(bytes.fromhex('0000000b') + b'ssh-ed25519'
+                    + bytes.fromhex('00000020') + bytes([seed])*32).decode() for seed in (1, 2, 3)]
+            keys.sort(key=lambda key: transport.retired_directory(client.root, key).name, reverse=True)
+            for name in ('key', 'key.pub'):
+                transport.atomic(client.directory/name, b'current fixture')
+            atomic = transport.atomic
+            def write_same_second(path, body):
+                atomic(path, body)
+                if path.parent.name == 'pair': os.utime(path.parent, (1000, 1000))
+            root = client.root/transport.RETIRED
+            submitted = []
+            with patch.object(transport, 'atomic', side_effect=write_same_second):
+                for count, key in enumerate([*keys, keys[1], keys[0]], 1):
+                    transport.atomic(client.directory/'endpoint.json', transport.encode(dict(address='1.1.1.1', port=22, host_key=key)))
+                    client.retire()
+                    pair = transport.retired_directory(client.root, key)
+                    submitted = [p for p in submitted if p != pair] + [pair]
+                    submitted = submitted[-2:]
+                    retained = sorted(root.iterdir(), key=lambda p: (p.stat().st_mtime_ns // 1_000_000_000, p.name))
+                    if count >= 3:
+                        self.assertEqual(set(retained), set(submitted))
+                        self.assertEqual(retained, submitted)
+
+    def test_failed_age_update_leaves_the_existing_archive_in_place(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(transport, 'RETIRED_MAX', 1):
+            client = transport.Client('aabbccdd', Path(tmp)/'nodes')
+            root = client.root/transport.RETIRED
+            root.mkdir(mode=0o700)
+            previous = transport.retired_directory(client.root, KEY)
+            previous.mkdir(mode=0o700)
+            for name in ('key', 'key.pub'):
+                transport.atomic(previous/name, b'previous fixture')
+                transport.atomic(client.directory/name, b'replacement fixture')
+            transport.atomic(client.directory/'endpoint.json', transport.encode(dict(address='1.1.1.1', port=22, host_key=KEY)))
+            future = previous.stat().st_mtime + 3600
+            os.utime(previous, (future, future))
+            with patch.object(transport.os, 'utime', side_effect=OSError('simulated filesystem failure')), self.assertRaises(OSError):
+                client.retire()
+            self.assertEqual(set(root.iterdir()), {previous})
+            self.assertEqual((previous/'key').read_bytes(), b'previous fixture')
+            self.assertEqual((previous/'key.pub').read_bytes(), b'previous fixture')
+
+    def test_full_archive_survives_failed_replacement_and_retry(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(transport, 'RETIRED_MAX', 1):
+            client = transport.Client('aabbccdd', Path(tmp)/'nodes')
+            oldest = client.root/transport.RETIRED/('0'*32)
+            oldest.mkdir(mode=0o700, parents=True)
+            for name in ('key', 'key.pub'):
+                (client.directory/name).write_bytes(b'new fixture')
+                (oldest/name).write_bytes(b'old fixture')
+            (client.directory/'endpoint.json').write_bytes(transport.encode(dict(address='1.1.1.1', port=22, host_key=KEY)))
+            atomic = transport.atomic
+            def refuse_second_file(path, body):
+                if path.name == 'key.pub':
+                    raise OSError('simulated full disk')
+                atomic(path, body)
+            with patch.object(transport, 'atomic', side_effect=refuse_second_file), self.assertRaises(OSError):
+                client.retire()
+            self.assertTrue((oldest/'key.pub').is_file())
+            self.assertEqual(list(oldest.parent.iterdir()), [oldest])
+            self.assertTrue((client.directory/'key.pub').is_file())
+            latest = transport.retired_directory(client.root, KEY)
+            sync = transport.sync_directory
+            def fail_archive_sync(path):
+                if path == oldest.parent and latest.exists():
+                    raise OSError('simulated directory sync failure')
+                sync(path)
+            with patch.object(transport, 'sync_directory', side_effect=fail_archive_sync), self.assertRaises(OSError):
+                client.retire()
+            self.assertTrue((oldest/'key.pub').is_file())
+            self.assertTrue((latest/'key.pub').is_file())
+            client.retire()
+            self.assertEqual(list(oldest.parent.iterdir()), [latest])
+            self.assertEqual((latest/'key.pub').read_bytes(), b'new fixture')
 
     def retired_setup(self, root, host_key=KEY):
         # These existing transport fixtures contain inert labels, not SSH keys.

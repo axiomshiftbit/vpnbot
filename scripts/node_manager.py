@@ -418,9 +418,9 @@ class Manager:
 
     def watch(self):
         """15-second pass: dead worker, expired confirmation, stopped containers, lost guard."""
-        self.recover_job()
         failure = None
         try:
+            self.recover_job()
             pending = self.store.pending()
             if pending and time.time() >= pending['deadline']:
                 self.recover()

@@ -90,7 +90,7 @@ trait BotNodePolicy
         }
         // Expanded geodata and sets can be as large as the controller list; the source stays in managed_nodes[*].lists.
         if (array_key_exists('routes', $policy)) {
-            $policy['routes_digest'] = hash('sha256', json_encode($policy['routes'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+            $policy['routes_digest'] = self::nodeRoutesDigest($policy['routes']);
             unset($policy['routes']);
         }
         return $policy;

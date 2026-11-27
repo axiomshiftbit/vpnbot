@@ -104,12 +104,20 @@ class InstalledCode(unittest.TestCase):
         (self.lib/'node_xray.py').unlink()
         self.assertFalse(upgrade.code_status(self.store, self.lib)['verified'])
 
+    def test_legacy_button_sha_does_not_verify_modules_from_another_commit(self):
+        work, source = self.checkout()
+        state.atomic(self.store.root/upgrade.CODE, state.encode({'source': source, 'time': 0}))
+        (self.lib/'node_xray.py').write_text('legitimate different installation')
+        upgrade.record(self.store.root, work/'scripts', False)
+        with patch.object(upgrade, 'REPOSITORY', work):
+            self.assertFalse(upgrade.code_status(self.store, self.lib)['verified'])
+
     def test_button_commit_wins_and_failed_record_removes_stale_claim(self):
         work, head = self.checkout()
         upgrade.record(self.store.root, work/'scripts', True)
-        state.atomic(self.store.root/upgrade.CODE, state.encode({'source': 'c'*40, 'time': 0}))
+        state.atomic(self.store.root/upgrade.CODE, state.encode({'source': head, 'digest': upgrade.digest(), 'time': 0}))
         upgrade.record(self.store.root, self.base/'unpacked'/'scripts', False)
-        self.assertEqual(upgrade.code_status(self.store, self.lib), {'source': 'c'*40, 'upgrade': True, 'origin': 'button', 'verified': True})
+        self.assertEqual(upgrade.code_status(self.store, self.lib), {'source': head, 'upgrade': True, 'origin': 'button', 'verified': True})
         (self.lib/'node_wg.py').unlink()
         upgrade.record(self.store.root, work/'scripts', True)
         self.assertFalse((self.store.root/upgrade.INSTALLED).exists())

@@ -1159,7 +1159,7 @@ trait BotExitNodes
             } catch (InvalidArgumentException $e) {
             }
         }
-        $cmd = "c(){ curl -s --socks5-hostname $proxy $user --max-time 12 \"\$@\"; }; "
+        $cmd = "c(){ curl -s --noproxy '' --socks5-hostname $proxy $user --max-time 12 \"\$@\"; }; "
             . "r=\$(c -o /dev/null -w 'probe=%{http_code} %{time_starttransfer}' " . self::EXIT_PROBE_URL . "); printf '%s\\n' \"\$r\"; "
             . "case \"\$r\" in probe=204*) $more;; *) $tcp;; esac; ";
         return $cmd . 'true';
@@ -1549,6 +1549,12 @@ trait BotExitNodes
     /** Обновить наборы узла, которым пора (или все при $force); true — записи изменились. */
     public function exitRefreshRulesets(string $id, bool $force = false): bool
     {
+        $errors = [];
+        return $this->exitRefreshRulesetsChecked($id, $force, $errors);
+    }
+
+    private function exitRefreshRulesetsChecked(string $id, bool $force, array &$errors): bool
+    {
         $node = $this->exitNodes()[$id] ?? null;
         if ($node === null) return false;
         $changed = false;
@@ -1562,7 +1568,8 @@ trait BotExitNodes
             // или с другим типом набора.
             $mark = static fn(array $c) => ($c['hash'] ?? '') . '|' . ($c['parser'] ?? '');
             $before = $mark($cache);
-            $this->exitRulesetRefresh((string) $url, $set);
+            $error = $this->exitRulesetRefresh((string) $url, $set);
+            if ($error !== '') $errors[$error] = $this->exitErrorText($error);
             if ($mark($this->exitRulesetView((string) $url, $set)) !== $before) $changed = true;
         }
         return $changed;
@@ -2136,10 +2143,13 @@ trait BotExitNodes
 
     public function exitRefresh(string $id): void
     {
-        $changed = $this->exitRefreshRulesets($id, true);
+        $errors = [];
+        $changed = $this->exitRefreshRulesetsChecked($id, true, $errors);
         if ($changed) $this->withLock('xray', fn() => $this->restartXray($this->getXray()), 20, false);
         $s = $this->exitProbe($id, true);
-        $this->exitDiagnosticsMenu($id, $this->t('Обновлено: наборы правил ', 'Refreshed: rule sets ') . ($changed ? $this->t('изменились', 'changed') : $this->t('без изменений', 'unchanged')) . $this->t(', узел ', ', node ') . (!empty($s['ok']) ? $this->t('работает', 'working') : $this->t('не работает', 'not working')));
+        $summary = $this->t('Наборы правил ', 'Rule sets ') . ($changed ? $this->t('изменились', 'changed') : $this->t('без изменений', 'unchanged')) . $this->t(', узел ', ', node ') . (!empty($s['ok']) ? $this->t('работает', 'working') : $this->t('не работает', 'not working'));
+        if ($errors) $summary .= "\n" . $this->t('Ошибка обновления набора: ', 'Rule set refresh failed: ') . implode(', ', $errors);
+        $this->exitDiagnosticsMenu($id, $summary);
     }
 
     public function exitCheckAll(): void
@@ -2484,14 +2494,17 @@ trait BotExitNodes
         // Узел и его включённые маршруты сверяются в том же снимке PAC, где
         // запись убирается из WARP: узел, выключенный или удалённый между
         // копированием и удалением, ничего не забирает из WARP.
-        $moved = [];
+        $moved = 0;
         $ok = $this->changeRouteList('warplist', function (&$warp) use ($entries, $id, &$moved) {
             $node = $this->exitNodes()[$id] ?? null;
-            $moved = !$node || empty($node['enabled']) ? []
-                : array_values(array_intersect($entries, array_map('strval', array_keys(array_filter($node['routes'])))));
-            foreach ($moved as $entry) unset($warp[$entry]);
+            if (!$node || empty($node['enabled'])) return;
+            foreach ($entries as $entry) {
+                if (empty($node['routes'][$entry]) || empty($warp[$entry])) continue;
+                unset($warp[$entry]);
+                $moved++;
+            }
         });
-        $this->exitRoutesMenu($id, PHP_INT_MAX, $ok ? $this->t('Перенесено из WARP: ', 'Moved from WARP: ') . count($moved) : $this->t('Скопировано, но убрать из WARP не удалось', 'Copied, but removing from WARP failed'));
+        $this->exitRoutesMenu($id, PHP_INT_MAX, $ok ? $this->t('Перенесено из WARP: ', 'Moved from WARP: ') . $moved : $this->t('Скопировано, но убрать из WARP не удалось', 'Copied, but removing from WARP failed'));
     }
 
     public function exitYoutube(string $id): void

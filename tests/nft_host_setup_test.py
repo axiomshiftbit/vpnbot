@@ -55,6 +55,16 @@ HOST = dict(interface='ens3', public4='11.77.0.4', public6='2606:4700:4700::1111
 
 
 class HostFirewallTest(unittest.TestCase):
+    def test_stale_table_does_not_claim_an_existing_foreign_set(self):
+        table = {'table': {'family': 'ip', 'name': 'filter'}}
+        entry = {'set': {'family': 'ip', 'table': 'filter', 'name': 'node4_sources', 'type': 'ipv4_addr'}}
+        own = {'chain': {'family': 'ip', 'table': 'filter', 'name': 'input'}}
+        foreign = {'chain': {'family': 'ip', 'table': 'filter', 'name': 'DOCKER-USER'}}
+        wanted = {'nftables': [table, entry, own]}
+        live = {'nftables': [table, entry, foreign]}
+        with self.assertRaises(ValueError):
+            nft.delta(wanted, wanted, live)
+
     def test_service_is_started_only_for_an_inactive_node(self):
         import os, subprocess, tempfile
         with tempfile.TemporaryDirectory() as directory:

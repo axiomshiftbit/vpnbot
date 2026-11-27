@@ -72,7 +72,10 @@ def check_firewall(public, interface):
                  for item in objects if item.get('rule', {}).get('chain') == name]
         if rules != [expression]:
             raise ValueError('Отсутствует штатная защита SNAT/ULA для выбранного WAN: ' + name)
-    check_forward([item['rule']['expr'] for item in objects if item.get('rule', {}).get('chain') == 'forward'], interface)
+    reserved = next((item['set'].get('elem', []) for item in objects
+                     if item.get('set', {}).get('name') == 'egress6_reserved'), None)
+    check_forward([item['rule']['expr'] for item in objects if item.get('rule', {}).get('chain') == 'forward'],
+                  interface, reserved)
     for item in objects:
         mapping = item.get('map', {})
         if mapping.get('name') == 'egress6_snat':
@@ -82,31 +85,82 @@ def check_firewall(public, interface):
     raise ValueError('egress6_snat не содержит выбранный публичный IPv6')
 
 
-def check_forward(rules, interface):
-    """Закрытая forward пропускает выделенный контейнер: выход в WAN и ответы ему.
+def excludes_public_addresses(right, reserved):
+    """True only if every address in this nft expression is outside the supported public range."""
+    if right == '@egress6_reserved':
+        if reserved is None:
+            return False
+        values = reserved
+    else:
+        values = right['set'] if isinstance(right, dict) and 'set' in right else [right]
+    public = ipaddress.IPv6Network('2000::/3')
+    try:
+        for value in values:
+            if isinstance(value, dict):
+                prefix = value['prefix']
+                value = (prefix['addr'], prefix['len'])
+            network = ipaddress.IPv6Network(value)
+            if network.overlaps(public) and not any(network.subnet_of(net) for net in RESERVED):
+                return False
+    except (KeyError, TypeError, ValueError):
+        return False
+    return True
 
-    Пустая цепочка с policy drop проходила проверку формы, и маркер готовности
-    появлялся без пути трафика. Правило засчитывается, только если до него нет
-    безусловного отказа."""
-    def has(expr, left, right):
-        return {'match': {'op': '==', 'left': left, 'right': right}} in expr
-    iif, oif = {'meta': {'key': 'iifname'}}, {'meta': {'key': 'oifname'}}
-    saddr, daddr = ({'payload': {'protocol': 'ip6', 'field': f}} for f in ('saddr', 'daddr'))
-    wanted = {
-        'egress': lambda e: has(e, iif, 'br-vpnbot6') and has(e, oif, interface) and has(e, saddr, SOURCE),
-        'reply': lambda e: has(e, iif, interface) and has(e, oif, 'br-vpnbot6') and has(e, daddr, SOURCE)
-                 and any('ct' in json.dumps(x) and 'established' in json.dumps(x) for x in e),
-    }
-    found = set()
-    for expr in rules:
-        verdicts = [x for x in expr if any(k in x for k in ('accept', 'drop', 'reject', 'jump', 'goto'))]
-        conditions = [x for x in expr if not any(k in x for k in ('accept', 'drop', 'reject', 'jump', 'goto', 'counter', 'log', 'limit'))]
-        if not conditions and verdicts and any(k in verdicts[-1] for k in ('drop', 'reject')):
-            break  # дальше правил цепочка не доходит
-        if verdicts and 'accept' in verdicts[-1]:
-            found |= {name for name, test in wanted.items() if test(expr)}
-    if found != set(wanted):
-        raise ValueError('В IPv6 forward нет пропуска выделенного контейнера Xray в WAN и ответов ему; загрузите адаптированный IPv6 firewall')
+
+def check_forward(rules, interface, reserved=None):
+    """Verify the two paths in order; unknown earlier blocking conditions require manual review."""
+    def match(left, right, op='=='):
+        return {'match': {'op': op, 'left': left, 'right': right}}
+    iif, oif = ({'meta': {'key': key}} for key in ('iifname', 'oifname'))
+    saddr, daddr = ({'payload': {'protocol': 'ip6', 'field': field}} for field in ('saddr', 'daddr'))
+    state = {'ct': {'key': 'state'}}
+    established = match(state, 'established', 'in')
+    public_range = match(daddr, {'prefix': {'addr': '2000::', 'len': 3}})
+    def all_protocols(term):
+        test = term.get('match', {})
+        right = test.get('right')
+        return (test.get('left') == {'meta': {'key': 'l4proto'}} and test.get('op') in ('in', '==')
+                and isinstance(right, dict) and all(name in right.get('set', []) for name in ('tcp', 'udp', 'ipv6-icmp')))
+
+    for outbound in (True, False):
+        incoming, outgoing = ('br-vpnbot6', interface) if outbound else (interface, 'br-vpnbot6')
+        local, remote = (saddr, daddr) if outbound else (daddr, saddr)
+        required = [match(iif, incoming), match(oif, outgoing), match(local, SOURCE)]
+        optional = [public_range] if outbound else [match({'ct': {'key': 'status'}}, 'seen-reply', 'in')]
+        if not outbound:
+            required.append(established)
+
+        def disjoint(term):
+            test = term.get('match', {})
+            left, op, right = (test.get(k) for k in ('left', 'op', 'right'))
+            if left in (iif, oif) and isinstance(right, str) and re.fullmatch(r'[A-Za-z0-9_.:-]+', right):
+                expected = incoming if left == iif else outgoing
+                return (op == '==' and right != expected) or (op == '!=' and right == expected)
+            if op == '!=' and left == local and right == SOURCE:
+                return True
+            if left == state and op in ('in', '=='):
+                states = right.get('set', []) if isinstance(right, dict) else [right]
+                if states and all(isinstance(s, str) for s in states):
+                    return not set(states).intersection(('new', 'established') if outbound else ('established',))
+            return left == remote and op == '==' and excludes_public_addresses(right, reserved)
+
+        for expression in rules:
+            terms = [x for x in expression if 'counter' not in x and 'log' not in x]
+            if not terms:
+                continue
+            if terms[-1] == {'accept': None}:
+                conditions = terms[:-1]
+                allowed = required + optional
+                if all(test in conditions for test in required) and all(test in allowed or all_protocols(test) for test in conditions):
+                    break
+                continue
+            if all(set(term) <= {'match', 'limit'} for term in terms):
+                continue
+            if not any(disjoint(term) for term in terms):
+                raise ValueError('Предыдущее правило может закрывать IPv6 forward для контейнера Xray')
+        else:
+            raise ValueError('В IPv6 forward нет пропуска выделенного контейнера Xray в WAN и ответов ему')
+
 
 
 def prepare(root, value):

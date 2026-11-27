@@ -8,7 +8,14 @@ class NodePresetFixture extends ManagedFixtureBot {
         return parent::managedNodeTransport($id,$action,$value);
     }
 }
-$ready=static function (): NodePresetFixture { $b=new NodePresetFixture();$b->pacState['managed_nodes']['aabbccdd']['job']=null;$b->remoteStatus['pending']=null;return $b; };
+$ready=static function (): NodePresetFixture {
+    $b=new NodePresetFixture();
+    $b->pacState['managed_nodes']['aabbccdd']['job']=null;
+    $b->remoteStatus['pending']=null;
+    $b->pacState['exits']['aabbccdd']['managed_profile']=$b->profile;
+    $b->pacState['exits']['aabbccdd']['link']=$b->profile['link'];
+    return $b;
+};
 $profiles=[];
 foreach (['3.1','3.0','2.0','1.5'] as $version) foreach (Bot::amneziaTemplateList((int)$version) as $tpl) {
     $b=$ready(); $b->managedNodeChoice('aabbccdd','amnezia.version',$version);

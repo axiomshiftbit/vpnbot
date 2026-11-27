@@ -137,10 +137,25 @@ class NodeUpgrade(unittest.TestCase):
         self.assertIsNone(self.store.read('code.json'))
         self.assertEqual(git(self.repository, 'rev-parse', 'HEAD'), self.commits[0])
 
+    def test_same_commit_reinstalls_different_installed_modules(self):
+        state.atomic(self.store.root/'code.json', state.encode({'source': self.commits[1], 'time': 0}))
+        installed = self.base/'installed'
+        installed.mkdir(mode=0o755)
+        (installed/'version.txt').write_text('different')
+        with patch.object(upgrade, 'LIB', installed), patch.object(upgrade, 'MODULES', ('version.txt',)):
+            self.queue()
+            job = self.run_upgrade(self.commits[1])
+        self.assertEqual(job['state'], 'queued')
+        self.assertEqual(self.setup_calls(), ['--upgrade-code --job '+JOB])
+
     def test_already_installed_commit_skips_installer(self):
         state.atomic(self.store.root/'code.json', state.encode({'source': self.commits[1], 'time': 0}))
-        self.queue()
-        job = self.run_upgrade(self.commits[1])
+        installed = self.base/'installed'
+        installed.mkdir(mode=0o755)
+        (installed/'version.txt').write_bytes((self.work/'scripts/version.txt').read_bytes())
+        with patch.object(upgrade, 'LIB', installed), patch.object(upgrade, 'MODULES', ('version.txt',)):
+            self.queue()
+            job = self.run_upgrade(self.commits[1])
         self.assertEqual((job['state'], job['phase']), ('queued', 'images'))
         self.assertEqual(self.setup_calls(), [])
 

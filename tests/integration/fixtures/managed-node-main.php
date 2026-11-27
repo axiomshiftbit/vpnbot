@@ -299,31 +299,43 @@ try {
             verify(!empty($bot->managedNodes()['aabbccdd']['job']), 'maintenance submitted');
             break;
         case 'card':
-            // Exact count: the main bot's own Xray may keep connections to the
-            // node, so one extra test socket must add one and its close remove it.
+            // Enrollment leaves live proxy sessions that can close between two
+            // samples. Quiesce the disposable controller before counting its socket.
             $mainTcp = static function () use ($bot): ?int {
                 $bot->managedNodeRefresh('aabbccdd');
                 $main = array_values(array_filter($bot->managedNodes()['aabbccdd']['status']['host']['servers'] ?? [], static fn($s) => ($s['role'] ?? '') === 'main' && ($s['address'] ?? '') === '11.77.0.3'))[0] ?? [];
                 return is_int($main['tcp'] ?? null) ? $main['tcp'] : null;
             };
-            $base = $mainTcp();
-            verify(is_int($base), 'node status reports main bot connections');
+            $fixturePid = (int) file_get_contents('/work/client.pid');
+            verify($fixturePid > 1, 'test controller has a recorded client process');
+            exec('kill ' . $fixturePid, $unused, $stopCode);
+            verify($stopCode === 0, 'test controller stopped before sampling');
+            $base = null;
+            for ($i = 0; $i < 10 && $base !== 0; $i++) {
+                $base = $mainTcp();
+                if ($base !== 0) usleep(200000);
+            }
+            verify($base === 0, 'node status reports idle main bot connections');
             $socket = stream_socket_client('tcp://11.77.0.4:443', $errno, $error, 3);
             verify($socket !== false, 'main bot opens a TCP connection to the node VPN port');
             usleep(200000);
             verify($mainTcp() === $base + 1, 'node status counts the live test connection exactly');
             $text = $bot->screen();
             verify(str_contains($text, '🟢 основной бот <code>11.77.0.3</code> — TCP ' . ($base + 1)), 'card shows the main bot online with the measured count');
-            verify(str_contains($text, 'Версия ноды:') && str_contains($text, 'образы <code>') && str_contains($text, 'Сервер ноды: работает') && str_contains($text, 'сеть с загрузки'), 'card shows node version, images and server state');
+            verify(str_contains($text, 'Версия ноды:') && str_contains($text, 'образы <code>') && str_contains($text, "<b>Сервер ноды</b>\nработает ") && str_contains($text, 'сеть с загрузки'), 'card shows node version, images and server state');
             $host = $bot->managedNodes()['aabbccdd']['status']['host'];
             verify(is_int($host['uptime'] ?? null) && ($host['memory']['total'] ?? 0) > 0 && ($host['disk']['total'] ?? 0) > 0 && isset($host['network']['rx']), 'node reports measured host metrics');
             fclose($socket);
             $after = null;
-            // The main bot's own idle connections may close meanwhile: never more than before.
-            for ($i = 0; $i < 10 && !(is_int($after) && $after <= $base); $i++) { usleep(200000); $after = $mainTcp(); }
-            verify(is_int($after) && $after <= $base, 'closed test connection is no longer counted');
-            verify(str_contains($bot->screen(), $after > 0 ? '🟢 основной бот <code>11.77.0.3</code> — TCP '.$after : '⚫ основной бот <code>11.77.0.3</code> — нет соединений'), 'card matches the measured count after closing');
+            for ($i = 0; $i < 10 && $after !== 0; $i++) { usleep(200000); $after = $mainTcp(); }
+            verify($after === 0, 'closed test connection is no longer counted');
+            $servers = $bot->managedNodes()['aabbccdd']['status']['host']['servers'];
+            $main = array_values(array_filter($servers, static fn($s) => $s['role'] === 'main' && $s['address'] === '11.77.0.3'))[0];
+            $idle = ($main['udp'] ?? null) === null ? '⚪ основной бот <code>11.77.0.3</code> — TCP-соединений нет; UDP: нет данных'
+                : '⚫ без соединений: основной бот <code>11.77.0.3</code>';
+            verify(str_contains($bot->screen(), $idle), 'card matches the measured count after closing');
             verify(($bot->managedNodes()['aabbccdd']['status']['code']['upgrade'] ?? false) === true, 'node reports its code status');
+            verify($bot->restartXray($bot->getXray()) && $bot->exitProbe('aabbccdd')['ok'], 'controller resumes real traffic after counting');
             break;
         case 'backup-full':
             $started = time();
@@ -356,9 +368,10 @@ try {
             $bot->managedNodeImportFile('', 'aabbccdd');
             verify(str_contains(json_encode(json_decode(file_get_contents('/work/screen.json'), true)[1]), '/nodeRestore aabbccdd '), 'uploaded node file leads to restore confirmation');
             verify(empty($bot->managedNodes()['aabbccdd']['job']), 'upload alone does not change the node');
-            $saved = $bot->transport('saved');
-            verify($saved['snapshot'] == json_decode(file_get_contents('/work/node-file.json'), true)['snapshot'], 'saved snapshot replaced by the uploaded file');
-            $bot->managedNodeRestore('aabbccdd', $saved['hash']);
+            $candidate = $bot->transport('restore-source');
+            verify(hash_file('sha256', '/ssh/nodes/aabbccdd/snapshot.json') === $before, 'upload preserves the confirmed snapshot');
+            verify($candidate['snapshot'] == json_decode(file_get_contents('/work/node-file.json'), true)['snapshot'], 'restore offers the uploaded snapshot');
+            $bot->managedNodeRestore('aabbccdd', $candidate['hash']);
             verify(!empty($bot->managedNodes()['aabbccdd']['job']), 'restore of the uploaded snapshot submitted');
             break;
         case 'file-restored':

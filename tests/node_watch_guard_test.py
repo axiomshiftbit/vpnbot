@@ -61,6 +61,14 @@ class WatchGuard(unittest.TestCase):
         manager.Manager(self.store, backend).watch()
         return backend
 
+    def test_job_recovery_failure_still_repairs_the_guard(self):
+        backend = Backend(running=True, loaded=False)
+        reconciler = manager.Manager(self.store, backend)
+        with patch.object(reconciler, 'recover_job', side_effect=ValueError('route unavailable')):
+            with self.assertRaisesRegex(ValueError, 'route unavailable'):
+                reconciler.watch()
+        self.assertEqual(backend.reloaded, 1)
+
     def test_missing_guard_is_restored_while_containers_run(self):
         backend = self.watch(Backend(running=True, loaded=False))
         self.assertEqual(backend.reloaded, 1)

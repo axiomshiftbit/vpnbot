@@ -278,8 +278,9 @@ trait BotManagedNodeCard
                 if (!$node || empty($node['connected']) || $node['job'] || !empty($node['recovery_required'])) return;
                 try {
                     $status = $this->managedNodeRpc($id, ['action' => 'status']);
-                    if (!empty($status['pending']) || ($this->managedNodeTransport($id, 'snapshot')['saved'] ?? false) !== true) return;
-                    $this->managedNodeWrite($id, static function (&$node) { $node['backup_time'] = time(); });
+                    if (!empty($status['pending'])) return;
+                    $snapshot = $this->managedNodeRefreshSnapshot($id, $node);
+                    $this->managedNodeWrite($id, static function (&$node) use ($snapshot) { self::managedNodeRecordSnapshot($node, $snapshot); });
                     $fresh = true;
                 } catch (Throwable $error) { /* Keep the last saved snapshot. */ }
             });
@@ -384,7 +385,9 @@ trait BotManagedNodeCard
                     if (!$node || $node['job']) throw new RuntimeException('Node busy');
                     $saved = $this->managedNodeTransport($id, 'import', ['snapshot' => $parsed['snapshot']]);
                     if (!preg_match('~^[a-f0-9]{16}$~D', (string) ($saved['hash'] ?? ''))) throw new RuntimeException('Import not confirmed');
-                    $this->managedNodeWrite($id, static function (&$node) use ($parsed) { $node['backup_time'] = $parsed['time'] ?: time(); });
+                    $this->managedNodeWrite($id, static function (&$node) use ($parsed, $saved) {
+                        $node['imported_snapshot'] = ['hash' => $saved['hash'], 'time' => $parsed['time'] ?: time()];
+                    });
                 });
                 $node = $this->managedNodes()[$id];
                 if (!empty($node['connected']) && !$node['job']) { $this->managedNodeRestore($id); return; }

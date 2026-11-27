@@ -1071,6 +1071,9 @@ class Bot
             case preg_match('~^/nodeRestore ([a-f0-9]{8})(?: ([a-f0-9]{16}))?$~', $this->input['callback'], $m):
                 $this->managedNodeRestore($m[1], $m[2] ?? '');
                 break;
+            case preg_match('~^/nodeImportDiscard ([a-f0-9]{8}) ([a-f0-9]{16})$~', $this->input['callback'], $m):
+                $this->managedNodeDiscardImport($m[1], $m[2]);
+                break;
             case preg_match('~^/exits$~', $this->input['callback'], $m):
                 $this->exitNodesMenu();
                 break;
@@ -8906,11 +8909,39 @@ NFT;
     private function restoreBackupExtraFilesLocked(array $decoded): void
     {
         $before = [];
+        $retiredBefore = [];
         foreach ($decoded as $name => $_) {
             $path = $this->backupExtraPath($name);
+            if (str_starts_with($name, 'nodes/retired/')) {
+                $directory = dirname($path);
+                if (!array_key_exists($directory, $retiredBefore)) {
+                    clearstatcache(true, $directory);
+                    $retiredBefore[$directory] = is_dir($directory) ? filemtime($directory) : null;
+                    if ($retiredBefore[$directory] === false) throw new RuntimeException('Could not read retired node age');
+                }
+            }
             $before[$path] = file_exists($path) ? [file_get_contents($path), fileperms($path) & 0777] : null;
             if ($before[$path] !== null && !is_string($before[$path][0])) throw new RuntimeException($this->t('Не удалось сохранить прежний файл', 'Could not save the previous file'));
         }
+        // Формат бэкапа хранит пары от новых к старым без абсолютных дат.
+        // На непустом хосте оставляем локальные пары впереди импортированных.
+        $age = time();
+        $archive = $this->managedNodeRoot . '/retired';
+        if ($retiredBefore && is_dir($archive)) {
+            foreach (new DirectoryIterator($archive) as $entry) {
+                if (preg_match('~^[a-f0-9]{32}$~D', $entry->getFilename()) && !$entry->isLink() && $entry->isDir()
+                    && !array_key_exists($entry->getPathname(), $retiredBefore)) $age = min($age, $entry->getMTime());
+            }
+        }
+        $saveAge = static function (string $directory, int $timestamp): bool {
+            if (!@touch($directory, $timestamp)) return false;
+            clearstatcache(true, $directory);
+            if (filemtime($directory) !== $timestamp) return false;
+            $handle = @fopen($directory, 'r');
+            if ($handle === false) return false;
+            try { return fsync($handle); }
+            finally { fclose($handle); }
+        };
         $written = [];
         // Восстанавливается подтверждённое устройство MASQUE: отметка
         // незавершённой регистрации на этом сервере иначе откатила бы его.
@@ -8929,14 +8960,27 @@ NFT;
                     if (!chmod($path, 0644)) throw new RuntimeException($this->t('Не удалось установить права страницы', 'Could not set the page permissions'));
                 }
             }
+            foreach ($retiredBefore as $directory => $_) {
+                if (!$saveAge($directory, --$age)) throw new RuntimeException('Could not restore retired node age');
+            }
         } catch (Throwable $error) {
+            $complete = true;
+            $changedRetired = [];
             foreach (array_reverse($written) as $path) {
+                $directory = dirname($path);
+                if (array_key_exists($directory, $retiredBefore)) $changedRetired[$directory] = $retiredBefore[$directory];
                 $old = $before[$path];
                 if ($old === null) $ok = !file_exists($path) || @unlink($path);
                 else $ok = $this->writePrivateKey($path, $old[0]) && @chmod($path, $old[1]);
-                if (!$ok) throw new RuntimeException($this->t('Откат дополнительных файлов не завершён', 'The rollback of additional files did not finish'), previous: $error);
+                if (!$ok) $complete = false;
+            }
+            foreach ($changedRetired as $directory => $previous) {
+                $ok = $previous === null ? !is_dir($directory) || @rmdir($directory)
+                    : is_dir($directory) && $saveAge($directory, $previous);
+                if (!$ok) $complete = false;
             }
             if ($hadPending) @touch($pending);
+            if (!$complete) throw new RuntimeException($this->t('Откат дополнительных файлов не завершён', 'The rollback of additional files did not finish'), previous: $error);
             throw $error;
         }
     }

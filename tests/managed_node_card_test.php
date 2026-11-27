@@ -22,13 +22,13 @@ class CardFixtureBot extends ManagedFixtureBot
             $this->imported[] = json_encode($value, JSON_UNESCAPED_SLASHES);
             // The upload waits beside the confirmed copy (audit 26.11.2026, C19).
             file_put_contents($this->managedNodeRoot . "/$id/snapshot.import.json", json_encode($value['snapshot'], JSON_UNESCAPED_SLASHES));
-            return ['hash' => str_repeat('e', 16)];
+            return ['hash' => substr(hash_file('sha256', $this->managedNodeRoot . "/$id/snapshot.import.json"), 0, 16)];
         }
         if ($action === 'saved' || $action === 'restore-source') {
             $path = $this->managedNodeRoot . "/$id/snapshot.import.json";
             if ($action === 'saved' || !is_file($path)) $path = $this->managedNodeRoot . "/$id/snapshot.json";
             $raw = (string) file_get_contents($path);
-            return ['snapshot' => json_decode($raw, true), 'hash' => substr(hash('sha256', $raw), 0, 16)];
+            return ['snapshot' => json_decode($raw, true), 'hash' => substr(hash('sha256', $raw), 0, 16), 'imported' => basename($path) === 'snapshot.import.json'];
         }
         return parent::managedNodeTransport($id, $action, $value);
     }
@@ -44,6 +44,8 @@ $make = static function () use ($root, $snapshotJson): CardFixtureBot {
     $b->pacState['managed_nodes']['aabbccdd']['job'] = null;
     $b->pacState['managed_nodes']['aabbccdd']['checked'] = time();
     $b->pacState['managed_nodes']['aabbccdd']['backup_time'] = 1700000000;
+    $b->pacState['exits']['aabbccdd']['managed_profile'] = $b->profile;
+    $b->pacState['exits']['aabbccdd']['link'] = $b->profile['link'];
     $b->remoteStatus['pending'] = null;
     $b->pacState['managed_nodes']['aabbccdd']['status']['pending'] = null;
     $b->input['file_id'] = 'document';
@@ -140,13 +142,15 @@ try {
     $b->managedNodeExport('aabbccdd', true);
     $check($b->sent === [] && str_contains(end($b->screens)[0], 'нет сохранённой копии'), 'missing snapshot reported');
 
-    // Upload: verified file replaces the saved snapshot and leads to restore.
+    // The restore candidate and the last confirmed copy have independent dates.
     $b = $make();
     file_put_contents("$root/aabbccdd/snapshot.json", '{"schema":1,"options":{},"identity":{},"peers":[],"images":{},"tls":{"other":"x"}}');
     $b->upload = $downloaded;
     $b->managedNodeImportFile('', 'aabbccdd');
     $check(count($b->imported) === 1 && str_contains($b->imported[0], '"tls":{}') && str_contains($b->imported[0], '"parameters":{}'), 'upload passes the snapshot with objects intact');
-    $check($b->pacState['managed_nodes']['aabbccdd']['backup_time'] === json_decode($downloaded, true)['snapshot_time'] && json_decode($downloaded, true)['snapshot_time'] > 1700000000, 'snapshot time taken from the file');
+    $check($b->pacState['managed_nodes']['aabbccdd']['backup_time'] === 1700000000 &&
+        json_decode($downloaded, true)['snapshot_time'] > 1700000000, 'upload preserves the date of the confirmed snapshot');
+    $check(str_contains(end($b->screens)[0], date('Y-m-d H:i', json_decode($downloaded, true)['snapshot_time'])), 'restore displays the date of the uploaded candidate');
     $check(str_contains(json_encode(end($b->screens)[1]), '/nodeRestore aabbccdd ') && !in_array('submit', $b->events, true), 'upload offers restore and changes nothing on the node');
     // Rejections: foreign node, edited, damaged, not a node file, unreadable.
     $edited = str_replace('"transport": "ws"', '"transport": "xhttp"', $downloaded);

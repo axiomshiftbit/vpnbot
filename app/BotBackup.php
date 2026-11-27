@@ -523,6 +523,11 @@ trait BotBackup
                     throw new InvalidArgumentException($this->t('Неполная копия ноды: отсутствуют обязательные файлы управления', 'Incomplete node backup: required management files are missing'));
                 }
             }
+            // Older archives carry no binding. Check every recorded binding before applying any files.
+            if (!empty($node['connected']) && isset($node['confirmed_snapshot'])
+                && !self::managedNodeSnapshotMatches($node, hash('sha256', $extra["nodes/$id/snapshot.json"]))) {
+                throw new InvalidArgumentException($this->t('Снимок ноды в бэкапе не совпадает с записью его поколения.', 'Node snapshot does not match its recorded generation.'));
+            }
         }
         $limits = $this->telemtLimitsOf($pac);
         if (isset($json['telemt_quota'])) $this->telemtValidateQuotaState($json['telemt_quota'], $pac);

@@ -259,6 +259,12 @@ def delta(before, after, live):
         wanted_chains.setdefault((x['family'], x['table']), []).append(x['name'])
     stale = {t for t, names in wanted_chains.items()
              if t in tables and not any((t[0], t[1], name) in live_chains for name in names)}
+    # Наборы и карты разделяют пространство имён. Откат вправе удалять
+    # только те объекты, которые действительно впервые создал этот профиль.
+    live_names = {key(obj) for kind in ('set', 'map') for obj in objects(live, kind)}
+    if any(key(obj) in live_names and key(obj)[:2] in stale
+           for kind in ('set', 'map') for obj in objects(after, kind)):
+        raise ValueError('A firewall set or map already exists in the shared table')
     # A supplied, not-yet-loaded base profile can be installed without deleting
     # unrelated tables (including Docker and the test host's LAN guard).
     for item in after['nftables']:

@@ -19,6 +19,19 @@ require __DIR__.'/../app/i18n.php';
 class RoundTripBot extends Bot {
  public string $syncedDomain = '';
  public bool $rejectXray = false;
+ public bool $nodeOnline = false;
+ public int $offlineRequests = 0;
+ public string $nodeGeneration = '1234567890abcdef1234567890abcdef';
+ public array $nodeProfile = [];
+ public string $nodeSnapshot = '';
+ protected function managedNodeTransport(string $id, string $action, $value = null): array {
+  if ($id!=='c0ffee00') throw new RuntimeException('Unexpected fixture node');
+  if (!$this->nodeOnline) { $this->offlineRequests++; throw new RuntimeException('Fixture node offline'); }
+  if ($action==='rpc' && ($value['action']??'')==='profile') return $this->nodeProfile;
+  if ($action!=='snapshot' || $value!==$this->nodeGeneration) throw new RuntimeException('Unexpected fixture request');
+  file_put_contents("$this->managedNodeRoot/$id/snapshot.json",$this->nodeSnapshot);
+  return ['saved'=>true,'sha256'=>hash('sha256',$this->nodeSnapshot)];
+ }
  protected function restoreBackupXrayLocked(array $config): bool { return !$this->rejectXray && parent::restoreBackupXrayLocked($config); }
  public function syncManagedUpstreams(): void { $this->syncedDomain=$this->getPacConf()['domain']??''; }
  public function __construct(public string $dir,array $translations){
@@ -75,11 +88,21 @@ try{
  foreach (['key'=>'SYNTHETIC-PRIVATE-FIXTURE','key.pub'=>'SYNTHETIC-PUBLIC-FIXTURE'] as $n=>$v) file_put_contents("$root/nodes/a1b2c3d4/$n",$v);
  // Подключённая нода: в общий бэкап обязаны попасть ключ управления,
  // закреплённый адрес/ключ хоста и последняя подтверждённая копия ноды.
- $pac['managed_nodes']['c0ffee00']=['name'=>'connected-node','connected'=>true,'job'=>null,'backup_time'=>1700000000];
+ $options=['transport'=>'reality','family'=>4,'core'=>'origin','domain'=>'','mask'=>'mask.example.test'];
+ $identity=['uuid'=>'11111111-1111-4111-8111-111111111111','private'=>str_repeat('A',43),'public'=>str_repeat('B',43),
+  'short_id'=>'0123456789abcdef','path'=>str_repeat('0123456789abcdef',2)];
+ $b->nodeProfile=['link'=>'vless://'.$identity['uuid'].'@198.51.100.20:443?security=reality&type=tcp&pbk='.$identity['public'].'&sid='.$identity['short_id'].'&sni=mask.example.test',
+  'outbound'=>['protocol'=>'vless','settings'=>[],'streamSettings'=>[]]];
+ $pac['exits']['c0ffee00']=['name'=>'connected-node','link'=>$b->nodeProfile['link'],'managed_profile'=>$b->nodeProfile];
+ $pac['managed_nodes']['c0ffee00']=['name'=>'connected-node','connected'=>true,'job'=>null,
+  'status'=>['generation'=>$b->nodeGeneration,'pending'=>null,'options'=>$options]];
+ $peers=[];
+ for ($peer=1;$peer<=32;$peer++) $peers[]=['id'=>sprintf('20000000-0000-4000-8000-%012d',$peer),'name'=>'roundtrip-fixture-peer-'.$peer,'enabled'=>true];
+ $b->nodeSnapshot=json_encode(['schema'=>1,'options'=>$options,'identity'=>$identity,'peers'=>$peers,
+  'images'=>['xr'=>'ghcr.io/axiomshiftbit/vpnbot-xr@sha256:'.str_repeat('a',64)],'tls'=>new stdClass],JSON_UNESCAPED_SLASHES);
  $nodeFiles=['key'=>"SYNTHETIC-CONTROLLER-PRIVATE\n",'key.pub'=>"SYNTHETIC-CONTROLLER-PUBLIC\n",
   'endpoint.json'=>'{"address":"198.51.100.20","port":22,"host_key":"SYNTHETIC"}',
-  'snapshot.json'=>json_encode(['schema'=>1,'options'=>['transport'=>'reality'],'identity'=>['uuid'=>'synthetic'],'peers'=>[],
-   'images'=>['xr'=>'ghcr.io/axiomshiftbit/vpnbot-xr@sha256:'.str_repeat('a',64)],'tls'=>new stdClass,'pad'=>str_repeat('s',3000)])];
+  'snapshot.json'=>$b->nodeSnapshot];
  mkdir("$root/nodes/c0ffee00",0700,true);
  foreach ($nodeFiles as $n=>$v) { file_put_contents("$root/nodes/c0ffee00/$n",$v); chmod("$root/nodes/c0ffee00/$n",0600); }
  $b->setPacConf($pac);
@@ -123,7 +146,33 @@ try{
   $conf['adg_panel_epoch']='fixture-main';$conf['adg_browser_epoch']='fixture-browser';
   $conf['managed_nodes']['a1b2c3d4']['adguard_panel']=['ticket'=>str_repeat('a',64),'until'=>time()+900];
  });
+ $unboundRejected=false;
+ try { $b->export(); }
+ catch (RuntimeException $e) { $unboundRejected=str_contains($e->getMessage(),'первого общего бэкапа'); }
+ rtCheck($unboundRejected && $b->offlineRequests>0,'Архив старой offline-карточки без доказанного поколения отклонён');
+ $b->nodeOnline=true;
+ $b->managedNodeBackupRefresh();
+ $b->nodeOnline=false;
+ $confirmed=$b->managedNodes()['c0ffee00'];
+ $binding=['generation'=>$b->nodeGeneration,'sha256'=>hash('sha256',$b->nodeSnapshot)];
+ rtCheck(($confirmed['confirmed_snapshot']??null)===$binding && !empty($confirmed['backup_time']),'Штатное получение снимка связало его байты и поколение с карточкой');
+ $pac['managed_nodes']['c0ffee00']=$confirmed;
+ $attempts=$b->offlineRequests;
  $json=$b->export();$snapshot=json_decode($json,true,512,JSON_THROW_ON_ERROR);file_put_contents($b->update,$json);
+ rtCheck($b->offlineRequests>$attempts && $snapshot['pac']['managed_nodes']['c0ffee00']['confirmed_snapshot']===$binding,'Полная выгрузка недоступной ноды использует подтверждённую локальную копию');
+ $beforeInvalid=$b->getPacConf();
+ foreach (['file','generation'] as $change) {
+  $mixed=$snapshot;
+  if ($change==='file') $mixed['extra_files']['nodes/c0ffee00/snapshot.json']=base64_encode(str_replace('roundtrip-fixture-peer-1','other-fixture-peer-1',$b->nodeSnapshot));
+  else $mixed['pac']['managed_nodes']['c0ffee00']['status']['generation']=str_repeat('e',32);
+  file_put_contents($b->update,json_encode($mixed));
+  rtCheck($b->importFile($b->update)===false && $b->getPacConf()===$beforeInvalid
+   && file_get_contents("$root/nodes/c0ffee00/snapshot.json")===$b->nodeSnapshot,"Противоречие записи снимка ($change) отклонено до записи");
+ }
+ file_put_contents($b->update,$json);
+ $legacy=$snapshot;
+ unset($legacy['pac']['managed_nodes']['c0ffee00']['confirmed_snapshot']);
+ $b->validateBackup($legacy);
  rtCheck(!isset($snapshot['pac']['adg_panel_epoch']) && !isset($snapshot['pac']['adg_browser_epoch'])
   && !isset($snapshot['pac']['managed_nodes']['a1b2c3d4']['adguard_panel']),'Local panel grants are excluded from export');
  rtCheck(!isset($snapshot['extra_files']['ipv6-egress.json']),'Host IPv6 setup is not imported from another server');
@@ -152,7 +201,8 @@ try{
  rmdir("$root/nodes/c0ffee00");
  rtCheck($b->importFile($b->update)===true,'Полное восстановление возвращает успех');
  foreach ($nodeFiles as $n=>$v) rtCheck(file_get_contents("$root/nodes/c0ffee00/$n")===$v && (fileperms("$root/nodes/c0ffee00/$n")&0777)===0600,"Файл ноды $n восстановлен побайтно и закрыт");
- rtCheck((fileperms("$root/nodes/c0ffee00")&0777)===0700 && ($b->managedNodes()['c0ffee00']['backup_time']??0)===1700000000,'Каталог ноды закрыт, время копии восстановлено');
+ rtCheck((fileperms("$root/nodes/c0ffee00")&0777)===0700 && ($b->managedNodes()['c0ffee00']['backup_time']??0)===$confirmed['backup_time']
+  && ($b->managedNodes()['c0ffee00']['confirmed_snapshot']??null)===$binding,'Каталог ноды закрыт, время и привязка копии восстановлены');
  rtCheck(file_get_contents("$root/config/ipv6-egress.json")===$localMarker,'Restore preserves this host IPv6 network marker');
  rtCheck($b->syncedDomain===$snapshot['pac']['domain'],'Маршруты протоколов применены после восстановления домена');
  $after=json_decode($b->export(),true,512,JSON_THROW_ON_ERROR);
@@ -163,7 +213,7 @@ try{
  rtCheck(!file_exists("$root/config/telemt/data/telemt.checkpoint.json"),'Старый checkpoint не перекрывает восстановленный расход');
  $b->ensureDefaultTemplates();
  rtCheck($b->getPacConf()['singtemplates']===$snapshot['pac']['singtemplates'],'Удалённый шаблон не появляется снова, пользовательская правка сохранена');
- rtCheck(array_keys($b->exitNodes())===['a1b2c3d4'] && $b->exitNodes()['a1b2c3d4']['routes']===['domain:youtube.com'=>1,'full:www.example.test'=>0],'Узел выхода и его маршруты восстановлены');
+ rtCheck(array_keys($b->exitNodes())===['a1b2c3d4','c0ffee00'] && $b->exitNodes()['a1b2c3d4']['routes']===['domain:youtube.com'=>1,'full:www.example.test'=>0],'Узлы выхода и маршруты восстановлены');
  rtCheck($b->exitNodeEmails($b->getXray(),'a1b2c3d4')===['user'] && !empty($b->getXray()['inbounds'][0]['settings']['clients'][1]['exit_relay']),'Отметки узла у пользователей и служебная учётка восстановлены');
  rtCheck(($b->getPacConf()['xdrive']['url']??'')==='https://dav.example.test' && $b->warpMode()==='masque','XDRIVE и режим WARP восстановлены');
  rtCheck(file_get_contents("$root/warp/masque/device.json")==='{"id":"synthetic"}' && !file_exists("$root/warp/masque/.pending"),'Устройство MASQUE восстановлено, отметка незавершённой регистрации снята');

@@ -93,13 +93,22 @@ trait BotManagedNodes
             if (is_link($parent)) throw new RuntimeException('Unsafe retired node directory');
         }
         if (is_dir($root)) {
-            $count = 0;
+            $retired = [];
             foreach (new DirectoryIterator($root) as $entry) {
                 if ($entry->isDot()) continue;
                 $id = $entry->getFilename();
-                if (++$count > 256 || !preg_match('~^[a-f0-9]{32}$~D', $id) || $entry->isLink() || !$entry->isDir()) {
+                if ($id === '.staging' && !$entry->isLink() && $entry->isDir()) continue;
+                if (!preg_match('~^[a-f0-9]{32}$~D', $id) || $entry->isLink() || !$entry->isDir()) {
                     throw new RuntimeException('Invalid retired node archive');
                 }
+                $retired[$id] = $entry->getMTime();
+            }
+            // An older release or an interrupted eviction may have left more
+            // pairs on disk. Restore uses this newest-first order; Python eviction
+            // compares the same whole seconds and uses the ID to break ties.
+            krsort($retired, SORT_STRING);
+            arsort($retired, SORT_NUMERIC);
+            foreach (array_slice($retired, 0, 256, true) as $id => $_) {
                 foreach (['key', 'key.pub'] as $name) {
                     $path = "$root/$id/$name";
                     if (is_link($path) || !is_file($path) || filesize($path) === 0 || filesize($path) > 16384) {
@@ -119,8 +128,8 @@ trait BotManagedNodes
                 $this->managedNodeLocked((string) $id, function () use ($id) {
                     $node = $this->managedNodes()[$id] ?? null;
                     if (empty($node['connected']) || !empty($node['job']) || !empty($node['recovery_required'])) return;
-                    $this->managedNodeTransport((string) $id, 'snapshot');
-                    $this->managedNodeWrite((string) $id, static function (&$node) { $node['backup_time'] = time(); });
+                    $snapshot = $this->managedNodeRefreshSnapshot((string) $id, $node);
+                    $this->managedNodeWrite((string) $id, static function (&$node) use ($snapshot) { self::managedNodeRecordSnapshot($node, $snapshot); });
                 });
             } catch (Throwable $error) { /* Preserve the last confirmed snapshot while the node is offline. */ }
         }
@@ -129,13 +138,38 @@ trait BotManagedNodes
     /** What ties a node's PAC record, its exit profile and its saved snapshot to one generation. */
     public function managedNodeBackupMark(): string
     {
-        $pac = $this->getPacConf();
         $mark = [];
-        foreach ($this->managedNodes($pac) as $id => $node) {
-            $mark[$id] = [!empty($node['connected']), $node['status']['generation'] ?? null, $node['job']['id'] ?? null, $node['job']['phase'] ?? null,
-                array_intersect_key($pac['exits'][$id] ?? [], array_flip(['link', 'managed_profile', 'policy']))];
+        foreach ($this->managedNodes() as $id => $_) {
+            $this->managedNodeLocked((string) $id, function () use ($id, &$mark) {
+                $pac = $this->getPacConf();
+                $node = $this->managedNodes($pac)[$id] ?? null;
+                if (!$node) return;
+                if (!empty($node['job']) || !empty($node['backup_stale'])) throw new RuntimeException($this->t(
+                    'Операция ноды или сохранение её снимка ещё не завершено. Повторите резервное копирование позже.',
+                    'A node operation or its snapshot is still pending. Retry the backup later.'));
+                if (!empty($node['connected']) && empty($node['recovery_required']) && !isset($node['confirmed_snapshot'])) throw new RuntimeException($this->t(
+                    'Для первого общего бэкапа после обновления нужна связь с нодой. Восстановите SSH и повторите создание копии.',
+                    'The first full backup after this upgrade needs the node online. Restore SSH connectivity and retry.'));
+                $files = [];
+                if (!empty($node['connected'])) {
+                    $files = $this->withManagedNodeBackupLocks([(string) $id], LOCK_SH, function () use ($id) {
+                        $hashes = [];
+                        foreach (['snapshot.json' => 4 * 1024 * 1024, 'endpoint.json' => 65536] as $name => $limit) {
+                            $path = $this->managedNodeRoot . "/$id/$name";
+                            if (is_link(dirname($path)) || is_link($path) || !is_file($path) || filesize($path) > $limit || ($hashes[$name] = @hash_file('sha256', $path)) === false) {
+                                throw new RuntimeException('Node backup file unavailable');
+                            }
+                        }
+                        return $hashes;
+                    });
+                    if (isset($node['confirmed_snapshot']) && !self::managedNodeSnapshotMatches($node, $files['snapshot.json'])) throw new RuntimeException($this->t(
+                        'Сохранённый снимок ноды изменился. Повторите создание копии.', 'The saved node snapshot changed. Retry the backup.'));
+                }
+                $mark[$id] = [!empty($node['connected']), $node['status']['generation'] ?? null, !empty($node['recovery_required']), $files,
+                    array_intersect_key($pac['exits'][$id] ?? [], array_flip(['link', 'managed_profile', 'policy']))];
+            });
         }
-        return hash('sha256', json_encode($mark, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+        return hash('sha256', json_encode($mark, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
     }
 
     public function managedNodeBackupCheck(?array $nodes = null): void
@@ -444,9 +478,11 @@ trait BotManagedNodes
                 $this->managedNodeRestoreClient($id, $saved['before']);
                 throw new RuntimeException('Current node generation is not reachable');
             }
-            $this->managedNodeTransport($id, 'snapshot');
-            $this->managedNodeWrite($id, static function (&$node) use ($status) {
-                $node['job'] = null; $node['status'] = $status; $node['checked'] = time(); $node['backup_time'] = time(); unset($node['error']);
+            $snapshot = $this->managedNodeTakeSnapshot($id, $status['generation'] ?? '');
+            $this->managedNodeWrite($id, static function (&$node) use ($status, $snapshot) {
+                if (self::nodeRunningRoutesDigest($node['status']) !== self::nodeRunningRoutesDigest($status)) unset($node['lists_sent']);
+                $node['job'] = null; $node['status'] = $status; $node['checked'] = time(); unset($node['error']);
+                self::managedNodeRecordSnapshot($node, $snapshot);
             });
             return;
         }
@@ -499,13 +535,14 @@ trait BotManagedNodes
         $status = $this->managedNodeRpc($id, ['action' => 'status']);
         // The change is confirmed: report it now. A failed copy keeps the previous one and
         // the scheduled backup refresh retries; it must not hold the result screen back.
-        $backedUp = $this->managedNodeSnapshotSaved($id);
+        try { $snapshot = $this->managedNodeTakeSnapshot($id, $status['generation'] ?? ''); }
+        catch (Throwable $error) { $snapshot = null; error_log('managed node ' . $id . ': snapshot not saved (' . get_class($error) . ')'); }
         $certificateResult = isset($job['result']['certificate_result']) || in_array($saved['operation'] ?? '', ['renew','renew_force','certificate_delete'], true) ? $this->managedNodeCertificateResult($job, $status) : '';
         // Full update: whether the node's Git clone advanced or kept local edits.
         $checkout = ($saved['operation'] ?? '') === 'upgrade' && in_array($job['checkout'] ?? '', ['updated', 'current', 'kept'], true) ? $job['checkout'] : '';
-        $this->managedNodeFinish($id, $saved, static function (&$node) use ($status, $saved, $certificateResult, $checkout, $backedUp) {
+        $this->managedNodeFinish($id, $saved, static function (&$node) use ($status, $saved, $certificateResult, $checkout, $snapshot) {
             $node['job'] = null; $node['status'] = $status; $node['checked'] = time(); unset($node['error'], $node['error_stage'], $node['error_reason']);
-            if ($backedUp) { $node['backup_time'] = time(); unset($node['backup_stale']); }
+            if ($snapshot !== null) self::managedNodeRecordSnapshot($node, $snapshot);
             else $node['backup_stale'] = true;
             $node['last_operation'] = ['operation'=>$saved['operation'] ?? '', 'subject'=>$saved['subject'] ?? '', 'time'=>time(), 'ok'=>true, 'certificate_result'=>$certificateResult];
             // Only a confirmed generation proves that the node runs these lists.
@@ -513,7 +550,8 @@ trait BotManagedNodes
             if (($saved['operation'] ?? '') === 'configure') unset($node['lists_auto']);
             if ($checkout !== '') $node['last_operation']['checkout'] = $checkout;
             // A restored snapshot brings its own lists: the controller copy is not on the node until applied again.
-            if (($saved['operation'] ?? '') === 'restore') unset($node['recovery_required'], $node['lists_sent']);
+            if (($saved['operation'] ?? '') === 'restore') unset($node['recovery_required']);
+            if (in_array($saved['operation'] ?? '', ['restore', 'rollback'], true)) unset($node['lists_sent']);
         });
     }
 
@@ -523,8 +561,10 @@ trait BotManagedNodes
         $this->managedNodeLocked($id, function () use ($id) {
             $node = $this->managedNodes()[$id] ?? [];
             if (empty($node['backup_stale']) || !empty($node['job']) || empty($node['connected']) || !empty($node['recovery_required'])
-                || !empty($node['status']['pending']) || !$this->managedNodeSnapshotSaved($id)) return;
-            $this->managedNodeWrite($id, static function (&$saved) { if ($saved) { $saved['backup_time'] = time(); unset($saved['backup_stale']); } });
+                || !empty($node['status']['pending'])) return;
+            try { $snapshot = $this->managedNodeRefreshSnapshot($id, $node); }
+            catch (Throwable $error) { return; }
+            $this->managedNodeWrite($id, static function (&$saved) use ($snapshot) { self::managedNodeRecordSnapshot($saved, $snapshot); });
         });
     }
 
@@ -559,14 +599,42 @@ trait BotManagedNodes
             . (($node['error'] ?? '') === 'probe_failed' ? '' : $this->t(' Нода работает на прежних настройках.', ' The node runs its previous settings.'));
     }
 
-    private function managedNodeSnapshotSaved(string $id): bool
+    private function managedNodeTakeSnapshot(string $id, string $generation): array
     {
-        try {
-            return ($this->managedNodeTransport($id, 'snapshot')['saved'] ?? false) === true;
-        } catch (Throwable $error) {
-            error_log('managed node ' . $id . ': snapshot not saved (' . get_class($error) . ')');
-            return false;
+        $reply = $this->managedNodeTransport($id, 'snapshot', $generation);
+        if (($reply['saved'] ?? false) !== true || !preg_match('~^[a-f0-9]{64}$~D', $reply['sha256'] ?? '')) throw new RuntimeException('Snapshot not saved');
+        return ['generation' => $generation, 'sha256' => $reply['sha256']];
+    }
+
+    private function managedNodeRefreshSnapshot(string $id, array $node): array
+    {
+        $generation = $node['status']['generation'] ?? '';
+        if (empty($node['confirmed_snapshot']['sha256']) || ($node['confirmed_snapshot']['generation'] ?? null) !== $generation) {
+            // Verify the installed client before binding a legacy snapshot or an externally changed generation.
+            $exit = $this->exitNodes()[$id] ?? [];
+            $profile = $this->managedNodeRpc($id, ['action' => 'profile', 'peer' => null]);
+            if ($profile != ($exit['managed_profile'] ?? null) || ($profile['link'] ?? null) !== ($exit['link'] ?? null)
+                || self::compactNodePolicy($node['status']['options']['policy'] ?? []) != self::compactNodePolicy($exit['policy'] ?? [])) {
+                throw new RuntimeException('Snapshot client configuration changed');
+            }
         }
+        return $this->managedNodeTakeSnapshot($id, $generation);
+    }
+
+    private static function managedNodeRecordSnapshot(array &$node, array $snapshot): void
+    {
+        $node['confirmed_snapshot'] = $snapshot;
+        $node['backup_time'] = time();
+        unset($node['backup_stale']);
+    }
+
+    private static function managedNodeSnapshotMatches(array $node, string $digest): bool
+    {
+        $record = $node['confirmed_snapshot'];
+        $generation = $record['generation'] ?? null;
+        return is_string($generation) && preg_match('~^[a-f0-9]{32}$~D', $generation)
+            && ($record['sha256'] ?? null) === $digest
+            && (!empty($node['recovery_required']) || $generation === ($node['status']['generation'] ?? null));
     }
 
     private function managedNodeFinish(string $id, array $saved, callable $edit): void
@@ -810,13 +878,14 @@ trait BotManagedNodes
                 $status = $this->managedNodeRpc($id, ['action' => 'status']);
                 if (!empty($status['pending'])) throw new RuntimeException('Node change awaits confirmation');
                 $profile = $this->managedNodeRpc($id, ['action' => 'profile', 'peer' => null]);
-                $this->managedNodeTransport($id, 'snapshot');
+                $snapshot = $this->managedNodeTakeSnapshot($id, $status['generation'] ?? '');
                 $before = $this->exitNodes()[$id] ?? null;
                 if ($this->managedNodeUseProfile($id, $profile, $status['options'] ?? []) !== '') throw new RuntimeException('Client rejected');
                 try {
                     if (!$this->managedNodeTrafficReady($id)) throw new RuntimeException('Node traffic probe failed');
-                    $this->managedNodeWrite($id, static function (&$node) use ($status) {
-                        $node['connected'] = true; $node['status'] = $status; $node['checked'] = time(); $node['backup_time'] = time();
+                    $this->managedNodeWrite($id, static function (&$node) use ($status, $snapshot) {
+                        $node['connected'] = true; $node['status'] = $status; $node['checked'] = time();
+                        self::managedNodeRecordSnapshot($node, $snapshot);
                     });
                 } catch (Throwable $error) {
                     $this->managedNodeRestoreClient($id, $before);
@@ -872,6 +941,13 @@ trait BotManagedNodes
     }
 
     private function managedNodeCheckStatus(string $id): void
+    {
+        $this->managedNodeLocked($id, function () use ($id) {
+            if (!empty($this->managedNodes()[$id]['connected'])) $this->managedNodeCheckStatusLocked($id);
+        });
+    }
+
+    private function managedNodeCheckStatusLocked(string $id): void
     {
         $this->managedNodeWrite($id, static function (&$node) { $node['status_attempt']=time(); });
         try {
@@ -1031,14 +1107,25 @@ trait BotManagedNodes
                 if ($hash === '') {
                     $text = $this->t('Восстановить сохранённую копию ноды? Будут заменены настройки Xray, сертификат и ключи подключений, включая внешние панели. SSH и адреса сервера остаются прежними. Возможен краткий обрыв соединений. Основной бот проверит трафик до подтверждения.',
                         'Restore the saved node snapshot? This replaces Xray settings, certificate and connection identities, including external panels. SSH and server addresses stay as they are. Connections may briefly drop. The main bot tests traffic before confirming.');
-                    if (!empty($node['backup_time'])) $text .= "\n\n" . date('Y-m-d H:i', (int) $node['backup_time']);
+                    $time = $node['backup_time'] ?? 0;
+                    if (!empty($saved['imported'])) {
+                        $upload = $node['imported_snapshot'] ?? [];
+                        $time = ($upload['hash'] ?? null) === $saved['hash'] ? ($upload['time'] ?? 0) : 0;
+                    }
+                    if ($time) $text .= "\n\n" . date('Y-m-d H:i', (int) $time);
                     // The WARP registration lives on the node, outside the snapshot.
-                    if (($saved['snapshot']['options']['warp_mode'] ?? 'off') !== 'off') $text .= "\n\n" . $this->t(
-                        '⚠️ Регистрация WARP хранится на самой ноде и в копию не входит. На переустановленном сервере нода зарегистрирует новое бесплатное устройство WARP: ключ WARP+ введите заново (🌐 WARP → 🔑 Ключ WARP+) и проверьте тип аккаунта.',
-                        '⚠️ The WARP registration is kept on the node itself and is not in the snapshot. On a reinstalled server the node registers a new free WARP device: enter the WARP+ key again (🌐 WARP → 🔑 WARP+ key) and check the account type.');
-                    $this->update($this->input['chat'], $this->input['message_id'], $text,
-                        [[['text' => $this->t('Восстановить эту копию', 'Restore this snapshot'), 'callback_data' => "/nodeRestore $id {$saved['hash']}"]],
-                         [['text' => $this->i18n('back'), 'callback_data' => "/nodeMaintenance $id"]]]);
+                    if (($saved['snapshot']['options']['warp_mode'] ?? 'off') !== 'off'
+                        || isset($saved['snapshot']['identity']['warp_account']) || isset($saved['snapshot']['identity']['warp_uuid'])) {
+                        $text .= "\n\n" . $this->t(
+                            '⚠️ Регистрация WARP хранится на самой ноде и в копию не входит. На чистом сервере при включении WARP нода зарегистрирует новое бесплатное устройство. Для WARP+ введите ключ заново (🌐 WARP → 🔑 Ключ WARP+) и проверьте тип аккаунта.',
+                            '⚠️ The WARP registration is kept on the node itself and is not in the snapshot. Enabling WARP on a clean server registers a new free device. For WARP+, enter the key again (🌐 WARP → 🔑 WARP+ key) and check the account type.');
+                    }
+                    $buttons = [[['text' => $this->t('Восстановить эту копию', 'Restore this snapshot'), 'callback_data' => "/nodeRestore $id {$saved['hash']}"]]];
+                    if (!empty($saved['imported'])) {
+                        $buttons[] = [['text' => $this->t('Отбросить загруженную копию', 'Discard uploaded snapshot'), 'callback_data' => "/nodeImportDiscard $id {$saved['hash']}"]];
+                    }
+                    $buttons[] = [['text' => $this->i18n('back'), 'callback_data' => "/nodeMaintenance $id"]];
+                    $this->update($this->input['chat'], $this->input['message_id'], $text, $buttons);
                     return;
                 }
                 if (!hash_equals($saved['hash'], $hash)) throw new RuntimeException('Snapshot changed');
@@ -1051,5 +1138,24 @@ trait BotManagedNodes
             $this->managedNodeMenu($id, $this->t('Восстановление не запущено: копия изменилась или недоступна, либо нода занята. Заново откройте восстановление после проверки SSH.',
                 'Restore not started: snapshot changed or unavailable, or node busy. Check SSH and open restore again.'));
         }
+    }
+
+    public function managedNodeDiscardImport(string $id, string $hash): void
+    {
+        try {
+            $this->managedNodeLocked($id, function () use ($id, $hash) {
+                $node = $this->managedNodes()[$id] ?? null;
+                if (!$node || $node['job'] || empty($this->managedNodeTransport($id, 'import-clear', $hash)['cleared'])) {
+                    throw new RuntimeException('Upload changed or node busy');
+                }
+                $this->managedNodeWrite($id, static function (&$node) { unset($node['imported_snapshot']); });
+            });
+            $notice = $this->t('Загруженная копия отброшена. Для восстановления можно выбрать последнюю подтверждённую копию, если она сохранена.',
+                'Upload discarded. You can restore the last confirmed snapshot if one is saved.');
+        } catch (Throwable $error) {
+            $notice = $this->t('Не удалось отбросить копию. Откройте восстановление снова и проверьте выбранную копию.',
+                'Could not discard the upload. Reopen restore and check which snapshot is selected.');
+        }
+        $this->managedNodeMaintenance($id, $notice);
     }
 }

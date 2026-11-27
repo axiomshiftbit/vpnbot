@@ -52,6 +52,39 @@ class Ipv6EgressTests(unittest.TestCase):
             marker.unlink()
             self.assertEqual(bundle.compose_files(root, {}), [])
 
+    def test_forward_requires_the_general_path_and_a_reachable_accept(self):
+        def equal(left, right, op='=='):
+            return {'match': {'op': op, 'left': left, 'right': right}}
+        def meta(key):
+            return {'meta': {'key': key}}
+        def address(field):
+            return {'payload': {'protocol': 'ip6', 'field': field}}
+        state = {'ct': {'key': 'state'}}
+        egress = [equal(meta('iifname'), 'br-vpnbot6'), equal(meta('oifname'), 'eth0'),
+                  equal(address('saddr'), ipv6.SOURCE)]
+        reply = [equal(meta('iifname'), 'eth0'), equal(meta('oifname'), 'br-vpnbot6'),
+                 equal(address('daddr'), ipv6.SOURCE)]
+        established = equal(state, 'established', 'in')
+        accepted = {'accept': None}
+        port = equal({'payload': {'protocol': 'tcp', 'field': 'dport'}}, 443)
+        paths = [egress+[accepted], reply+[established, accepted]]
+        ipv6.check_forward(paths, 'eth0')
+        alternatives = {
+            'only_https': [egress+[port, accepted], paths[1]],
+            'unrelated_conntrack_field': [paths[0], reply+[equal({'ct': {'key': 'status'}}, 'established', 'in'), accepted]],
+            'negated_established': [paths[0], reply+[equal(state, 'established', '!='), accepted]],
+            'port_on_replies': [paths[0], reply+[established, port, accepted]],
+            'early_drop_on_bridge': [[egress[0], {'drop': None}], *paths],
+            'early_drop_on_wan_replies': [[reply[0], {'reject': None}], *paths],
+        }
+        for name, rules in alternatives.items():
+            with self.subTest(case=name), self.assertRaises(ValueError):
+                ipv6.check_forward(rules, 'eth0')
+        ipv6.check_forward([[equal(meta('iifname'), 'unused-bridge'), {'drop': None}], *paths], 'eth0')
+        # nft may enumerate equivalent anonymous sets in another order.
+        protocols = equal(meta('l4proto'), {'set': ['udp', 'ipv6-icmp', 'tcp']})
+        ipv6.check_forward([egress+[protocols, accepted], paths[1]], 'eth0')
+
     def test_preparation_requires_protected_default_and_matching_snat(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

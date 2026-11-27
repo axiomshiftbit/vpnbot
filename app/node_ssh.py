@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -458,36 +459,93 @@ class Client:
         trusted(directory.parent)
         directory.parent.mkdir(mode=0o700, exist_ok=True)
         trusted(directory)
-        if not directory.exists():
-            self._retired_room(directory.parent)
-        directory.mkdir(mode=0o700, exist_ok=True)
-        pair = {}
-        for path in (private, public):
-            with path.open('rb') as stream:
-                pair[path.name] = stream.read(16385)
-            if not pair[path.name] or len(pair[path.name]) > 16384:
-                raise ValueError('incomplete_controller')
-        for name, body in pair.items():
-            atomic(directory/name, body)
+        sync_directory(self.root)
+        # The archive lock also owns staging. A retry cleans up a previously
+        # interrupted write or eviction before creating another private copy.
+        with self._retire_staging(directory.parent) as staging:
+            pair = staging/'pair'
+            pair.mkdir(mode=0o700)
+            for path in (private, public):
+                with path.open('rb') as stream:
+                    body = stream.read(16385)
+                if not body or len(body) > 16384:
+                    raise ValueError('incomplete_controller')
+                atomic(pair/path.name, body)
+            ages = self._retired_ages(directory.parent, staging)
+            # The PHP backup format sees whole seconds. A freshly stored or
+            # replaced pair must sort after every prior successful retirement.
+            if ages:
+                stamp = pair.stat()
+                latest = ages[-1][0]
+                if stamp.st_mtime_ns // 1_000_000_000 <= latest:
+                    next_ns = (latest + 1) * 1_000_000_000
+                    os.utime(pair, ns=(stamp.st_atime_ns, next_ns))
+                    if pair.stat().st_mtime_ns != next_ns:
+                        raise OSError('retired age out of range')
+                    sync_directory(pair)
+            if directory.exists():
+                self._check_retired_files(directory)
+                exchange_directories(directory, pair)
+            else:
+                pair.rename(directory)
+            sync_directory(directory.parent)
+            sync_directory(staging)
+            self._trim_retired(directory, staging, ages)
 
     @staticmethod
-    def _retired_room(root):
-        """Keep the archive within the backup format: a new host replaces the longest-unused key.
+    @contextmanager
+    def _retire_staging(root):
+        staging = root/'.staging'
+        trusted(staging)
+        if staging.exists():
+            for entry in staging.iterdir():
+                trusted(entry)
+                if entry.name != 'pair' and not re.fullmatch('[a-f0-9]{32}', entry.name):
+                    raise ValueError('unsafe_path')
+            # A previous exchange may have moved the old pair here before
+            # the directory entries reached disk. Finish the sync before removal.
+            sync_directory(root)
+            sync_directory(staging)
+            shutil.rmtree(staging)
+        staging.mkdir(mode=0o700)
+        try:
+            yield staging
+        finally:
+            # Keep the previous pair in staging if syncing the exchange fails.
+            sync_directory(root)
+            sync_directory(staging)
+            shutil.rmtree(staging)
+            sync_directory(root)
 
-        Without this the 257th forgotten host made every later full backup fail."""
+    @staticmethod
+    def _check_retired_files(directory):
+        if not directory.is_dir():
+            raise ValueError('unsafe_path')
+        for path in directory.iterdir():
+            trusted(path)
+            if path.name not in ('key', 'key.pub') or not path.is_file():
+                raise ValueError('unsafe_path')
+
+    @staticmethod
+    def _retired_ages(root, staging):
         entries = []
         for entry in root.iterdir():
+            if entry == staging:
+                continue
             if entry.is_symlink() or not entry.is_dir() or not re.fullmatch('[a-f0-9]{32}', entry.name):
                 raise ValueError('unsafe_path')
-            entries.append(entry)
-        entries.sort(key=lambda entry: (entry.stat().st_mtime, entry.name))
-        for entry in entries[:max(0, len(entries)-RETIRED_MAX+1)]:
-            for path in entry.iterdir():
-                trusted(path)
-                if path.name not in ('key', 'key.pub') or not path.is_file():
-                    raise ValueError('unsafe_path')
-                path.unlink()
-            entry.rmdir()
+            # PHP ranks existing pairs by whole seconds and breaks ties by ID.
+            entries.append((entry.stat().st_mtime_ns // 1_000_000_000, entry))
+        return sorted(entries)
+
+    @staticmethod
+    def _trim_retired(current, staging, ages):
+        """Evict the oldest pairs only after the current pair is durable."""
+        previous = [entry for _, entry in ages if entry != current]
+        for entry in previous[:max(0, len(previous)-RETIRED_MAX+1)]:
+            Client._check_retired_files(entry)
+            entry.rename(staging/entry.name)
+            sync_directory(current.parent)
 
     @key_locked
     def reconnect(self, value):
@@ -518,6 +576,25 @@ class Client:
         return {'status': status}
 
     @key_locked
+    def snapshot(self, generation):
+        if generation is not None and (not isinstance(generation, str) or not re.fullmatch(r'[a-f0-9]{32}', generation)):
+            raise ValueError('invalid_generation')
+
+        def check_generation():
+            status = self.request({'action': 'status'})
+            if status.get('generation') != generation or status.get('pending'):
+                raise ValueError('unconfirmed_snapshot_generation')
+
+        if generation is not None:
+            check_generation()
+        snapshot = self.request({'action': 'backup'})
+        if generation is not None:
+            check_generation()
+        body = encode(snapshot, snapshot_limit(snapshot))
+        atomic(self.directory/'snapshot.json', body)
+        return {'saved': True, 'sha256': hashlib.sha256(body).hexdigest()}
+
+    @key_locked
     def saved(self, candidate=False):
         """The confirmed copy; for a restore (candidate) an uploaded copy waiting to be restored comes first."""
         path = self.directory/'snapshot.json'
@@ -534,7 +611,10 @@ class Client:
             raise ValueError('oversized snapshot')
         if not isinstance(value, dict):
             raise ValueError('snapshot')
-        return {'snapshot': value, 'hash': hashlib.sha256(body).hexdigest()[:16]}
+        result = {'snapshot': value, 'hash': hashlib.sha256(body).hexdigest()[:16]}
+        if path.name == IMPORTED:
+            result['imported'] = True
+        return result
 
     @key_locked
     def store(self, snapshot):
@@ -550,10 +630,16 @@ class Client:
         return self.saved(True)
 
     @key_locked
-    def clear_import(self):
+    def clear_import(self, expected=None):
         path = self.directory/IMPORTED
         trusted(path)
+        if expected is not None:
+            if not isinstance(expected, str) or not re.fullmatch('[a-f0-9]{16}', expected):
+                raise ValueError('invalid import hash')
+            if not path.exists() or self.saved(True)['hash'] != expected:
+                return False
         path.unlink(missing_ok=True)
+        return True
 
     @key_locked
     def forget(self):
@@ -604,9 +690,8 @@ def main():
             result = client.saved()
         elif value['action'] == 'restore-source' and value['value'] is None:
             result = client.saved(True)
-        elif value['action'] == 'import-clear' and value['value'] is None:
-            client.clear_import()
-            result = {'cleared': True}
+        elif value['action'] == 'import-clear':
+            result = {'cleared': client.clear_import(value['value'])}
         elif value['action'] == 'saved-routes' and value['value'] is None:
             policy = client.saved()['snapshot']['options'].get('policy', {})
             result = {'routes': policy.get('routes', {})}
@@ -618,10 +703,8 @@ def main():
         elif value['action'] == 'import' and isinstance(value['value'], dict) and set(value['value']) == {'snapshot'}:
             saved = client.store(value['value']['snapshot'])
             result = {'hash': saved['hash']}
-        elif value['action'] == 'snapshot' and value['value'] is None:
-            snapshot = client.request({'action': 'backup'})
-            atomic(client.directory/'snapshot.json', encode(snapshot,snapshot_limit(snapshot)))
-            result = {'saved': True}
+        elif value['action'] == 'snapshot':
+            result = client.snapshot(value['value'])
         else:
             raise ValueError('action')
         sys.stdout.buffer.write(encode({'ok': True, 'result': result}, POLICY_FRAME if value['action'] in ('rpc','saved','restore-source','saved-routes','rebind','reconnect') else LIMIT))

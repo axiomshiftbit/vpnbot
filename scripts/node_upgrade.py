@@ -127,7 +127,12 @@ def code_status(store, directory=None):
               'origin': 'button' if button else ('manual' if recorded and recorded.get('manual') else None)}
     if recorded:
         try:
-            result['verified'] = digest(directory) == recorded['digest']
+            actual = digest(directory)
+            result['verified'] = actual == recorded['digest']
+            if button and result['verified']:
+                # Older button records lack a checksum bound to their commit.
+                expected = store.read(CODE).get('digest')
+                result['verified'] = actual == expected if expected else active_modules_match(button, directory)
         except OSError:
             result['verified'] = False
     return result
@@ -214,6 +219,19 @@ def fast_forward(branch, source):
     return 'updated' if git('merge', '-q', '--ff-only', source).returncode == 0 else 'kept'
 
 
+def active_modules_match(source, directory=None):
+    """Legacy status files may refer to a commit whose installation was only partial."""
+    active = Path(directory) if directory is not None else node_code.active_path(LIB)
+    try:
+        for name in MODULES:
+            committed = git('show', source + ':scripts/' + name)
+            if committed.returncode or committed.stdout != (active/name).read_bytes():
+                return False
+    except OSError:
+        return False
+    return True
+
+
 def code_phase(store, job, channel):
     """Returns the installed commit and the clone result; raises UpgradeError."""
     branch = BRANCHES[channel]
@@ -230,7 +248,7 @@ def code_phase(store, job, channel):
     if fetched.returncode or not ancestor(source, 'refs/remotes/origin/'+branch):
         raise UpgradeError('fetch')
     previous = installed(store)
-    if previous == source:
+    if previous == source and active_modules_match(source):
         return source, fast_forward(branch, source)
     # Never install older code than the node already runs: a dev node
     # cannot be downgraded by the master button.
@@ -247,7 +265,11 @@ def code_phase(store, job, channel):
     if result.returncode:
         stages = SETUP_STAGE.findall(result.stderr.decode(errors='replace'))
         raise UpgradeError('setup_'+stages[-1] if stages else 'setup')
-    state.atomic(store.root/CODE, state.encode({'source': source, 'time': int(time.time())}))
+    record = {'source': source, 'time': int(time.time())}
+    files = store.read(INSTALLED)
+    if isinstance(files, dict) and re.fullmatch('[a-f0-9]{64}', str(files.get('digest', ''))):
+        record['digest'] = files['digest']
+    state.atomic(store.root/CODE, state.encode(record))
     return source, fast_forward(branch, source)
 
 
