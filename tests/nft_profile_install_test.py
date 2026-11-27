@@ -374,6 +374,119 @@ class AuditFixes(Apply):
         self.assertFalse(self.candidate.exists())
         self.assertIn(['nft', '-f', str(self.candidate)], self.calls)
 
+    def test_new_ssh_lists_are_private_to_the_trial_until_confirmation(self):
+        self.start(self.prepare())
+        existing = self.lists / 'tg'
+        existing.mkdir(parents=True)
+        (existing / 'keep').touch()
+
+        def inspect(seconds):
+            self.assertFalse((self.lists / 'my_server').exists())
+            self.assertNotIn('include "/opt/maxmind/list/my_server/', self.candidate.read_text())
+            self.assertIn('include "/opt/maxmind/list/tg/', self.candidate.read_text())
+            return True
+
+        with patch.object(installer, 'confirmed', side_effect=inspect):
+            self.assertTrue(installer.install_full(True))
+        self.assertIn('include "/opt/maxmind/list/my_server/', self.config.read_text())
+        self.assertIn('198.51.100.7/32', (self.lists / 'my_server/geoip-ipv4.nft').read_text())
+        self.assertTrue((existing / 'keep').is_file())
+
+    def test_readback_failure_before_watchdog_leaves_no_first_attempt_lists(self):
+        self.start(self.prepare())
+        with patch.object(installer, 'run', fake_run(self.calls, fail=('nft',))), self.assertRaises(ValueError):
+            installer.install_full(True)
+        self.assertFalse((self.lists / 'my_server').exists())
+        self.assertEqual('# previous\n', self.config.read_text())
+
+    def test_second_full_install_cannot_replace_the_active_trial(self):
+        self.start(self.prepare())
+        def retry(seconds):
+            with patch.object(installer, 'confirmed', return_value=False), self.assertRaises(ValueError):
+                installer.install_full(True)
+            return True
+        with patch.object(installer, 'confirmed', side_effect=retry):
+            self.assertTrue(installer.install_full(True))
+
+    def test_late_confirmation_does_not_commit_after_watchdog_rollback(self):
+        self.start(self.prepare())
+        def late(seconds):
+            directory = next(path.parent for path in self.backups.rglob('ruleset.nft'))
+            with patch.object(installer.time, 'sleep'), patch.object(installer.signal, 'signal'):
+                installer.watchdog(directory, 0)
+            return True
+        with patch.object(installer, 'confirmed', side_effect=late):
+            self.assertFalse(installer.install_full(True))
+        self.assertEqual('# previous\n', self.config.read_text())
+        self.assertFalse((self.lists / 'my_server').exists())
+
+    def test_expired_trial_cannot_load_rules_after_rollback(self):
+        self.start(self.prepare())
+        def guard(args, **kwargs):
+            directory = next(p.parent for p in self.backups.rglob('ruleset.nft'))
+            installer.restore(directory)
+            return SimpleNamespace(terminate=lambda: None)
+        with patch.object(installer.subprocess, 'Popen', side_effect=guard), patch.object(installer, 'confirmed', return_value=False):
+            self.assertFalse(installer.install_full(True))
+        self.assertNotIn(['nft', '-f', str(self.candidate)], self.calls)
+
+    def test_partial_template_copy_cannot_publish_an_incomplete_list(self):
+        self.start(self.prepare())
+        with patch.object(installer.shutil, 'copyfile', side_effect=OSError('fixture')), self.assertRaises(OSError):
+            installer.install_full(True)
+        self.assertFalse((self.lists / 'asn_nft').exists())
+
+    def test_interrupted_publication_drops_only_its_own_lists(self):
+        self.start(self.prepare())
+        existing = self.lists / 'tg'
+        existing.mkdir(parents=True)
+        (existing / 'keep').touch()
+        original = installer.sets.atomic
+        def power_loss(path, text, mode):
+            if path == self.config:
+                os._exit(73)
+            return original(path, text, mode)
+        for recover in ('watchdog', 'next-start'):
+            with self.subTest(recover=recover):
+                child = os.fork()
+                if child == 0:
+                    try:
+                        with patch.object(installer, 'confirmed', return_value=True), patch.object(installer.sets, 'atomic', side_effect=power_loss):
+                            installer.install_full(True)
+                    finally:
+                        os._exit(1)
+                self.assertEqual(73, os.waitstatus_to_exitcode(os.waitpid(child, 0)[1]))
+                self.assertTrue((self.lists/'my_server').is_dir())
+                if recover == 'watchdog':
+                    directory = next(p.parent for p in self.backups.rglob('ruleset.nft'))
+                    with patch.object(installer.time, 'sleep'), patch.object(installer.signal, 'signal'):
+                        installer.watchdog(directory, 0)
+                else:
+                    with patch.object(installer, 'confirmed', return_value=False):
+                        self.assertFalse(installer.install_full(True))
+                self.assertFalse((self.lists/'my_server').exists())
+                self.assertTrue((existing / 'keep').is_file())
+
+    def test_direct_tcp_range_is_checked_in_full(self):
+        profile = 'ip daddr $PUBLIC_IP tcp dport 2400-2410 dnat to 192.0.2.8:443'
+        for port in (2400, 2405, 2410):
+            self.assertTrue(installer.ssh_dnat_conflicts(profile, port))
+        self.assertFalse(installer.ssh_dnat_conflicts(profile, 2411))
+
+    def test_existing_project_docker_files_are_secured_on_upgrade(self):
+        for mode, template, suffix in [('full', 'nftables.conf', ''), ('node', 'noda.conf', '-node')]:
+            with self.subTest(mode):
+                self.config.write_text((installer.TEMPLATES / template).read_text())
+                backup = self.daemon.with_name('daemon.json.before-vpnbot' + suffix)
+                for path in (backup, self.daemon):
+                    path.write_text('{}\n')
+                    path.chmod(0o644)
+                with patch.object(sys, 'argv', ['installer', '--mode', mode]), \
+                        patch.object(installer.os, 'geteuid', return_value=0), patch('builtins.print'):
+                    self.assertTrue(installer.main())
+                self.assertEqual(0o600, backup.stat().st_mode & 0o777)
+                self.assertEqual(0o600, self.daemon.stat().st_mode & 0o777)
+
     def test_daemon_json_mode_is_never_widened(self):
         for before, expected in ((0o600, 0o600), (0o640, 0o600), (None, 0o600)):
             self.daemon.unlink(missing_ok=True)

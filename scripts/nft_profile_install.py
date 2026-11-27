@@ -19,6 +19,8 @@ VPNBOT_NFT_PUBLIC6, VPNBOT_NFT_SSH_PORT, VPNBOT_NFT_ADMINS. Применение
 Чужой /etc/nftables.conf без терминала заменяется только при VPNBOT_NFT_REPLACE=yes.
 """
 import argparse
+from contextlib import contextmanager
+import fcntl
 import ipaddress
 import json
 import os
@@ -27,8 +29,10 @@ import re
 import select
 import shutil
 import signal
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -174,11 +178,9 @@ def my_server(networks, mark='MY_SERVER'):
             f'map my_server {{\n    type ipv4_addr : mark\n    flags interval\n    elements = {{\n{elements}\n    }}\n}}\n')
 
 
-def install_lists(admins=None):
-    """Списки из nftables/list; существующие списки администратора не заменяются.
-
-    Возвращает каталоги, созданные этим вызовом: откат установки удаляет их."""
-    created = []
+def prepare_lists(stage, admins=None):
+    """Подготовить недостающие списки отдельно от действующего загрузочного профиля."""
+    stage.mkdir(mode=0o700)
     for source in sorted((TEMPLATES / 'list').iterdir()):
         target = LISTS / source.name
         if target.exists():
@@ -189,20 +191,51 @@ def install_lists(admins=None):
                 print('[INFO] Список my_server уже есть и не изменяется. Действующие адреса SSH: '
                       + (', '.join(current) if current else 'нет') + '. Изменить: ' + str(target / 'geoip-ipv4.nft'))
             continue
-        target.mkdir(parents=True, mode=0o755)
-        created.append(target)
+        target = stage / source.name
+        target.mkdir(mode=0o755)
         for item in source.iterdir():
             shutil.copyfile(item, target / item.name)
             os.chmod(target / item.name, 0o644)
         if source.name == 'my_server' and admins:
             sets.atomic(target / 'geoip-ipv4.nft', my_server(admins), 0o644)
-    return created
 
 
-def drop_lists(created):
-    """Откат: списки этой попытки, иначе следующая попытка унаследовала бы её адреса."""
-    for target in created:
-        shutil.rmtree(target, ignore_errors=True)
+def publish_lists(stage, transaction=None):
+    LISTS.mkdir(parents=True, exist_ok=True)
+    # Временный каталог на том же разделе: загрузчик никогда не увидит половину списка.
+    created = []
+    try:
+        with tempfile.TemporaryDirectory(prefix='.vpnbot-', dir=LISTS) as scratch:
+            for source in sorted(stage.iterdir()):
+                target = LISTS / source.name
+                if target.exists():
+                    raise ValueError('Списки изменились во время установки: ' + source.name)
+                ready = Path(scratch) / source.name
+                shutil.copytree(source, ready)
+                if transaction is not None:
+                    info = ready.stat()
+                    sets.atomic(transaction / ('pending-list-' + source.name), f'{info.st_dev} {info.st_ino}\n', 0o600)
+                ready.rename(target)
+                created.append(target)
+    except BaseException:
+        if transaction is None:
+            for target in created:
+                shutil.rmtree(target)
+        raise
+
+
+def recover_lists(directory):
+    for source in (TEMPLATES / 'list').iterdir():
+        marker = directory / ('pending-list-' + source.name)
+        if not marker.exists():
+            continue
+        target = LISTS / source.name
+        if target.exists():
+            info = target.lstat()
+            # Не удалять заменённый администратором каталог с тем же именем.
+            if marker.read_text().strip() == f'{info.st_dev} {info.st_ino}':
+                shutil.rmtree(target)
+        marker.unlink()
 
 
 def render_full(values):
@@ -239,7 +272,7 @@ def ssh_dnat_conflicts(text, port):
     names = []
     for line in text.splitlines():
         rule = line.split('#', 1)[0]
-        match = re.search(r'\btcp dport (\$[A-Z0-9_]+|\d+|\{[^}]*\})', rule)
+        match = re.search(r'\btcp\s+dport\s+(\$[A-Z0-9_]+|\d+(?:-\d+)?|\{[^}]*\})', rule)
         if 'dnat to' in rule and 'ip daddr $PUBLIC_IP' in rule and match and port in ports(match[1]):
             names.append(match[1].lstrip('$'))
     return sorted(set(names))
@@ -259,6 +292,7 @@ def restore(directory):
             sets.atomic(CONFIG, previous.read_text(), 0o600)
         else:
             CONFIG.unlink(missing_ok=True)
+        recover_lists(directory)
         (directory / 'rolled-back').write_text('1\n')
         (directory / 'rollback-failed').unlink(missing_ok=True)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
@@ -270,12 +304,20 @@ def restore(directory):
                          'Требуется проверка сохранённых правил и файла конфигурации.') from error
 
 
+@contextmanager
+def decision_lock(directory):
+    with (directory / 'decision.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
 def watchdog(directory, seconds):
     """Отдельный процесс: без подтверждения через seconds возвращает прежние правила."""
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
     time.sleep(seconds)
-    if not (directory / 'confirmed').exists() and not (directory / 'rolled-back').exists():
-        restore(directory)
+    with decision_lock(directory):
+        if not (directory / 'confirmed').exists() and not (directory / 'rolled-back').exists():
+            restore(directory)
 
 
 def confirmed(seconds, stream=sys.stdin):
@@ -313,6 +355,22 @@ def docker_rules(settings=DOCKER_SETTINGS):
     return True
 
 
+def secure_previous_docker_files(mode):
+    suffix = '.before-vpnbot-node' if mode == 'node' else '.before-vpnbot'
+    backup = DAEMON.with_name(DAEMON.name + suffix)
+    if not backup.exists():
+        return
+    # Старый установщик создавал файлы 0644. Содержимое при обновлении не требуется.
+    for path in (backup, DAEMON):
+        if not path.exists():
+            continue
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError('Файл Docker должен быть обычным файлом без ссылок')
+        if info.st_mode & 0o077:
+            path.chmod(info.st_mode & 0o600)
+
+
 def foreign_containers():
     """Работающие контейнеры не этой ноды: их сеть не должна меняться установщиком ноды."""
     if not shutil.which('docker'):
@@ -335,43 +393,67 @@ def install_full(interactive):
         print('[INFO] nftables: нет терминала для подтверждения SSH-доступа — профиль не установлен. '
               'Запустите scripts/nft_profile_install.py --mode full из SSH-сессии.')
         return False
-    values = collect(True)
-    created = install_lists(values['admins'])
-    try:
-        text = render_full(values)
-        nft.compile_rules(text)  # проверка в отдельном network namespace
-    except BaseException:
-        drop_lists(created)
-        raise
-    directory = BACKUPS / time.strftime('%Y%m%d-%H%M%S')
-    directory.mkdir(parents=True, mode=0o700)
+    BACKUPS.mkdir(parents=True, mode=0o700, exist_ok=True)
+    with (BACKUPS / 'install.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError('Уже выполняется установка или откат профиля nftables')
+        # После перезагрузки сторожа уже нет, а загрузился прежний профиль.
+        for directory in sorted({marker.parent for marker in BACKUPS.glob('*/pending-list-*')}):
+            if (directory / 'confirmed').exists():
+                continue
+            previous = directory / 'nftables.conf'
+            if previous.exists() != CONFIG.exists() or (CONFIG.exists() and previous.read_bytes() != CONFIG.read_bytes()):
+                raise ValueError('Незавершённая установка и изменённый профиль nftables: требуется проверка')
+            recover_lists(directory)
+        values = collect(True)
+        directory = Path(tempfile.mkdtemp(prefix=time.strftime('%Y%m%d-%H%M%S-'), dir=BACKUPS))
+        try:
+            return apply_full(values, directory, lock)
+        finally:
+            shutil.rmtree(directory / 'lists', ignore_errors=True)
+
+
+def apply_full(values, directory, lock):
+    stage = directory / 'lists'
+    prepare_lists(stage, values['admins'])
+    text = render_full(values)
+    trial = text
+    for source in stage.iterdir():
+        trial = trial.replace(f'include "/opt/maxmind/list/{source.name}/', f'include "{source}/')
+    nft.compile_rules(trial)
     (directory / 'ruleset.nft').write_text(run(['nft', 'list', 'ruleset']).stdout)
     if CONFIG.exists():
         shutil.copyfile(CONFIG, directory / 'nftables.conf')
     guard = subprocess.Popen([sys.executable, '-I', __file__, '--watchdog', str(directory), '--after', str(CONFIRM_SECONDS)],
                              start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL)
+                             stderr=subprocess.DEVNULL, pass_fds=(lock.fileno(),))
     ok = False
     try:
-        sets.atomic(CANDIDATE, text, 0o600)
-        run(['nft', '-f', str(CANDIDATE)])
-        ok = confirmed(CONFIRM_SECONDS - 5)
-        if ok:
-            # Загрузочный файл меняется только после подтверждённого входа.
-            sets.atomic(CONFIG, text, 0o600)
-            CANDIDATE.unlink(missing_ok=True)
-    except BaseException:
-        ok = False
-        raise
+        with decision_lock(directory):
+            if (directory / 'rolled-back').exists() or (directory / 'rollback-failed').exists():
+                return False
+            sets.atomic(CANDIDATE, trial, 0o600)
+            run(['nft', '-f', str(CANDIDATE)])
+        if confirmed(CONFIRM_SECONDS - 5):
+            with decision_lock(directory):
+                if not (directory / 'rolled-back').exists() and not (directory / 'rollback-failed').exists():
+                    publish_lists(stage, directory)
+                    sets.atomic(CONFIG, text, 0o600)
+                    CANDIDATE.unlink(missing_ok=True)
+                    (directory / 'confirmed').write_text('1\n')
+                    ok = True
+                    for marker in directory.glob('pending-list-*'):
+                        marker.unlink()
     finally:
         if ok:
-            (directory / 'confirmed').write_text('1\n')
             guard.terminate()
         else:
-            if not (directory / 'rolled-back').exists():
-                restore(directory)
-                guard.terminate()
-            drop_lists(created)
+            with decision_lock(directory):
+                if not (directory / 'rolled-back').exists():
+                    restore(directory)
+            guard.terminate()
     if not ok:
         print('[INFO] Подтверждения нет: прежние правила восстановлены, профиль не установлен.')
         return False
@@ -390,7 +472,10 @@ def install_node():
         print('[ОТКАЗ] nftables: на сервере работают другие контейнеры. Установка ноды не меняет их сеть, '
               '/etc/nftables.conf и Docker; сначала подготовьте перенос существующей установки.', file=sys.stderr)
         return False
-    install_lists()
+    with tempfile.TemporaryDirectory(prefix='vpnbot-node-lists-') as temporary:
+        stage = Path(temporary) / 'lists'
+        prepare_lists(stage)
+        publish_lists(stage)
     if CONFIG.exists():
         backup = CONFIG.with_name(CONFIG.name + '.before-vpnbot')
         if not backup.exists():
@@ -414,6 +499,7 @@ def main():
         parser.error('--mode full|node')
     state = profile_state(CONFIG, args.mode)
     if state == 'ok':
+        secure_previous_docker_files(args.mode)
         print('[OK] /etc/nftables.conf уже содержит профиль VPNBot — адреса согласует установщик')
         return True
     interactive = sys.stdin.isatty()
