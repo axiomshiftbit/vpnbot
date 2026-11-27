@@ -221,7 +221,8 @@ try:
  run('docker','cp','php-audit:/tmp/exit-sets/ci.srs',O/'ci.srs').check_returncode();run('docker','exec','php-audit','rm','-rf','/tmp/exit-sets')
  run('docker','cp',O/'ci.srs',TARGET+':/tmp/exit-sets/ci.srs').check_returncode()
  s=bot('refresh',nid);entries=[e for c in s['sets'] for e in c.get('entries',[])]
- check('refresh-picks-up-the-new-set',entries==['domain:video2.exit.test'] and said(s,'наборы правил изменились'))
+ check('refresh-picks-up-the-new-set',entries==['domain:video2.exit.test'])
+ check('refresh-reports-changed-rules',any('наборы правил изменились' in text.casefold() for text in s['messages']))
  check('srs-domain-direct-after-refresh',wait(lambda:direct('srs.exit.test'),20))
 
  # ── Отказ узла: трафик напрямую, уведомление, возврат ───────────────────
