@@ -106,7 +106,8 @@ trait BotStore
         $query->execute($uid === null ? [] : [$uid]);
         $result = [];
         foreach ($query->fetchAll(PDO::FETCH_NUM) as [$user, $hwid, $info]) {
-            $result[$user][$hwid] = json_decode($info, true) ?: [];
+            $decoded = json_decode($info, true);
+            $result[$user][$hwid] = is_array($decoded) ? self::subscriptionHwidInfo($decoded) : [];
         }
         return $result;
     }

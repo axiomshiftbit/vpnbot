@@ -300,7 +300,7 @@ veAssert($profile['proxies'][0]['client-fingerprint'] === 'firefox', 'WebSocket 
 // Ограничение применяется и к ссылке импорта sing-box из другого формата.
 $bot->generated = $output;
 $bot->applyVlessEncryption('x25519', 'native');
-foreach (['si', 'k', 'h', 'w'] as $deepLink) {
+foreach (['si', 'k', 'h'] as $deepLink) {
     $_GET = ['s' => 'test-sub', 't' => 's', 'r' => $deepLink];
     veAssert($bot->subscription(true) === '', 'Несовместимый deep-link блокируется до редиректа');
 }

@@ -89,10 +89,10 @@ foreach ([['off', false], ['x25519', false], ['mlkem768', false], ['off', true],
     $card = $capture->calls[0][1];
     $visible = html_entity_decode(strip_tags($card['text']), ENT_QUOTES | ENT_HTML5, 'UTF-8');
     cardAssert(mb_strlen($visible, 'UTF-8') <= 4096, 'карточка укладывается в лимит Telegram');
-    foreach (['xray config:', 'sing-box config:', 'mihomo config:', 'v2rayNG (base64):', 'sing-box windows:'] as $label) {
+    foreach (['xray config:', 'sing-box config:', 'mihomo config:', 'Happ / v2rayNG (base64):'] as $label) {
         cardAssert(str_contains($card['text'], $label), "$label остаётся над клавиатурой в том же сообщении");
     }
-    cardAssert(substr_count($card['text'], 'import://') === 9, 'все ссылки импорта сохранены, включая INCY');
+    cardAssert(substr_count($card['text'], 'import://') === 10 && str_contains($card['text'], 'import://Happ'), 'все ссылки импорта сохранены, включая INCY');
     $buttons = json_decode($card['reply_markup'], true)['inline_keyboard'];
     cardAssert(end($buttons)[0]['callback_data'] === '/xray', 'кнопка возврата сохранена');
     $plainLink = $bot->linkXray(0);

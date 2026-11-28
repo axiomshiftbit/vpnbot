@@ -4,7 +4,10 @@ class NodeSubscriptionFixture extends ManagedPeerFixture {
     public function getDomain($cdn=false) { return 'controller.example.org'; }
     public function nginxGetTypeCert() { return 'letsencrypt'; }
     public function getHashBot($notset=false) { return 'fixture'; }
-    public function subRateLimit($sid,$scope='') {}
+    public $afterAuthorization;
+    public function subRateLimit($sid,$scope='') {
+        if ($this->afterAuthorization) ($this->afterAuthorization)();
+    }
 }
 $b=new NodeSubscriptionFixture();
 $check(method_exists($b,'managedNodeSubscriptionDocument'),'HTTPS subscription handler exists');
@@ -18,6 +21,13 @@ $doc=$b->managedNodeSubscriptionDocument($id,$token,'sub');
 $check(base64_decode($doc['body'],true)===$b->profile['link']."\n",'HTTPS subscription contains current dedicated peer');
 $check($b->managedNodeSubscriptionDocument($id,str_repeat('0',64),'sub')===null,'invalid token rejected');
 $check($b->managedNodeSubscriptionDocument($id,$token,'yaml')===null,'unsupported format rejected');
+$b->afterAuthorization = function () use ($b,$id,$key) {
+    unset($b->pacState['managed_nodes'][$id]['subscriptions'][$key]);
+};
+$before=count($b->requests);
+$check($b->managedNodeSubscriptionDocument($id,$token,'sub')===null && count($b->requests)===$before,'revoked capability is rechecked under the node lock before reading the profile');
+$b->afterAuthorization=null;
+$b->pacState['managed_nodes'][$id]['subscriptions'][$key]=$record;
 $requests=count($b->requests);
 $b->pacState['managed_nodes'][$id]['status']['peers'][0]['enabled']=false;
 $check($b->managedNodeSubscriptionDocument($id,$token,'sub')===null && count($b->requests)===$requests,'disabled peer rejected without SSH');

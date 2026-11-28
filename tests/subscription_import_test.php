@@ -46,9 +46,9 @@ $bot = (new ReflectionClass(Bot::class))->newInstanceWithoutConstructor();
 $name = "🇷🇺 Тест & # + ' \" <имя>\r\n";
 $relay = "Москва / 🇷🇺 & # + '";
 $base = 'https://example.test/pactesthash';
-$formats = ['v' => 's', 'sr' => 'vl', 'si' => 'si', 'st' => 'vl', 'h' => 'vl', 'k' => 'si', 'c' => 'cl', 'rh' => 'cl', 'incy' => 's'];
+$formats = ['v' => 's', 'sr' => 'vl', 'si' => 'si', 'st' => 'vl', 'h' => 'vl', 'happ' => 'vl', 'k' => 'si', 'c' => 'cl', 'rh' => 'cl', 'incy' => 's'];
 $schemes = ['v' => 'v2rayng', 'sr' => 'shadowrocket', 'si' => 'sing-box', 'st' => 'streisand',
-    'h' => 'hiddify', 'k' => 'karing', 'c' => 'clash', 'rh' => 'rabbithole', 'incy' => 'incy'];
+    'h' => 'hiddify', 'happ' => 'happ', 'k' => 'karing', 'c' => 'clash', 'rh' => 'rabbithole', 'incy' => 'incy'];
 foreach (['', $relay] as $via) {
     $token = ['h' => 'testhash', 's' => 'subscription-token'];
     if ($via !== '') $token['relay'] = $via;
@@ -66,6 +66,8 @@ foreach (['', $relay] as $via) {
             $url = rawurldecode(explode('#', substr($link, strlen('streisand://import/')))[0]);
         } elseif ($code === 'h') {
             $url = explode('#', substr($link, strlen('hiddify://import/')))[0];
+        } elseif ($code === 'happ') {
+            $url = substr($link, strlen('happ://add/'));
         } elseif ($code === 'incy') {
             $url = substr($link, strlen('incy://import/'));
         } else {
@@ -122,7 +124,7 @@ try {
         importAssert(str_contains((string) $response, 'Location: ' . $schemes[$code] . '://'), "$code: real HTTP Location");
         importAssert(!str_contains((string) $response, 'credential'), "$code: redirect does not expose VPN credentials");
     }
-    foreach ([['t=s&s=subscription-token', 403], ['t=s&s=subscription-token&r=w', 403],
+    foreach ([['t=s&s=subscription-token', 403], ['t=s&s=subscription-token&r=w', 410],
         ['t=s&s=credential&r=sr', 404], ['t=s&s=subscription-token&r=sr&disabled=1', 404],
         ['t=s&s=unknown&r=v', 404]] as [$query, $status]) {
         $ch = curl_init("http://$address/?$query");

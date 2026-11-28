@@ -105,6 +105,14 @@ foreach (['ru', 'en'] as $lang) {
     require __DIR__ . '/../app/i18n.php';
     $bot = new ExtLinksBot($i, $lang);
 
+    $privacyBot = new ExtLinksBot($i, $lang);
+    $privacyBot->extAddSave("trojan://fixture-private@vpn.example.test:443#Node", 0, 'link');
+    $privacyBot->extAddSave("https://sub.tld/fixture-private", 0, 'sub');
+    $privacyBot->click('/extUser 0');
+    $rendered = json_encode($privacyBot->screen, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+    elCheck(!str_contains($rendered, 'fixture-private') && !str_contains($rendered, 'fixture-pri'),
+        "$lang: список и кнопки не показывают пароль подключения или путь персональной подписки");
+
     // ── 1. Пустой экран ─────────────────────────────────────────────────────
     $bot->click('/extUser 0');
     [$text, $cbs] = elScreen($bot, "$lang пустой экран");

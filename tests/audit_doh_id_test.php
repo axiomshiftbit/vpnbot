@@ -193,6 +193,7 @@ foreach (['nginx.conf', 'nginx_default.conf'] as $f) {
     dohAssert(substr_count($conf, 'access_log /logs/nginx_pac_access nopath;') === 2,
         "$f: токен подписки в пути также исключён из обоих журналов /pac");
     preg_match('~log_format noargs (.*?);~s', $conf, $logFormat);
+    dohAssert(!str_contains($logFormat[1] ?? '', '$http_user_agent'), "$f: заголовок клиента не попадает в журнал статики");
     dohAssert(!str_contains($logFormat[1] ?? '', '$http_referer'),
         "$f: Referer не раскрывает ссылку подписки или авторизации");
     foreach (['@php', '/tlgrm', '/webapp', '/pac', '/dns-query'] as $location) {

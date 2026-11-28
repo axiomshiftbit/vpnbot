@@ -123,7 +123,7 @@ def bootstrap(checkout, candidate, client_image):
     archive = subprocess.run(['git', '-C', str(checkout), 'archive', 'HEAD'],
                              capture_output=True, check=True).stdout
     subprocess.run(['tar', '-xf', '-', '-C', str(BOT)], input=archive, check=True)
-    for directory in ('.git', 'ssh/pub', 'certs', 'logs', 'mirror', 'singbox_windows',
+    for directory in ('.git', 'ssh/pub', 'certs', 'logs', 'mirror',
                       'config/openvpn', 'config/ipsec', 'config/wg', 'config/wg1'):
         (BOT / directory).mkdir(parents=True, exist_ok=True)
     for directory in ('home', 'tests/published', 'tests/optional-native/private',

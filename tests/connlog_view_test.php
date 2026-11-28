@@ -78,6 +78,24 @@ try {
     $apps = $b->storeSubClients('ivan');
     clCheck(count($apps) === 2 && $apps[0]['ip'] === '203.0.113.17', 'subscription apps recorded with address, newest first');
 
+    $saved = $_SERVER;
+    $_SERVER = ['HTTP_USER_AGENT' => 'Happ/4.8.3 (+https://device.example.test/private-fixture)', 'HTTP_X_DEVICE_MODEL' => 'token=private-fixture'];
+    $b->recordSubClient(['email' => 'metadata-test']);
+    $_SERVER = $saved;
+    $record = $b->storeSubClients('metadata-test')[0];
+    clCheck($record['ua'] === 'Happ/4.8.3' && $record['model'] === '', 'only product information from private device headers is stored');
+    $b->storeSubClientRecord('metadata-test', ['ua' => 'https://device.example.test/private-fixture', 'os' => '', 'osver' => '', 'model' => 'private (Bearer private-fixture)'], '');
+    $rows = $b->connLogDevices(['email' => 'metadata-test']);
+    clCheck(count($rows) === 2 && !str_contains(json_encode($rows), 'private-fixture'), 'legacy device headers are sanitized for display and export');
+
+    $saved = $_SERVER;
+    $opaque = bin2hex(random_bytes(16));
+    $_SERVER = ['HTTP_USER_AGENT' => 'Happ/4.8.3 (' . $opaque . ')', 'HTTP_X_DEVICE_OS' => '12345678-1234-4234-9234-123456789012'];
+    $b->recordSubClient(['email' => 'opaque-test']);
+    $_SERVER = $saved;
+    $record = $b->storeSubClients('opaque-test')[0];
+    clCheck($record['ua'] === 'Happ/4.8.3' && $record['os'] === '', 'bare subscription tokens and profile UUIDs are excluded from metadata');
+
     // Device parsing.
     foreach ([[['ua' => 'Happ/2.6.1/ios CFNetwork/1568 Darwin/24.0.0', 'os' => 'iOS', 'osver' => '18.1', 'model' => 'iPhone15,2'], ['📱', 'Happ 2.6.1', 'iOS 18.1', 'iPhone15,2', '']],
               [['ua' => 'v2rayNG/1.9.30'], ['❔', 'v2rayNG 1.9.30', '', '', '']],

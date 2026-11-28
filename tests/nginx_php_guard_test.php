@@ -103,6 +103,14 @@ foreach ([bin2hex(random_bytes(4)), bin2hex(random_bytes(4))] as $h) {
 // ── 3. cron дописывает защиту в старую установку ─────────────────────────────
 $dir = sys_get_temp_dir() . '/nginx-guard-' . bin2hex(random_bytes(4));
 mkdir($dir, 0700);
+$oldLogs = <<<'NGX'
+log_format custom '$status "$http_user_agent"';
+log_format noargs '$status $body_bytes_sent "$http_user_agent"';
+log_format nopath '$remote_addr [$time_local] "$request_method" '
+                  '$status $body_bytes_sent "$http_user_agent"';
+NGX;
+$sample = $oldLogs . "\n" . $sample;
+$guarded = str_replace('$body_bytes_sent "$http_user_agent"', '$body_bytes_sent', $oldLogs) . "\n" . $guarded;
 file_put_contents("$dir/nginx_default.conf", $sample);
 file_put_contents("$dir/nginx.conf", $sample);
 $bot->xrayConf = "$dir/xray.json";

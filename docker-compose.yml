@@ -182,7 +182,6 @@ services:
             - ./.env:/mirror/.env
             - ./update:/update
             - ./.git:/.git
-            - ./singbox_windows:/singbox
             - ./docker-compose.override.yml:/docker/compose
             # docker.sock убран: Docker API теперь только через сервис
             # dockerproxy (см. его комментарий и config/dockerproxy.conf).

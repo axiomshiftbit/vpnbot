@@ -2,11 +2,11 @@
   "schema": 1,
   "browser": [
     {
-      "path": "app/webapp/jquery-3.7.1.min.js",
+      "path": "app/webapp/jquery-3.8.0.min.js",
       "name": "jquery",
-      "version": "3.7.1",
-      "sha256": "fc9a93dd241f6b045cbff0481cf4e1901becd0e12fb45166a8f17f95823f0b1a",
-      "source_url": "https://code.jquery.com/jquery-3.7.1.min.js",
+      "version": "3.8.0",
+      "sha256": "42c9beb67d11f78edb63796d0d9bfb074d0fc1a20b47ad72fcb7fb0f3dc6a6fe",
+      "source_url": "https://code.jquery.com/jquery-3.8.0.min.js",
       "dependencies": []
     },
     {
@@ -78,26 +78,5 @@
         }
       ]
     }
-  ],
-  "windows_native": {
-    "winsw3.exe": {
-      "name": "WinSW",
-      "version": "3.0.0-alpha.11",
-      "sha256": "a2daa6a33a9c2b791ae31d9092e7935c339d1e03e89bfb747618ce2f4e819e20",
-      "source_url": "https://github.com/winsw/winsw/releases/download/v3.0.0-alpha.11/WinSW-x64.exe",
-      "coverage": "exact upstream bytes; repository advisories; embedded .NET assemblies are not a complete dependency inventory"
-    },
-    "libcronet.dll": {
-      "name": "Cronet Chromium",
-      "version": "154.0.8037.49",
-      "sha256": "605af9efeb8daeab3926f6c3f34e0f075edf31645e2952be2e2a5dca13a97fc2",
-      "source_url": "https://github.com/SagerNet/sing-box/releases/download/v1.14.5/sing-box-1.14.5-windows-amd64.zip",
-      "coverage": "exact release DLL and embedded Chromium version verified; C++ dependencies and their advisories are not fully inventoried; Chrome UI advisories are not treated as confirmed Cronet findings",
-      "module_archive_url": "https://proxy.golang.org/github.com/sagernet/cronet-go/lib/windows_amd64/@v/v0.0.0-20261126082848-2767273ce7ab.zip",
-      "module_archive_sha256": "574a5c2433278e7b7f7beb4c887d79c7fa1abf21a454daecfa0c4f6304af51fa",
-      "source_commit": "2767273ce7ab",
-      "naiveproxy_commit": "467414d80e1158e1a98dbd8b5b315ea860ec30f8",
-      "chromium_version_url": "https://raw.githubusercontent.com/SagerNet/naiveproxy/467414d80e1158e1a98dbd8b5b315ea860ec30f8/src/chrome/VERSION"
-    }
-  }
+  ]
 }

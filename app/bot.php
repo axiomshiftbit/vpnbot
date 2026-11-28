@@ -23933,6 +23933,14 @@ DNS-over-HTTPS with IP:
         }
     }
 
+    private static function subscriptionHwidInfo(array $info): array
+    {
+        foreach (['user_agent', 'device_os', 'os_version', 'device_model'] as $field) {
+            if (isset($info[$field])) $info[$field] = self::subscriptionDeviceText(is_string($info[$field]) ? $info[$field] : '');
+        }
+        return $info;
+    }
+
     public function getHwidStorage()
     {
         if ($this->store()) {
@@ -23941,8 +23949,16 @@ DNS-over-HTTPS with IP:
         if (!file_exists($this->hwid)) {
             return [];
         }
-        $data = json_decode(file_get_contents($this->hwid), true);
-        return is_array($data) ? $data : [];
+        $raw = @file_get_contents($this->hwid);
+        $data = $raw === false ? null : json_decode($raw, true);
+        if (!is_array($data)) throw new RuntimeException('HWID storage unavailable');
+        foreach ($data as $uid => $devices) {
+            if (!is_array($devices)) continue;
+            foreach ($devices as $hwid => $info) {
+                if (is_array($info)) $data[$uid][$hwid] = self::subscriptionHwidInfo($info);
+            }
+        }
+        return $data;
     }
 
     // Атомарная запись — как setOnlineState()/setPacConf(). Файл читается на
@@ -24131,7 +24147,7 @@ DNS-over-HTTPS with IP:
         return $this->withLock('hwid', function () use ($fn) {
             $storage = $this->getHwidStorage();
             $result  = $fn($storage);
-            $this->setHwidStorage($storage);
+            if (!$this->setHwidStorage($storage)) throw new RuntimeException('HWID storage was not saved');
 
             return $result;
         });
@@ -24236,6 +24252,17 @@ DNS-over-HTTPS with IP:
         return $decoded !== false ? $decoded : '';
     }
 
+    private function subscriptionDeviceLimit(array $client, array $pac): int
+    {
+        if (empty($pac['hwid_limit_enabled']) || !empty($client['hwid_disabled']) || !empty($client['exit_relay'])) return 0;
+        return (int) (($client['hwid_limit'] ?? 0) ?: ($pac['hwid_device_count'] ?? 0));
+    }
+
+    private function requestHwid(): string
+    {
+        return substr(preg_replace('~[^\w.\-:]~', '', (string) ($_SERVER['HTTP_X_HWID'] ?? '')), 0, 128);
+    }
+
     // $htmlPreview — вызов из sub(), то есть со страницы предпросмотра в
     // браузере. Только там браузерный User-Agent имеет право обойти лимит
     // устройств: раньше поблажка действовала на ВСЕХ путях, и `curl -A
@@ -24257,7 +24284,7 @@ DNS-over-HTTPS with IP:
             return true;
         }
 
-        $limit = (int) (($client['hwid_limit'] ?? 0) ?: ($pac['hwid_device_count'] ?? 0));
+        $limit = $this->subscriptionDeviceLimit($client, $pac);
         if ($limit <= 0) {
             header('x-hwid-active: true');
             header('x-hwid-not-supported: false');
@@ -24269,8 +24296,8 @@ DNS-over-HTTPS with IP:
         try {
             $devices = $this->getHwidDevicesByUser($client['id']);
         } catch (Throwable $e) {
-            // Сбой хранилища не роняет выдачу подписки (ниже — тот же мягкий отказ).
-            error_log('processHwidRequest: ' . $e->getMessage());
+            // Этот список нужен для заголовков. Допуск устройства проверяется при атомарной регистрации ниже.
+            error_log('HWID device list unavailable');
             $devices = [];
         }
         // Нормализуем: это НЕаутентифицированный путь выдачи подписки, а
@@ -24278,7 +24305,7 @@ DNS-over-HTTPS with IP:
         // заголовок размером в килобайты, то есть один запрос раздувал общий
         // файл, который читается и переписывается ЦЕЛИКОМ под LOCK_EX на
         // каждую выдачу конфига — то есть замедлял выдачу всем остальным.
-        $hwid      = substr(preg_replace('~[^\w.\-:]~', '', (string) ($_SERVER['HTTP_X_HWID'] ?? '')), 0, 128);
+        $hwid      = $this->requestHwid();
         $isBrowser = $htmlPreview && $this->isBrowserRequest();
 
         $hwidNotSupported = !$isBrowser && $hwid === '';
@@ -24293,6 +24320,7 @@ DNS-over-HTTPS with IP:
                 return true;
             }
 
+            $this->subSecurityHeaders();
             $message = 'HWID device limit exceeded';
             header('announce: base64:' . base64_encode($message));
             header('X-HWID-Status: ' . $message);
@@ -24304,11 +24332,7 @@ DNS-over-HTTPS with IP:
         // Те же соображения, что и для X-HWID: значения приходят с публичного
         // эндпоинта и ложатся в общий файл. Режем управляющие символы (они
         // ломают вывод карточки устройств) и длину.
-        $cut  = static fn(string $h): string => substr(
-            preg_replace('~[[:cntrl:]]~u', '', (string) ($_SERVER[$h] ?? '')),
-            0,
-            200
-        );
+        $cut = static fn(string $name): string => self::subscriptionDeviceText((string) ($_SERVER[$name] ?? ''));
         $info = [
             'time'         => time(),
             'user_agent'   => $cut('HTTP_USER_AGENT'),
@@ -24323,13 +24347,15 @@ DNS-over-HTTPS with IP:
         try {
             $allowed = $this->hwidRegister((string) $uid, $hwid, $limit, $info);
         } catch (Throwable $e) {
-            // Как и прежде при сбое записи JSON: лимит мягкий, подписку не
-            // роняем, а сбой хранилища виден в журнале.
-            error_log('processHwidRequest: ' . $e->getMessage());
-            $allowed = true;
+            error_log('HWID registration unavailable');
+            $this->subSecurityHeaders();
+            http_response_code(503);
+            header('Retry-After: 30');
+            return false;
         }
 
         if (!$allowed) {
+            $this->subSecurityHeaders();
             $message = 'HWID device limit exceeded';
             header('announce: base64:' . base64_encode($message));
             header('X-HWID-Status: ' . $message);
@@ -27427,7 +27453,7 @@ DNS-over-HTTPS with IP:
             return [];
         }
         $cache = $this->readExtSubCache();
-        return $cache[$url]['links'] ?? [];
+        return array_values(array_filter($cache[$url]['links'] ?? [], fn($link) => is_string($link) && $this->isKnownShareLink($link)));
     }
 
     // One fetch attempt. Returns the decoded link list on success, or a short
@@ -27598,7 +27624,6 @@ DNS-over-HTTPS with IP:
             return [];
         }
         $host  = trim($p['host'], '[]');
-        $flags = FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE;
         if (filter_var($host, FILTER_VALIDATE_IP)) {
             $ips = [$host];
         } else {
@@ -27616,11 +27641,16 @@ DNS-over-HTTPS with IP:
             // PHP versions differ in classifying IPv4-mapped IPv6. Validate
             // the embedded IPv4 too: ::ffff:127.0.0.1 still reaches loopback.
             $packed = @inet_pton($ip);
-            if ($packed !== false && strlen($packed) === 16
+            if ($packed === false) return [];
+            if (strlen($packed) === 16
                 && substr($packed, 0, 12) === str_repeat("\0", 10) . "\xff\xff") {
-                $ip = inet_ntop(substr($packed, 12));
+                $packed = substr($packed, 12);
+                $ip = inet_ntop($packed);
             }
-            if (!filter_var($ip, FILTER_VALIDATE_IP, $flags) || self::isCarrierRange($ip)) {
+            // PHP considers multicast globally scoped in some ranges. A download needs a unicast peer.
+            $first = ord($packed[0]);
+            $multicast = str_contains($ip, ':') ? $first === 0xff : ($first & 0xf0) === 0xe0;
+            if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_GLOBAL_RANGE) || $multicast || self::isCarrierRange($ip)) {
                 return [];
             }
         }
@@ -27628,8 +27658,7 @@ DNS-over-HTTPS with IP:
     }
 
     /**
-     * Диапазоны, которые FILTER_FLAG_NO_PRIV_RANGE|NO_RES_RANGE не покрывает,
-     * а до внутренней сети через них дотянуться можно:
+     * Диапазоны CGNAT и NAT64, через которые запрос может попасть во внутреннюю сеть:
      *  - 100.64.0.0/10 — CGNAT (RFC 6598): в него смотрят роутеры провайдера и
      *    внутренние адреса многих хостингов;
      *  - 64:ff9b::/96 и 64:ff9b:1::/48 — NAT64 (RFC 6052, RFC 8215): любой
@@ -27665,7 +27694,7 @@ DNS-over-HTTPS with IP:
         $seen = [];
         foreach (preg_split('~[\r\n]+~', $text) as $ln) {
             $ln = trim($ln);
-            if ($ln === '' || !$this->isKnownShareLink($ln)) {
+            if ($ln === '' || !preg_match('//u', $ln) || !$this->isKnownShareLink($ln)) {
                 continue;
             }
             $seen[$ln] = true;
@@ -27690,20 +27719,22 @@ DNS-over-HTTPS with IP:
         return null;
     }
 
+    protected string $extSubCachePath = '/config/extsub.cache';
+
     public function readExtSubCache(): array
     {
-        $f = '/config/extsub.cache';
-        if (!is_file($f) || !($fp = @fopen($f, 'r'))) {
+        $fp = @fopen($this->extSubCachePath, 'r');
+        if (!$fp) {
             return [];
         }
-        // mutateExtSubCache() переписывает файл на месте (ftruncate + fwrite)
-        // под LOCK_EX: чтение без лока попадало в пустой или недописанный файл,
-        // и подписка в этот миг уходила без внешних узлов.
+        // Older workers update this file in place under flock during a rolling update.
         flock($fp, LOCK_SH);
         $raw = stream_get_contents($fp);
         flock($fp, LOCK_UN);
         fclose($fp);
-        return json_decode((string) $raw, true) ?: [];
+        $cache = json_decode((string) $raw, true);
+        return is_array($cache) ? array_filter($cache, static fn($row) => is_array($row)
+            && is_array($row['links'] ?? []) && is_string($row['err'] ?? '')) : [];
     }
 
     // Locked read-modify-write of the cache. $mutator receives the current cache
@@ -27712,14 +27743,8 @@ DNS-over-HTTPS with IP:
     // (foreign credentials) at rest → kept owner-only (0600, as for keys).
     public function mutateExtSubCache(callable $mutator): void
     {
-        $f  = '/config/extsub.cache';
-        $fp = fopen($f, 'c+');
-        if (!$fp) {
-            return;
-        }
-        @chmod($f, 0600);
-        if (flock($fp, LOCK_EX)) {
-            $cache = json_decode((string) stream_get_contents($fp), true) ?: [];
+        $this->withLock('extsub_cache', function () use ($mutator) {
+            $cache = $this->readExtSubCache();
             $now   = time();
             foreach ($cache as $k => $v) {
                 if ($now - (int) ($v['at'] ?? $v['ts'] ?? 0) > 86400) {
@@ -27727,13 +27752,11 @@ DNS-over-HTTPS with IP:
                 }
             }
             $cache = $mutator($cache) ?? $cache;
-            ftruncate($fp, 0);
-            rewind($fp);
-            fwrite($fp, json_encode($cache, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-            fflush($fp);
-            flock($fp, LOCK_UN);
-        }
-        fclose($fp);
+            $json = json_encode($cache, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            if ($json === false || !$this->writePrivateKey($this->extSubCachePath, $json)) {
+                error_log('External subscription cache could not be saved');
+            }
+        });
     }
 
     // Merge $fields into the cache entry for $url (ts/at/links/err).
@@ -31545,9 +31568,8 @@ DNS-over-HTTPS with IP:
         $text[] = "\nxray config: <pre><code>$xr</code></pre>";
         $text[] = "sing-box config: <pre><code>$si</code></pre>";
         $text[] = "mihomo config: <pre><code>$cl</code></pre>";
-        $text[] = "v2rayNG (base64): <pre><code>$vl</code></pre>";
+        $text[] = "Happ / v2rayNG (base64): <pre><code>$vl</code></pre>";
 
-        $text[]   = "sing-box windows: <a href='$scheme://{$domain}/pac$hash?t=si&r=w&s={$stok}'>windows service</a>";
         $text[]   = $this->t('Файлы из кнопок загрузки временные: сохраните их до следующего нажатия в этом меню.', 'Files from the download buttons are temporary: save them before the next tap in this menu.');
         $st = [];
         try { $st = $this->getXrayStats(); $protocolUsage = $this->xrayProtocolUsage($c); }
@@ -31796,8 +31818,8 @@ DNS-over-HTTPS with IP:
         }
         $text[] = $this->i18n('external hint');
         $text[] = $this->t(
-            'Попадают только в подписку v2rayNG (base64) — её берут кнопки импорта Shadowrocket, Streisand и Hiddify. В Xray JSON, sing-box и Mihomo их нет. Удалённые подписки бот обновляет раз в 5 минут.',
-            'They go only into the v2rayNG (base64) subscription, which the Shadowrocket, Streisand and Hiddify import buttons use. Xray JSON, sing-box and Mihomo do not get them. The bot refreshes remote subscriptions every 5 minutes.') . "\n";
+            'Попадают только в подписку v2rayNG (base64) — её берут кнопки импорта Happ, Shadowrocket, Streisand и Hiddify. В Xray JSON, sing-box и Mihomo их нет. Удалённые подписки бот обновляет раз в 5 минут.',
+            'They go only into the v2rayNG (base64) subscription, which the Happ, Shadowrocket, Streisand and Hiddify import buttons use. Xray JSON, sing-box and Mihomo do not get them. The bot refreshes remote subscriptions every 5 minutes.') . "\n";
         if (!$ext) {
             $text[] = $this->t('Внешних ссылок пока нет.', 'No external links yet.');
         }
@@ -31805,7 +31827,12 @@ DNS-over-HTTPS with IP:
         $data = [];
         foreach ($ext as $k => $e) {
             $icon  = ($e['kind'] ?? 'link') === 'sub' ? '📥' : '🔗';
-            $short = mb_strimwidth((string) (($e['remark'] ?? '') !== '' ? $e['remark'] : ($e['value'] ?? '')), 0, 28, '…');
+            // The path of a subscription and the authority of a share link can both contain credentials.
+            $value = (string) ($e['value'] ?? '');
+            $label = ($e['kind'] ?? 'link') === 'sub'
+                ? (string) parse_url($value, PHP_URL_HOST)
+                : strtoupper((string) parse_url($value, PHP_URL_SCHEME));
+            $short = mb_strimwidth(($e['remark'] ?? '') !== '' ? $e['remark'] : $label, 0, 28, '…');
             $line  = ($k + 1) . ". " . (empty($e['off']) ? '✅' : '⛔') . " $icon <code>" . self::esc($short) . "</code>";
             // For remote subscriptions, surface the last-fetch status from cache:
             // node count + age on success, or the recorded error.
@@ -31830,7 +31857,7 @@ DNS-over-HTTPS with IP:
             $h      = self::extRowKey($e);
             $data[] = [
                 [
-                    'text'          => (empty($e['off']) ? '✅' : '⛔') . " $icon $short",
+                    'text'          => ($k + 1) . '. ' . (empty($e['off']) ? '✅' : '⛔') . " $icon $short",
                     'callback_data' => "/extToggle {$i}_{$k}_$h",
                 ],
                 [
@@ -31934,8 +31961,8 @@ DNS-over-HTTPS with IP:
     // оно общее для всех подписок.
     public function extSubUserAgent(): string
     {
-        $ua = (string) (($this->getPacConf() ?: [])['extsub_user_agent'] ?? '');
-        return self::extSubUserAgentValid($ua) ? $ua : self::EXT_SUB_USER_AGENT;
+        $ua = ($this->getPacConf() ?: [])['extsub_user_agent'] ?? '';
+        return is_string($ua) && self::extSubUserAgentValid($ua) ? $ua : self::EXT_SUB_USER_AGENT;
     }
 
     // Только печатные ASCII: перевод строки в значении дописал бы в запрос
@@ -32263,7 +32290,7 @@ DNS-over-HTTPS with IP:
         // v2rayNG users should use the v2rayNG line.
         $text[] = '';
         foreach ([
-            'vl' => 'v2rayNG (base64)',
+            'vl' => 'Happ / v2rayNG (base64)',
             's'  => 'xray (json)',
             'si' => 'sing-box',
             'cl' => 'Mihomo YAML',
@@ -32649,6 +32676,7 @@ DNS-over-HTTPS with IP:
 
     public function sub()
     {
+        $this->subSecurityHeaders();
         $this->normalizeSubGet();
         // No token backfill here: this is a public GET endpoint, so we avoid
         // writing xray.json on the hot path (concurrent requests). sidOf() falls
@@ -32660,29 +32688,41 @@ DNS-over-HTTPS with IP:
             $this->subNotFound('Subscription temporarily unavailable.');
         }
         $pac    = $this->getPacConf();
-        try { $st = $this->getXrayStats(); }
-        catch (XrayStatsUnavailable $error) { $st = null; }
-        $domain = $this->subDomain($pac);
-        $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
-        $hash   = $this->getHashBot();
         $this->subRateLimit($_GET['id'] ?? '');
         // Resolve by subtoken (preferred) or, for pre-subtoken links, the id.
         $k      = $this->findClientBySid($xr, $_GET['id'] ?? '', !empty($pac['subtoken_strict']));
         $client = $k === null ? null : $xr['inbounds'][0]['settings']['clients'][$k];
         // Missing/disabled id: clean 404 instead of rendering the page with
         // undefined fields (which would warn and break the body).
-        if ($client === null || !empty($client['off']) || $this->xrayQuotaUnavailableOrExhausted($client, $k)) {
+        if ($client === null || !empty($client['off'])
+            || ((int) ($client['time'] ?? 0) > 0 && $client['time'] <= time())
+            || $this->xrayQuotaUnavailableOrExhausted($client, $k)) {
             // Ведро промахов — см. subscription(): ключ основного ведра
             // содержит sid, поэтому перебор им не ограничивался.
             $this->subRateLimit('', 'miss');
             $this->subNotFound();
         }
-        if (!$this->processHwidRequest($client, true)) {
+        $linksOnly = $this->subscriptionDeviceLimit($client, $pac) > 0 && $this->requestHwid() === '' && $this->isBrowserRequest();
+        if (!$this->processHwidRequest($client, $linksOnly)) {
             exit;
         }
+        $domain = $this->subDomain($pac);
+        $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
+        $hash = $this->getHashBot();
+        $stok = $this->sidOf($client);
+        // The optional PHP template receives raw connection profiles. A browser
+        // without a registered device may see only links back to the guarded endpoints.
+        if ($linksOnly) {
+            header('Content-Type: text/html; charset=utf-8');
+            echo '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>',
+                self::esc($client['email']), '</title><h1>', self::esc($client['email']), '</h1>',
+                implode('<br>', $this->subscriptionImportLinks("$scheme://{$domain}/pac$hash", $stok, (string) $client['email']));
+            return;
+        }
+        try { $st = $this->getXrayStats(); }
+        catch (XrayStatsUnavailable $error) { $st = null; }
         $email  = $client['email'];
         $expire = $client['time'] ?? '';
-        $stok   = $this->sidOf($client); // subscription locator (not the credential)
         $suburl   = "<a href='$scheme://{$domain}/pac$hash/sub?id={$stok}'>subscription</a>";
         $download = $st === null ? $this->t('неизвестно', 'unknown') : $this->getBytes(($st['users'][$k]['global']['download'] ?? 0) + ($st['users'][$k]['session']['download'] ?? 0));
         $upload   = $st === null ? $this->t('неизвестно', 'unknown') : $this->getBytes(($st['users'][$k]['global']['upload'] ?? 0) + ($st['users'][$k]['session']['upload'] ?? 0));
@@ -32702,7 +32742,7 @@ DNS-over-HTTPS with IP:
             's' => $stok,
         ]));
         $vless   = $this->linkXray($k);
-        $windows = "$scheme://{$domain}/pac$hash?t=si&r=w&s=$stok";
+        $happ = $this->subscriptionImportUrl('happ', "$scheme://{$domain}/pac$hash", ['h' => $hash, 's' => $stok], $email);
         $_GET['s'] = $stok;
         foreach ([
           'xray'    => 's',
@@ -33815,14 +33855,14 @@ DNS-over-HTTPS with IP:
     // остаются рабочими в старых сообщениях чата.
     protected function deepLinkCodes(): array
     {
-        return ['v', 'sr', 'st', 'si', 'h', 'k', 'w', 'c', 'rh', 'incy'];
+        return ['v', 'sr', 'st', 'si', 'h', 'happ', 'k', 'c', 'rh', 'incy'];
     }
 
     public function subscriptionImportLinks(string $base, string $sid, string $name, string $relay = ''): array
     {
         $links = [];
         foreach (['v' => 'v2rayNG', 'sr' => 'Shadowrocket', 'si' => 'sing-box', 'st' => 'Streisand',
-            'h' => 'Hiddify', 'k' => 'Karing', 'c' => 'mihomo', 'rh' => 'Rabbit Hole', 'incy' => 'INCY'] as $code => $label) {
+            'h' => 'Hiddify', 'happ' => 'Happ', 'k' => 'Karing', 'c' => 'mihomo', 'rh' => 'Rabbit Hole', 'incy' => 'INCY'] as $code => $label) {
             $query = ['t' => 's', 'r' => $code, 's' => $sid];
             if ($relay !== '') $query['relay'] = $relay;
             $url = $base . '?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986) . '#' . rawurlencode($name);
@@ -33838,7 +33878,7 @@ DNS-over-HTTPS with IP:
             'c', 'rh' => 'cl',
             // Hiddify converts nodes into its own config; full sing-box exports
             // may reference DNS resolvers that its converter does not preserve.
-            'sr', 'st', 'h' => 'vl',
+            'sr', 'st', 'h', 'happ' => 'vl',
             default => 's', // v2rayNG also accepts remote Xray JSON (routing/SMUX).
         };
         // URL-safe base64 avoids '/' splitting the path and '+' being decoded
@@ -33856,6 +33896,7 @@ DNS-over-HTTPS with IP:
             // Hiddify uses an explicit fragment verbatim. Profile-Title supplies
             // UTF-8 names without showing percent escapes in the app.
             'h' => "hiddify://import/$url",
+            'happ' => "happ://add/$url",
             'k' => "karing://install-config?url=$encoded&name=$title",
             'c' => "clash://install-config?url=$encoded&overwrite=no&name=$title",
             'rh' => "rabbithole://add/$url",
@@ -34015,24 +34056,27 @@ DNS-over-HTTPS with IP:
         // rule-set содержит только домены/адреса правил, без credential'ов.
         // Browser redirects carry only the existing subscription locator, never
         // VPN credentials. Register/check HWID when the app fetches the content.
-        // The Windows ZIP contains a configuration, so it keeps the HWID gate.
-        $appRedirect = $isDeepLink && ($_GET['r'] ?? '') !== 'w';
-        if (!$return && !$ruleSetReq && !$appRedirect && !$this->processHwidRequest($client)) {
+        if (!$return && !$ruleSetReq && ($_GET['r'] ?? '') === 'w') {
+            $this->subSecurityHeaders();
+            http_response_code(410);
+            return;
+        }
+        if (!$return && !$ruleSetReq && !$isDeepLink && !$this->processHwidRequest($client)) {
             exit;
         }
 
         // Формат deep-link определяется клиентом r, а не исходным t.
         $targetFormat = $ruleSetReq ? $_GET['t'] : match ($_GET['r'] ?? '') {
             // Hiddify imports a share list but still uses a sing-box-based core.
-            'si', 'k', 'h', 'w' => 'si',
+            'si', 'k', 'h' => 'si',
             'c', 'rh' => 'cl',
-            'sr', 'st', 'v' => 's',
+            'sr', 'st', 'v', 'happ' => 's',
             default => $_GET['t'],
         };
         $compatibilityError = $ruleSetReq ? '' : $this->subscriptionCompatibilityError($xr, $pac, $targetFormat);
         $replacement = false;
         if (!$connectionOnly && !$ruleSetReq && $targetFormat === 'si' && ($compatibilityError !== '' || ($pac['transport'] ?? '') === 'xhttp')
-            && (!$isDeepLink || in_array($_GET['r'], ['si', 'k', 'w'], true))) {
+            && (!$isDeepLink || in_array($_GET['r'], ['si', 'k'], true))) {
             $candidate = $tpl;
             foreach ($candidate['outbounds'] ?? [] as $n => $node) if (($node['tag'] ?? '') === '~outbound~' || ($node['tag'] ?? '') === ($pac['outbound'] ?: 'proxy')) {
                 $replacement = $this->appendXrayProtocols($candidate, $client, 'si', $n,
@@ -34060,31 +34104,10 @@ DNS-over-HTTPS with IP:
             $relayKey = (!empty($_GET['relay']) && !empty($pac['relays'][$_GET['relay']]))
                 ? ['relay' => $_GET['relay']]
                 : [];
-            if ($_GET['r'] !== 'w') {
-                $this->subSecurityHeaders();
-                header('Location: ' . $this->subscriptionImportUrl($_GET['r'], "$scheme://{$domain}/pac$hash",
-                    ['h' => $hash, 's' => $stok] + $relayKey, $email));
-                exit;
-            }
-            $si = "$scheme://{$domain}/pac$hash/" . base64_encode(serialize([
-                'h' => $hash,
-                't' => 'si',
-                's' => $stok,
-            ] + $relayKey));
-            switch ($_GET['r']) {
-                case 'w':
-                    $link = htmlspecialchars($si, ENT_XML1, 'UTF-8');
-                    $n    = "singbox_$uid.zip";
-                    copy('/singbox/singbox.zip', $n);
-                    $zip = new ZipArchive();
-                    $zip->open($n, ZipArchive::CREATE);
-                    $zip->addFromString('winsw3.xml', preg_replace('#~url~#', $link, file_get_contents('/singbox/winsw3.xml')));
-                    $zip->close();
-                    header('Content-Disposition: attachment; filename="singbox.zip"');
-                    echo file_get_contents($n);
-                    unlink($n);
-                    exit;
-            }
+            $this->subSecurityHeaders();
+            header('Location: ' . $this->subscriptionImportUrl($_GET['r'], "$scheme://{$domain}/pac$hash",
+                ['h' => $hash, 's' => $stok] + $relayKey, $email));
+            exit;
         }
         $c = $tpl;
 
@@ -35924,13 +35947,19 @@ DNS-over-HTTPS with IP:
     {
         $root = dirname($this->xrayConf);
         $template = "$root/nginx_default.conf";
+        $guard = static function (string $text): string {
+            // Upgrade the shipped format on existing installations, preserving other log formats.
+            $text = preg_replace_callback('~^[ \t]*log_format[ \t]+(?:noargs|nopath)\s+[^;]+;~m',
+                static fn($m) => str_replace(' "$http_user_agent"', '', $m[0]), $text);
+            return self::nginxPhpMultipartGuard($text);
+        };
         if (is_file($template)) {
             $body = (string) file_get_contents($template);
-            $guarded = self::nginxPhpMultipartGuard($body);
+            $guarded = $guard($body);
             if ($guarded !== $body && !$this->backupWriteInPlace($template, $guarded)) return false;
         }
         if (!is_file("$root/nginx.conf")) return true;
-        return $this->editProtocolProxyConfig("$root/nginx.conf", 'ng', static fn($text) => self::nginxPhpMultipartGuard($text));
+        return $this->editProtocolProxyConfig("$root/nginx.conf", 'ng', $guard);
     }
 
     public function cloakNginx()

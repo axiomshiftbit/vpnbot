@@ -16,12 +16,25 @@ trait BotConnLogView
 
     // ── Subscription apps and devices ───────────────────────────────────────
 
+    /** Device headers are descriptive. A client may append a private URL or credentials. */
+    private static function subscriptionDeviceText(string $value): string
+    {
+        $value = trim(preg_replace('~[[:cntrl:]]~u', '', mb_scrub($value, 'UTF-8')));
+        $private = '~[a-z][a-z0-9+.-]*://|(?:^|[\s(;])/(?:pac|dns-query)|\b(?:basic|bearer)\s+'
+            . '|\b(?:token|subtoken|access_token|password|authorization|cookie|secret)\s*[:=]'
+            . '|[0-9a-f]{32,}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}~i';
+        if (preg_match($private, $value)) {
+            return preg_match('~^([A-Za-z][A-Za-z0-9._-]{0,30}/v?[0-9][0-9a-z.+_-]{0,20})(?=[\s(/;]|$)~i', $value, $m) ? $m[1] : '';
+        }
+        return mb_strcut($value, 0, 200, 'UTF-8');
+    }
+
     /** Record the app/device of a subscription request. Never blocks the subscription. */
     public function recordSubClient(array $client): void
     {
         $email = (string) ($client['email'] ?? '');
         if ($email === '' || !empty($client['exit_relay'])) return;
-        $cut = static fn(string $name): string => mb_substr(trim(preg_replace('~[[:cntrl:]]~u', '', mb_scrub((string) ($_SERVER[$name] ?? ''), 'UTF-8'))), 0, 200);
+        $cut = static fn(string $name): string => self::subscriptionDeviceText((string) ($_SERVER[$name] ?? ''));
         $device = ['ua' => $cut('HTTP_USER_AGENT'), 'os' => $cut('HTTP_X_DEVICE_OS'), 'osver' => $cut('HTTP_X_VER_OS'), 'model' => $cut('HTTP_X_DEVICE_MODEL')];
         if (implode('', $device) === '') return;
         $ip = trim((string) ($_SERVER['HTTP_X_REAL_IP'] ?? '')) ?: trim(explode(',', (string) ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? ''))[0]) ?: (string) ($_SERVER['REMOTE_ADDR'] ?? '');
@@ -110,6 +123,12 @@ trait BotConnLogView
             if (!$same) $rows[] = $device;
         }
         if ($rows === null) return null;
+        foreach ($rows as &$row) {
+            foreach (['ua', 'os', 'osver', 'model'] as $field) {
+                $row[$field] = self::subscriptionDeviceText((string) ($row[$field] ?? ''));
+            }
+        }
+        unset($row);
         usort($rows, static fn($a, $b) => $b['last'] <=> $a['last']);
         return $rows;
     }

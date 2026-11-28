@@ -69,6 +69,11 @@ try {
     file_put_contents($pac, json_encode(['extsub_user_agent' => "x\r\nHost: evil"]));
     uaAssert($bot->extSubUserAgent() === Bot::EXT_SUB_USER_AGENT, 'tampered User-Agent reached the request');
 
+    file_put_contents($pac, json_encode(['extsub_user_agent' => ['unexpected']]));
+    set_error_handler(static function ($severity, $message) { throw new ErrorException($message, 0, $severity); });
+    try { uaAssert($bot->extSubUserAgent() === Bot::EXT_SUB_USER_AGENT, 'malformed stored User-Agent did not use the default'); }
+    finally { restore_error_handler(); }
+
     $bot->extUASave('Happ/2.1.0', 0);
     $bot->extUASave('-', 0);
     uaAssert(!array_key_exists('extsub_user_agent', json_decode(file_get_contents($pac), true)), 'reset kept the setting');

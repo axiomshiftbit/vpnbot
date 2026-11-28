@@ -253,7 +253,7 @@ foreach (['ru', 'en'] as $lang) {
     $bot->click("/relaySub 0_$name");
     [$text, $cbs] = rmScreen($bot, "$lang relay-подписка");
     rmCheck(str_contains($text, 'relay.example.test · 443→8443') && str_contains($text, 'AnyTLS → <code>mod.example.test:10443</code>'), "$lang: что идёт через relay");
-    rmCheck(substr_count($text, 'import://') === 9 && substr_count($text, '<pre><code>') === 5, "$lang: ссылки импорта и пять адресов подписки");
+    rmCheck(substr_count($text, 'import://') === 10 && str_contains($text, 'import://Happ') && substr_count($text, '<pre><code>') === 5, "$lang: ссылки импорта и пять адресов подписки");
     rmCheck(!str_contains($text, 'http://') && !str_contains($text, '⚠️'), "$lang: с сертификатом только https и без предупреждения");
     $bot->cert = '';
     $bot->click("/relaySub 0_$name");

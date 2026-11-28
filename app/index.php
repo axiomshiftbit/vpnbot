@@ -148,6 +148,7 @@ switch (true) {
             (string) parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH), $m)) {
             $bot->protocolMachine($m[1], $m[2], $m[3]);
         } else {
+            $bot->subSecurityHeaders();
             $bot->subRateLimit('', 'miss');
             http_response_code(404);
         }
@@ -236,7 +237,7 @@ switch (true) {
 
                             <link href="/webapp$hash/jsoneditor.min.css" rel="stylesheet" type="text/css">
                             <script src="/webapp$hash/jsoneditor.min.js"></script>
-                            <script src="/webapp$hash/jquery-3.7.1.min.js"></script>
+                            <script src="/webapp$hash/jquery-3.8.0.min.js"></script>
                             <script src="https://telegram.org/js/telegram-web-app.js"></script>
                         </head>
                         <body style="height:100%">

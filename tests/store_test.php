@@ -69,6 +69,11 @@ try {
     file_put_contents("$root/hwid.json", json_encode(['u9' => ['devZ' => []]]));
     $again = new StoreBot($root);
     stCheck(array_keys($again->getHwidStorage()) === ['u1'], 'перенос однократный: JSON после переноса не читается');
+    // Старые метаданные устройства используются также при создании резервной копии.
+    $b->setHwidDevice('legacy-user', 'existing-device', ['time' => 8, 'user_agent' => 'Happ/4.8.3 (+https://fixture.example/private)', 'device_model' => 'https://fixture.example/private']);
+    $legacy = ['time' => 8, 'user_agent' => 'Happ/4.8.3', 'device_model' => ''];
+    stCheck($b->getHwidStorage()['legacy-user']['existing-device'] === $legacy && $b->getHwidDevicesByUser('legacy-user')['existing-device'] === $legacy, 'старые метаданные скрыты в карточке и экспорте HWID');
+    $b->deleteHwidDevice('legacy-user', 'existing-device');
     stCheck(json_decode(file_get_contents("$root/hwid.json"), true) === ['u9' => ['devZ' => []]], 'JSON-файл не удаляется (откат на образ без SQLite)');
 } finally {
     stClean($root);
@@ -186,13 +191,13 @@ try {
         try { $b->getHwidStorage(); } catch (RuntimeException $e) { $failed++; }
     }
     stCheck($failed === 2, 'повреждённая база: ошибка видна, без тихого JSON, повтор не закеширован');
-    // Выдача подписки при сбое хранилища не падает (лимит мягкий, как раньше).
+    // При включённом лимите без подтверждения записи устройство не получает профиль.
     $_SERVER['HTTP_X_HWID'] = 'devA';
     $sub = new class($root) extends StoreBot {
         public function getPacConf() { return ['hwid_limit_enabled' => 1, 'hwid_device_count' => 1]; }
     };
     file_put_contents("$root/vpnbot.sqlite", 'broken');
-    stCheck(@$sub->processHwidRequest(['id' => 'u1']) === true, 'сбой хранилища: подписка выдаётся, ошибка в журнале');
+    stCheck(@$sub->processHwidRequest(['id' => 'u1']) === false && http_response_code() === 503, 'сбой записи HWID временно останавливает выдачу профиля');
 } finally {
     stClean($root);
 }

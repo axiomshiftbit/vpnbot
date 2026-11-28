@@ -40,8 +40,11 @@ trait BotManagedNodeSubscriptions
         if (!$peer) return null;
         $this->subRateLimit('node:' . $id . ':' . self::exitEntryKey($peer['id']));
         $document = null;
-        $this->managedNodeLocked($id, function () use ($id, $peer, $format, &$document) {
+        $this->managedNodeLocked($id, function () use ($id, $peer, $token, $format, &$document) {
             $node = $this->managedNodes()[$id] ?? [];
+            $record = $node['subscriptions'][self::exitEntryKey($peer['id'])] ?? [];
+            if (empty($node['connected']) || ($record['peer'] ?? '') !== $peer['id']
+                || !is_string($record['token'] ?? null) || !hash_equals($record['token'], $token)) return;
             if (!empty($node['job']) || !empty($node['recovery_required'])) throw new RuntimeException('Node change pending');
             // Check the remote generation before and after profile retrieval. Never publish an unconfirmed profile.
             $status = $this->managedNodeRpc($id, ['action' => 'status']);
