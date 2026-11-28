@@ -99,30 +99,25 @@ trait BotManagedNodePeers
 
     public function managedNodePeerAction(string $id, string $key, string $action, bool $confirmed = false): void
     {
+        if ($action === 'reset' && !$this->admin) return;
         $peer = $this->managedNodePeer($id, $key);
         if (!$peer || !in_array($action, ['on', 'off', 'rotate', 'delete', 'vless', 'wireguard', 'amnezia', 'reset'], true)) { $this->managedNodePeersMenu($id); return; }
+        if ($action === 'reset') {
+            if ($confirmed || ($peer['channel'] ?? '') === 'wireguard') return;
+            $token = $this->rememberAdminReview('node_peer_reset', ['id' => $id, 'key' => $key, 'peer' => self::managedPeerCounterId($peer)]);
+            $this->update($this->input['chat'], $this->input['message_id'], $this->t('Сбросить расход на ноде для ', 'Reset node usage for ') . self::esc($peer['name']) . '?', [[
+                ['text' => $this->t('Сбросить', 'Reset'), 'callback_data' => "/peerResetConfirm $token yes"],
+                ['text' => $this->t('Отмена', 'Cancel'), 'callback_data' => "/peerResetConfirm $token no"]]]);
+            return;
+        }
         if (!$confirmed) {
-            $label = $this->t(...['reset' => ['сбросить расход на ноде', 'reset usage on node'], 'on' => ['включить', 'enable'], 'off' => ['отключить', 'disable'],
+            $label = $this->t(...['on' => ['включить', 'enable'], 'off' => ['отключить', 'disable'],
                 'rotate' => ['сменить ключ', 'rotate identity'], 'delete' => ['удалить', 'delete'],
                 'vless'=>['использовать VLESS','use VLESS'], 'wireguard'=>['использовать WireGuard','use WireGuard'], 'amnezia'=>['использовать AmneziaWG','use AmneziaWG']][$action]);
             $this->update($this->input['chat'], $this->input['message_id'],
                 $this->t('Применить изменение к подключению ', 'Apply this change to connection ') . '<b>' . self::esc($peer['name']) . '</b> (' . $label . ')?',
                 [[['text' => $this->t('Применить', 'Apply'), 'callback_data' => "/nodePeerDo $id $key $action yes"]],
                  [['text' => $this->i18n('back'), 'callback_data' => "/nodePeer $id $key"]]]);
-            return;
-        }
-        if ($action === 'reset') {
-            if (!$this->admin || ($peer['channel'] ?? '') === 'wireguard') return;
-            $identity = self::managedPeerCounterId($peer);
-            $this->managedNodeWrite($id, static function (&$node) use ($identity) {
-                if (empty($node['status']['peer_counter_support'])) return false;
-                $last = max($node['counter_sequence'] ?? 0, $node['status']['peer_counters'][$identity]['sequence'] ?? 0);
-                $node['counter_sequence'] = max((int) (microtime(true) * 1000000), $last + 1);
-                $node['peer_resets'][$identity] = $node['counter_sequence'];
-            });
-            try { $this->managedNodeLocked($id, fn() => $this->deliverPeerResets($id)); }
-            catch (Throwable $error) { /* A saved reset is retried by the next status poll. */ }
-            $this->managedNodePeerMenu($id, $key);
             return;
         }
         $peers = [];
@@ -138,6 +133,32 @@ trait BotManagedNodePeers
         }
         try { $this->managedNodeSubmit($id, 'peers', $peers, (string) ($status['generation'] ?? '')); $this->managedNodeMenu($id); }
         catch (Throwable $e) { $this->managedNodePeersMenu($id, $this->t('Операция не запущена. Обновите состояние ноды и повторите.', 'Operation not started. Refresh the node status and retry.')); }
+    }
+
+    public function managedNodePeerResetFinish(string $token, bool $apply): void
+    {
+        if (!$this->admin) return;
+        $plan = $this->takeAdminReview('node_peer_reset', $token);
+        if (!$plan) { $this->protocolError($this->t('Подтверждение устарело', 'Confirmation expired'), '/nodes'); return; }
+        ['id' => $id, 'key' => $key, 'peer' => $identity] = $plan;
+        if ($apply) {
+            $queued = false;
+            $this->managedNodeWrite($id, function (&$node) use ($id, $identity, &$queued) {
+                if (empty($node['status']['peer_counter_support'])) return false;
+                foreach ($this->managedNodePeers($id, $node['status']) as $current) {
+                    if (($current['channel'] ?? '') === 'wireguard' || self::managedPeerCounterId($current) !== $identity) continue;
+                    $last = max($node['counter_sequence'] ?? 0, $node['status']['peer_counters'][$identity]['sequence'] ?? 0);
+                    $node['counter_sequence'] = max((int) (microtime(true) * 1000000), $last + 1);
+                    $node['peer_resets'][$identity] = $node['counter_sequence']; $queued = true;
+                    return true;
+                }
+                return false;
+            });
+            if (!$queued) { $this->managedNodePeersMenu($id, $this->t('Подключение изменилось', 'Connection has changed')); return; }
+            try { $this->managedNodeLocked($id, fn() => $this->deliverPeerResets($id)); }
+            catch (Throwable $error) { /* A saved reset is retried by the next status poll. */ }
+        }
+        $this->managedNodePeerMenu($id, $key);
     }
 
     private static function managedPeerCounterId(array $peer): string

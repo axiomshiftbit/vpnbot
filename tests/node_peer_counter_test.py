@@ -64,3 +64,19 @@ class PeerCounterTest(unittest.TestCase):
             with self.assertRaises(ValueError): self.reset(sequence)
         self.store.pending = lambda: {'pending': True}
         with self.assertRaises(ValueError): self.reset(8)
+
+    def test_retired_receipt_survives_restored_peer_and_channel_change(self):
+        self.reset(7)
+        self.poll([dict(self.peer, channel='wireguard')])
+        self.epoch = 'next-core'; self.raw = 35
+        self.assertEqual(self.reset(7), 'applied')
+        self.assertEqual(self.poll()[self.uid]['uplink'], 35)
+        self.poll([])
+        self.assertEqual(node_counters.sample(self.store, [], self.read, self.uid, 8)['result'], 'removed')
+        self.store = node_state.Store(self.store.root)
+        self.epoch = 'restored-core'; self.raw = 64
+        self.assertEqual(self.reset(8), 'superseded')
+        self.assertEqual(self.poll()[self.uid]['uplink'], 64)
+        unknown = '0' * 32
+        self.assertEqual(node_counters.sample(self.store, [], self.read, unknown, 10)['result'], 'removed')
+        self.assertFalse((self.store.root / 'peer-counter-receipts' / (unknown+'.json')).exists())

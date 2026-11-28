@@ -16,7 +16,11 @@ $check(count($b->deliveries)===1 && $b->deliveries[0][0]===123,'URL delivered on
 $record=$b->pacState['managed_nodes'][$id]['subscriptions'][$key]??[];
 $token=$record['token']??'';
 $check(strlen($token)===64 && !str_contains($token,$uuid),'separate random subscription capability');
+$b->pacState['managed_nodes'][$id]['peer_resets']=['private-counter-fixture'=>76543210];
+$b->pacState['managed_nodes'][$id]['status']['peer_counters']=['private-counter-fixture'=>['uplink'=>76543210,'downlink'=>0]];
 $b->remoteStatus=$b->pacState['managed_nodes'][$id]['status'];
+$jsonDoc=$b->managedNodeSubscriptionDocument($id,$token,'json');
+$check($jsonDoc!==null && !str_contains($jsonDoc['body'],'private-counter-fixture') && !str_contains($jsonDoc['body'],'76543210'),'node subscription JSON excludes reset receipts and admin counters');
 $doc=$b->managedNodeSubscriptionDocument($id,$token,'sub');
 $check(base64_decode($doc['body'],true)===$b->profile['link']."\n",'HTTPS subscription contains current dedicated peer');
 $check($b->managedNodeSubscriptionDocument($id,str_repeat('0',64),'sub')===null,'invalid token rejected');
@@ -58,7 +62,11 @@ foreach (['stale','pending','wrong_peer','remote_disabled','generation_race','re
     $check($rejected,'unconfirmed or unrelated profile is not published: '.$case);
 }
 $b=new NodeSubscriptionFixture();$b->managedNodePeerExport($id,$key,'https');
-$token=$b->pacState['managed_nodes'][$id]['subscriptions'][$key]['token'];$b->remoteStatus=$b->pacState['managed_nodes'][$id]['status'];
+$token=$b->pacState['managed_nodes'][$id]['subscriptions'][$key]['token'];$b->pacState['managed_nodes'][$id]['peer_resets']=['private-counter-fixture'=>76543210];
+$b->pacState['managed_nodes'][$id]['status']['peer_counters']=['private-counter-fixture'=>['uplink'=>76543210,'downlink'=>0]];
+$b->remoteStatus=$b->pacState['managed_nodes'][$id]['status'];
+$jsonDoc=$b->managedNodeSubscriptionDocument($id,$token,'json');
+$check($jsonDoc!==null && !str_contains($jsonDoc['body'],'private-counter-fixture') && !str_contains($jsonDoc['body'],'76543210'),'node subscription JSON excludes reset receipts and admin counters');
 $doc=$b->managedNodeSubscriptionDocument($id,$token,'json');
 $parsed=json_decode($doc['body'],true,flags:JSON_THROW_ON_ERROR);
 $check($parsed['settings']['vnext'][0]['users'][0]['id']===$uuid && $parsed['streamSettings']['sockopt']['tcpMptcp']===false,'JSON retains identity and MPTCP protection');

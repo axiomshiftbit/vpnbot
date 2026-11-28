@@ -21,8 +21,14 @@ class AccessGroupFixture extends Bot
     public function update($chat, $message_id, $text, $button=false, $reply=false, $mode='HTML') { $this->screen=$text; $this->keys=$button ?: []; }
     public function protocolError(string $message, string $back, string $retry=''): void { $this->screen=$message; }
     protected function userXrLocked($i) {}
+    public function delete($chat,$message_id) {}
+    public function getWgMsg() { return null; }
     public function hyUserMenu(string $id): void {}
     public function i18n(string $menu): string { return $menu; }
+    public function moveTo(string $group, string $key): void {
+        $this->click("/agpick $key");
+        $this->click("/agmove $group " . $_SESSION['access_group_pick'][101]['token']);
+    }
     public function confirmation(): string { return $_SESSION['access_review'][101]['token']; }
     public function click(string $command): void { $this->input['callback'] = $command; $this->action(); }
 }
@@ -62,18 +68,34 @@ try {
     expectAccess(!isset($bot->config['inbounds'][0]['settings']['clients'][0]['time']) && isset($bot->config['inbounds'][0]['settings']['clients'][0]['off']), 'Changing Xray expiry preserves manual disable');
     $bot->previewXrayEdit('0.5',0,'quota'); $bot->accessEditFinish($bot->confirmation(),true);
     expectAccess($bot->config['inbounds'][0]['settings']['clients'][0]['traffic']===536870912,'Xray quota applied in bytes');
+    foreach (['saveTrafficXr'=>'3','setTimerXr'=>'2037-06-02 03:01 UTC'] as $old=>$input) {
+        $original=$bot->config; $bot->input['reply']=18; $bot->input['message']=$input;
+        $_SESSION['reply']['101:18']=['callback'=>$old,'args'=>[0],'xray_source'=>$xid,'chat'=>101,'start_message'=>1];
+        $bot->reply(); expectAccess($bot->config===$original && isset($_SESSION['access_review'][101]),'Prompt saved by an earlier version requires preview');
+        $bot->accessEditFinish($bot->confirmation(),false);
+    }
+    $savedXray = $bot->config;
+    $bot->config['inbounds'][0]['settings']['clients'][0]['time'] = time()-10;
+    $bot->config['inbounds'][0]['settings']['clients'][0]['traffic_off'] = true;
+    $bot->previewXrayEdit('0',0,'quota'); $bot->accessEditFinish($bot->confirmation(),true);
+    expectAccess(!empty($bot->config['inbounds'][0]['settings']['clients'][0]['off']), 'Lifting a quota must keep an expired VLESS identity disabled');
+    $bot->config = $savedXray;
     $meter = static function ($store, $id, $n) {
         $dir = $store instanceof HysteriaUsers ? $store->root : $store->directory();
         if (!is_dir("$dir/runtime")) mkdir("$dir/runtime",0700,true);
         ManagedProtocol::writeJson("$dir/runtime/usage.json",['users'=>[$id=>['upload'=>$n,'download'=>0,'reset'=>$store->read()['users'][$id]['reset']]]]);
     };
     $member = "hy.$id"; $meter($hy,$id,100); $bot->accessGroupName('Team'); $group=array_key_first($bot->state['access_groups']['groups']);
-    $bot->click("/agmove $group $member"); $meter($hy,$id,180); $bot->click("/ag show $group"); $bot->captureAccessGroupUsage();
+    $bot->moveTo($group, $member); $meter($hy,$id,180); $bot->click("/ag show $group"); $bot->captureAccessGroupUsage();
     $total = fn($g) => $bot->state['access_groups']['groups'][$g]['bytes'];
     expectAccess($total($group)===80,'Joining excludes earlier bytes, repeat sample adds nothing');
     $bot->accessGroupName('Renamed',$group); expectAccess($total($group)===80,'Renaming preserves usage');
     $bot->accessGroupName('Next'); $other=array_key_last($bot->state['access_groups']['groups']);
-    $meter($hy,$id,200); $bot->click("/agmove $other $member");
+    $bot->click("/agpick $member"); $staleMove = $_SESSION['access_group_pick'][101]['token']; $firstAdmin = $_SESSION;
+    $_SESSION=[]; $bot->input['from']=202; $meter($hy,$id,200); $bot->moveTo($other, $member);
+    $_SESSION=$firstAdmin; $bot->input['from']=101; $bot->click("/agmove - $staleMove");
+    expectAccess($bot->state['access_groups']['members'][$member]['group']===$other, 'Old group picker cannot overwrite another administrator');
+    $oldEpoch=$read()['reset'];
     expectAccess($total($group)===100 && $total($other)===0,'Transfer credits the old group up to the move');
     $meter($hy,$id,250); $bot->captureAccessGroupUsage(); $hy->edit($id,'reset'); $meter($hy,$id,22); $bot->captureAccessGroupUsage();
     expectAccess($total($other)===72,'Changed counter epoch adds post-reset bytes once');
@@ -85,20 +107,28 @@ try {
     $linkId=array_key_first($linked->read()['users']);
     expectAccess($linkId!==null,'Shared protocol fixture created');
     $meter($linked,$linkId,60); $bot->stats=['users'=>[['global'=>['upload'=>50,'download'=>0]]]];
-    $bot->click("/agmove $other xr.$xid"); $bot->stats['users'][0]['global']['upload']=90; $meter($linked,$linkId,110);
+    $bot->moveTo($other, "xr.$xid"); $bot->stats['users'][0]['global']['upload']=90; $meter($linked,$linkId,110);
     $bot->captureAccessGroupUsage(); expectAccess($total($other)===162,'Shared VLESS transports counted once');
     $bot->stats['group_epochs'][$xid]=str_repeat('a',16); $bot->stats['users'][0]['global']['upload']=9; $bot->captureAccessGroupUsage();
     expectAccess($total($other)===171,'New VLESS counter epoch retains historical total');
     $bot->groupXrayReply('quota 2',$other,0); $token=$_SESSION['group_xray'][101]['token'];
-    $bot->click("/agmove $group xr.$xid"); $bot->groupXrayFinish($token,true);
+    $bot->moveTo($group, "xr.$xid"); $bot->groupXrayFinish($token,true);
     expectAccess($bot->config['inbounds'][0]['settings']['clients'][0]['traffic']===536870912,'Moved member excluded from stale mass edit');
     $bot->groupXrayReply('quota 2',$group,0); $bot->click('/agxrapply '.$_SESSION['group_xray'][101]['token'].' yes');
     expectAccess($bot->config['inbounds'][0]['settings']['clients'][0]['traffic']===2147483648,'Reviewed Xray group quota saved');
     $bot->accessBatchStart('hy',$other); $token=$_SESSION['access_batch'][101]['token']; $bot->accessBatchReply('3',$token,'quota');
-    $confirm=$_SESSION['access_batch'][101]['confirm']; $bot->click("/agmove $group $member"); $bot->accessBatch($token,'apply',$confirm);
+    $confirm=$_SESSION['access_batch'][101]['confirm']; $bot->moveTo($group, $member); $bot->accessBatch($token,'apply',$confirm);
     expectAccess($read()['quota']===2147483648,'Stale independent group bulk confirmation rejected');
     try { $bad=$bot->state['access_groups']; $bad['groups'][$group]['bytes']=-1; Bot::validateAccessGroups($bad); throw new LogicException('Invalid backup accepted'); }
     catch (InvalidArgumentException $ok) {}
+    $activeEpoch=$read()['reset']; $credited=$total($group);
+    $hy->change(static function(&$s) use($id,$oldEpoch){$s['users'][$id]['reset']=$oldEpoch;});
+    $meter($hy,$id,240); $bot->captureAccessGroupUsage(); expectAccess($total($group)===$credited,'Returning to an earlier epoch after moving does not double count');
+    $hy->change(static function(&$s) use($id,$activeEpoch){$s['users'][$id]['reset']=$activeEpoch;});
+    $meter($hy,$id,12);
+    $copy=$bot->config['inbounds'][0]['settings']['clients'][0]; $bot->config['inbounds'][0]['settings']['clients'][]=$copy;
+    $bot->groupXrayReply('quota 5',$group,0); expectAccess(!isset($_SESSION['group_xray'][101]),'Ambiguous shared identity cannot be bulk edited');
+    array_pop($bot->config['inbounds'][0]['settings']['clients']);
     $disk = new class($root) extends AccessGroupFixture {
         public function getPacConf() { return file_exists($this->pac) ? ManagedProtocol::readJson($this->pac) : []; }
         public function setPacConf(array $conf) { ManagedProtocol::writeJson($this->pac,$conf); return true; }
@@ -114,7 +144,13 @@ try {
         }
         foreach($workers as $pid) { pcntl_waitpid($pid,$status); expectAccess(pcntl_wifexited($status) && pcntl_wexitstatus($status)===0,'Concurrent reader exit'); }
     } else $disk->captureAccessGroupUsage();
-    expectAccess($disk->getPacConf()['access_groups']['groups'][$group]['bytes']===$start+40,'Serialized group observations credit each byte once');
+    expectAccess($disk->getPacConf()['access_groups']['groups'][$group]['bytes']===$start+30,'Serialized group observations credit each byte once');
+    $disk->accessGroupCommand('list'); expectAccess(end($disk->keys)[0]['callback_data']==='/xray','Group list returns to the VLESS menu');
+    $nowGroup=$disk->getPacConf()['access_groups']['groups'][$other]['bytes'];
+    unlink($hy->root.'/runtime/usage.json'); $disk->moveTo($other,$member);
+    $meter($hy,$id,105); $disk->captureAccessGroupUsage();
+    expectAccess($disk->getPacConf()['access_groups']['groups'][$other]['bytes']===$nowGroup,'Unavailable reading at transfer cannot charge the new group for the gap');
+    expectAccess(!empty($disk->getPacConf()['access_groups']['groups'][$group]['incomplete']),'Old group shows partial historical usage');
     echo "access_groups_preview_test OK\n";
 } finally {
     $it=new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root,FilesystemIterator::SKIP_DOTS),RecursiveIteratorIterator::CHILD_FIRST);

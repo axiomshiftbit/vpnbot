@@ -807,14 +807,14 @@ class Bot
             case preg_match('~^/agxr ([a-f0-9]{10}) ([0-9]{1,6})$~D', $this->input['callback'], $m):
                 $this->groupXrayPrompt($m[1], (int) $m[2]);
                 break;
-            case preg_match('~^/agxrapply ([a-f0-9]{16}) (yes|no)$~D', $this->input['callback'], $m):
+            case preg_match('~^/agxrapply ([a-f0-9]{24}) (yes|no)$~D', $this->input['callback'], $m):
                 $this->groupXrayFinish($m[1], $m[2] === 'yes');
                 break;
             case preg_match('~^/agpick ((?:xr[.][a-f0-9]{32}|(?:hy|anytls|mieru|tuic|shadowtls|snolc|masque)[.][a-f0-9]{16}))$~D', $this->input['callback'], $m):
                 $this->accessGroupCommand('pick', '', $m[1]);
                 break;
-            case preg_match('~^/agmove (-|[a-f0-9]{10}) ((?:xr[.][a-f0-9]{32}|(?:hy|anytls|mieru|tuic|shadowtls|snolc|masque)[.][a-f0-9]{16}))$~D', $this->input['callback'], $m):
-                $this->accessGroupCommand('move', $m[1], $m[2]);
+            case preg_match('~^/agmove (-|[a-f0-9]{10}) ([a-f0-9]{24})$~D', $this->input['callback'], $m):
+                $this->accessGroupMove($m[1], $m[2]);
                 break;
             case preg_match('~^/areview ([a-f0-9]{24}) (apply|cancel)$~D', $this->input['callback'], $m):
                 $this->accessEditFinish($m[1], $m[2] === 'apply');
@@ -1080,6 +1080,9 @@ class Bot
                 break;
             case preg_match('~^/nodePeer ([a-f0-9]{8}) ([a-f0-9]{10})$~', $this->input['callback'], $m):
                 $this->managedNodePeerMenu($m[1], $m[2]);
+                break;
+            case preg_match('~^/peerResetConfirm ([a-f0-9]{24}) (yes|no)$~D', $this->input['callback'], $m):
+                $this->managedNodePeerResetFinish($m[1], $m[2] === 'yes');
                 break;
             case preg_match('~^/nodePeerDo ([a-f0-9]{8}) ([a-f0-9]{10}) (on|off|rotate|delete|vless|wireguard|amnezia|reset)(?: (yes))?$~', $this->input['callback'], $m):
                 $this->managedNodePeerAction($m[1], $m[2], $m[3], isset($m[4]));
@@ -8525,7 +8528,7 @@ NFT;
     public function reenableTrafficClients(array $x, $only = null): array
     {
         foreach ($x['inbounds'][0]['settings']['clients'] as $k => $v) {
-            if (empty($v['traffic_off'])) {
+            if (empty($v['traffic_off']) || (!empty($v['time']) && $v['time'] <= time())) {
                 continue;
             }
             if ($only !== null && (string) $k !== (string) $only) {
@@ -12186,6 +12189,11 @@ NFT;
         $state = $this->takeReply($this->input['reply']);
         if (!empty($state)) {
             $callback = $state['callback'];
+            // A prompt may have been sent by the previous version before the deployment.
+            if ($callback === 'setTimerXr' || $callback === 'saveTrafficXr') {
+                $state['args'][] = $callback === 'setTimerXr' ? 'expires' : 'quota';
+                $callback = 'previewXrayEdit';
+            }
             $this->delete($this->input['chat'], $this->input['reply']);
             // Документ с бэкапом остаётся у администратора, в том числе при
             // отказе проверки или обрыве восстановления.
@@ -28525,7 +28533,7 @@ DNS-over-HTTPS with IP:
             try { $before = $this->getXrayStats(); }
             catch (XrayStatsUnavailable $error) { $before = null; }
             $st = $before ?? [];
-            unset($r['inbounds'][0]['settings']['clients'][$i], $st['users'][$i]);
+            unset($r['inbounds'][0]['settings']['clients'][$i], $st['users'][$i], $st['group_epochs'][ManagedProtocol::xraySource($client)]);
             // restartXray переиндексирует клиентов и сворачивает session в
             // global. Счётчики должны иметь тот же порядок до его вызова.
             $rows = $st['users'] ?? []; $st['users'] = [];

@@ -12,17 +12,30 @@ trait BotAccessGroups
         if (!is_array($state) || !is_array($state['members'] ?? null) || !is_array($state['groups'] ?? null) || count($state['groups']) > 64) $invalid();
         foreach ($state['groups'] as $id => $g) {
             if (!preg_match('/^[a-f0-9]{10}$/D', (string) $id) || !is_array($g) || !is_string($g['name'] ?? null)
-                || !preg_match('/\A[^\p{C}]{1,40}\z/uD', $g['name']) || !is_int($g['bytes'] ?? null) || $g['bytes'] < 0) $invalid();
+                || !preg_match('/\A[^\p{C}]{1,40}\z/uD', $g['name']) || !is_int($g['bytes'] ?? null) || $g['bytes'] < 0 || (isset($g['incomplete']) && !is_bool($g['incomplete']))) $invalid();
         }
         $access = '/^(?:xr[.][a-f0-9]{32}|(?:hy|anytls|mieru|tuic|shadowtls|snolc|masque)[.][a-f0-9]{16})$/D';
         foreach ($state['members'] as $key => $m) {
             if (!preg_match($access, (string) $key) || !is_array($m) || !is_string($m['group'] ?? null)
-                || !isset($state['groups'][$m['group']]) || !is_array($m['last'] ?? null) || !is_array($m['waiting'] ?? [])) $invalid();
+                || ($m['group'] !== '-' && !isset($state['groups'][$m['group']])) || !is_array($m['last'] ?? null) || !is_array($m['waiting'] ?? [])) $invalid();
+            foreach ($m['waiting'] ?? [] as $counter => $flag) {
+                if ($flag !== true || ($counter !== 'xr' && !isset(ManagedProtocol::NAMES[$counter]) && !preg_match($access, (string) $counter))) $invalid();
+            }
             foreach ($m['last'] as $counter => $epochs) {
                 if (($counter !== 'xr' && !preg_match($access, (string) $counter)) || !is_array($epochs)) $invalid();
                 foreach ($epochs as $epoch => $bytes) if (($epoch !== 'initial' && !preg_match('/^[a-f0-9]{16}$/D', (string) $epoch)) || !is_int($bytes) || $bytes < 0) $invalid();
             }
         }
+    }
+
+    private function uniqueGroupXrayClients(array $clients): array
+    {
+        $unique = [];
+        foreach ($clients as $index => $client) {
+            $source = ManagedProtocol::xraySource($client);
+            $unique[$source] = array_key_exists($source, $unique) ? null : [$index, $client];
+        }
+        return array_filter($unique);
     }
 
     protected function accessGroupAccounts(): array
@@ -31,8 +44,7 @@ trait BotAccessGroups
         $clients = $this->getXray()['inbounds'][0]['settings']['clients'] ?? [];
         try { $xr = $clients ? $this->getXrayStats() : []; }
         catch (RuntimeException $e) { $xr = null; }
-        foreach ($clients as $index => $client) {
-            $source = ManagedProtocol::xraySource($client);
+        foreach ($this->uniqueGroupXrayClients($clients) as $source => [$index, $client]) {
             $epoch = $xr['group_epochs'][$source] ?? $xr['group_epochs']['all'] ?? 'initial';
             $accounts['xr.' . $source] = ['name' => $client['name'] ?? $client['email'] ?? (string) $index,
                 'back' => "/userXr $index !" . rtrim(strtr(base64_encode(hex2bin($source)), '+/', '-_'), '='), 'meters' => ['xr' => $xr === null ? null : [$epoch, $this->xrUserTraffic($xr, $index)]]];
@@ -79,8 +91,13 @@ trait BotAccessGroups
                     // An unreadable counter at join starts at its first confirmed reading.
                     $family = explode('.', $component, 2)[0];
                     $waiting = isset($member['waiting'][$component]) || isset($member['waiting'][$family]);
-                    $base = $last ?? ($waiting ? $bytes : 0);
-                    $state['groups'][$member['group']]['bytes'] += max(0, $bytes - $base);
+                    $base = $waiting ? max($last ?? 0, $bytes) : ($last ?? 0);
+                    if ($member['group'] !== '-') {
+                        $delta = max(0, $bytes - $base);
+                        $total = $state['groups'][$member['group']]['bytes'];
+                        if ($delta > PHP_INT_MAX - $total) throw new RuntimeException(Lang::t('Сумма расхода превышает диапазон счётчика', 'Group usage exceeds the counter range'));
+                        $state['groups'][$member['group']]['bytes'] += $delta;
+                    }
                     $member['last'][$component][$epoch] = max($base, $bytes);
                     unset($member['waiting'][$component]);
                 }
@@ -109,7 +126,15 @@ trait BotAccessGroups
         if (!empty($this->getPacConf()['access_groups']['members'])) $this->accessGroupWork();
     }
 
-    public function accessGroupCommand(string $action = 'list', string $id = '', string $key = '', int $page = 0): void
+    public function accessGroupMove(string $group, string $token): void
+    {
+        if (!$this->admin) return;
+        $review = $this->takeAdminReview('access_group_pick', $token);
+        if (!$review) { $this->protocolError($this->t('Выбор устарел', 'Selection expired'), '/ag'); return; }
+        $this->accessGroupCommand('move', $group, $review['key'], 0, $review['previous']);
+    }
+
+    public function accessGroupCommand(string $action = 'list', string $id = '', string $key = '', int $page = 0, ?string $expected = null): void
     {
         if (!$this->admin) return;
         try {
@@ -118,19 +143,20 @@ trait BotAccessGroups
                 return;
             }
             $edit = null;
-            if ($action === 'move') $edit = function (&$state, $rows) use ($key, $id) {
+            if ($action === 'move') $edit = function (&$state, $rows) use ($key, $id, $expected) {
                 if ($id !== '-' && (!isset($state['groups'][$id], $rows[$key]))) throw new InvalidArgumentException($this->t('Группа или доступ удалены', 'Group or access deleted'));
                 $previous = $state['members'][$key]['group'] ?? '-';
+                if ($previous !== $expected) throw new InvalidArgumentException($this->t('Состав группы изменился. Выберите группу заново.', 'Membership changed. Choose the group again.'));
                 if ($previous === $id) return;
                 if ($previous !== '-' && (!isset($rows[$key]) || in_array(null, $rows[$key]['meters'], true))) {
                     $state['groups'][$previous]['incomplete'] = true;
                 }
-                unset($state['members'][$key]);
-                if ($id === '-') return;
-                $member = ['group' => $id, 'last' => []];
-                foreach ($rows[$key]['meters'] as $component => $meter) {
+                // Keep high-water marks across moves, detachment and restoration of an old epoch.
+                $member = $state['members'][$key] ?? ['last' => []];
+                $member['group'] = $id;
+                foreach ($rows[$key]['meters'] ?? [] as $component => $meter) {
                     if ($meter === null) $member['waiting'][$component] = true;
-                    else $member['last'][$component][$meter[0]] = $meter[1];
+                    else $member['last'][$component][$meter[0]] = max($meter[1], $member['last'][$component][$meter[0]] ?? 0);
                 }
                 $state['members'][$key] = $member;
             };
@@ -142,8 +168,9 @@ trait BotAccessGroups
                 if (!isset($rows[$key]) && !isset($state['members'][$key])) throw new InvalidArgumentException($this->t('Доступ удалён', 'Access deleted'));
                 $lines[] = self::esc($rows[$key]['name'] ?? $this->t('Удалённый доступ', 'Deleted access'));
                 $current = $state['members'][$key]['group'] ?? '-';
-                foreach ($state['groups'] as $group => $item) $buttons[] = [['text' => ((string) $current === (string) $group ? '✓ ' : '') . $item['name'], 'callback_data' => "/agmove $group $key"]];
-                if ($current !== '-') $buttons[] = [['text' => $this->t('Убрать из группы', 'Remove from group'), 'callback_data' => "/agmove - $key"]];
+                $token = $this->rememberAdminReview('access_group_pick', ['key' => $key, 'previous' => $current]);
+                foreach ($state['groups'] as $group => $item) $buttons[] = [['text' => ((string) $current === (string) $group ? '✓ ' : '') . $item['name'], 'callback_data' => "/agmove $group $token"]];
+                if ($current !== '-') $buttons[] = [['text' => $this->t('Убрать из группы', 'Remove from group'), 'callback_data' => "/agmove - $token"]];
                 if (isset($rows[$key])) $buttons[] = [['text' => $this->t('Карточка доступа', 'Access details'), 'callback_data' => $rows[$key]['back']]];
             } elseif ($action === 'show' || $action === 'members') {
                 $group = $state['groups'][$id] ?? null;
@@ -172,7 +199,7 @@ trait BotAccessGroups
                 foreach ($state['groups'] as $group => $item) $buttons[] = [['text' => $item['name'], 'callback_data' => "/ag show $group"]];
                 $buttons[] = [['text' => $this->t('Создать группу', 'Create group'), 'callback_data' => '/ag new']];
             }
-            $buttons[] = [['text' => $this->i18n('back'), 'callback_data' => $action === 'list' ? '/menu xray' : '/ag']];
+            $buttons[] = [['text' => $this->i18n('back'), 'callback_data' => $action === 'list' ? '/xray' : '/ag']];
             $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $lines), $buttons);
         } catch (RuntimeException | InvalidArgumentException $e) { $this->protocolError($e->getMessage(), '/ag'); }
     }

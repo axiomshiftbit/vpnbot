@@ -6,8 +6,7 @@ trait BotGroupXrayBatch
     {
         $state = $this->getPacConf()['access_groups'] ?? [];
         $users = [];
-        foreach ($x['inbounds'][0]['settings']['clients'] ?? [] as $i => $client) {
-            $source = ManagedProtocol::xraySource($client);
+        foreach ($this->uniqueGroupXrayClients($x['inbounds'][0]['settings']['clients'] ?? []) as $source => [$i, $client]) {
             if (($state['members']["xr.$source"]['group'] ?? null) !== $group) continue;
             $users[$source] = ['name' => $client['name'] ?? $client['email'] ?? (string) $i,
                 'expires' => $client['time'] ?? null, 'quota' => $client['traffic'] ?? null,
@@ -32,10 +31,7 @@ trait BotGroupXrayBatch
             $ids = array_slice(array_keys($users), max(0, $page)*20, 20);
             $preview = AccessBatch::preview($users, $ids, $m[1], AccessBatch::value($m[1], $m[2]), time());
             $rows = $this->accessGroupAccounts();
-            $token = bin2hex(random_bytes(8));
-            $this->sessionApply(function () use ($preview, $token, $group) {
-                $_SESSION['group_xray'][$this->input['chat']] = compact('preview', 'token', 'group');
-            });
+            $token = $this->rememberAdminReview('group_xray', compact('preview', 'group'));
             $lines = [$this->t('Предварительный просмотр · VLESS', 'Preview · VLESS')];
             foreach ($preview['rows'] as $row) {
                 $change = $row['skip'];
@@ -55,13 +51,7 @@ trait BotGroupXrayBatch
     public function groupXrayFinish(string $token, bool $apply): void
     {
         if (!$this->admin) return;
-        $plan = null;
-        $this->sessionApply(function () use ($token, &$plan) {
-            $saved = $_SESSION['group_xray'][$this->input['chat']] ?? [];
-            if (hash_equals($saved['token'] ?? '', $token)) {
-                $plan = $saved; unset($_SESSION['group_xray'][$this->input['chat']]);
-            }
-        });
+        $plan = $this->takeAdminReview('group_xray', $token);
         try {
             if (!$plan) throw new InvalidArgumentException($this->t('Предварительный просмотр устарел', 'The preview is outdated'));
             if ($apply) {

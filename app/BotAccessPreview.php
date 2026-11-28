@@ -3,6 +3,30 @@
 /** Short-lived admin confirmations contain only the proposed field and a digest of the reviewed record. */
 trait BotAccessPreview
 {
+    /** The same Telegram button can be delivered twice or pressed by another admin in a group chat. */
+    private function rememberAdminReview(string $slot, array $data): string
+    {
+        $token = bin2hex(random_bytes(12));
+        $data['token'] = $token;
+        $data['created'] = time();
+        $data['owner'] = $this->input['from'] ?? $this->input['chat'];
+        $this->sessionApply(function () use ($slot, $data) { $_SESSION[$slot][$this->input['chat']] = $data; });
+        return $token;
+    }
+
+    private function takeAdminReview(string $slot, string $token): ?array
+    {
+        $plan = null;
+        $this->sessionApply(function () use ($slot, $token, &$plan) {
+            $current = $_SESSION[$slot][$this->input['chat']] ?? null;
+            if (!$current || ($current['owner'] ?? null) !== ($this->input['from'] ?? $this->input['chat'])
+                || !hash_equals($current['token'], $token)) return;
+            unset($_SESSION[$slot][$this->input['chat']]);
+            if ($current['created'] <= time() && $current['created'] >= time() - 600) $plan = $current;
+        });
+        return $plan;
+    }
+
     private function accessPreviewFingerprint(array $record, string $scope): string
     {
         if ($scope === 'xr') $record['_monthly'] = !empty($this->getPacConf()['reset_monthly']);
@@ -19,12 +43,17 @@ trait BotAccessPreview
                 if ($value === false || ($value !== null && $value < 1)) throw new InvalidArgumentException($this->t('Неверная дата', 'Invalid date'));
             } else $value = AccessBatch::value('quota', trim($text));
             $this->accessEditPreview('xr', (string) $index, $field, $value);
-        } catch (RuntimeException | InvalidArgumentException $e) { $this->protocolError($e->getMessage(), '/menu xray'); }
+        } catch (RuntimeException | InvalidArgumentException $e) { $this->protocolError($e->getMessage(), '/xray'); }
     }
 
     public function accessEditPreview(string $scope, string $id, string $field, int|array|null $value): void
     {
         if (!$this->admin) return;
+        if ($field === 'quota_schedule' && $scope !== 'xr') {
+            if ($value !== null) AccessPolicy::validate(['quota_schedule' => $value]);
+        } elseif (!in_array($field, ['quota', 'expires'], true) || ($value !== null && (!is_int($value) || $value < 1))) {
+            throw new InvalidArgumentException($this->t('Неверное поле или значение', 'Invalid field or value'));
+        }
         if ($scope === 'xr') {
             $record = $this->getXray()['inbounds'][0]['settings']['clients'][$id] ?? null;
             if (!$record) { $this->staleXrayAction(); return; }
@@ -41,9 +70,8 @@ trait BotAccessPreview
             catch (RuntimeException $e) { $used = null; }
         }
         $user[$field] = $value;
-        $plan = ['token' => bin2hex(random_bytes(12)), 'created' => time(), 'owner' => $this->input['from'] ?? $this->input['chat'], 'scope' => $scope, 'id' => $id,
-            'field' => $field, 'value' => $value, 'before' => $this->accessPreviewFingerprint($record, $scope)];
-        $this->sessionApply(function () use ($plan) { $_SESSION['access_review'][$this->input['chat']] = $plan; });
+        $token = $this->rememberAdminReview('access_review', ['scope' => $scope, 'id' => $id,
+            'field' => $field, 'value' => $value, 'before' => $this->accessPreviewFingerprint($record, $scope)]);
         $unlimited = $this->t('без ограничения', 'unlimited');
         $lines = [$this->t('Предварительный просмотр · ', 'Preview · ') . self::esc($user['name']),
             $this->t('Последняя секунда доступа (UTC): ', 'Last valid second (UTC): ') . ($user['expires'] ? gmdate('Y-m-d H:i:s', $user['expires'] - 1) : $unlimited),
@@ -61,29 +89,25 @@ trait BotAccessPreview
                 $next = AccessPolicy::next($s['period'], $s['anchor'], max($next, time()));
             }
         }
+        if ($scope === 'xr' && $field === 'expires' && !empty($record['off']) && !empty($record['traffic_off'])) {
+            $lines[4] = $this->t('Доступ останется отключённым по квоте.', 'Access will remain disabled by the quota switch.');
+        }
         $lines[] = $this->t('Сбросы расхода (UTC): ', 'Usage resets (UTC): ') . ($dates ? implode(', ', $dates) : $this->t('выключены', 'off'));
         $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $lines), [[
-            ['text' => $this->t('Применить', 'Apply'), 'callback_data' => '/areview ' . $plan['token'] . ' apply'],
-            ['text' => $this->t('Отмена', 'Cancel'), 'callback_data' => '/areview ' . $plan['token'] . ' cancel']]]);
+            ['text' => $this->t('Применить', 'Apply'), 'callback_data' => '/areview ' . $token . ' apply'],
+            ['text' => $this->t('Отмена', 'Cancel'), 'callback_data' => '/areview ' . $token . ' cancel']]]);
     }
 
     public function accessEditFinish(string $token, bool $apply): void
     {
         if (!$this->admin) return;
-        $plan = null;
-        $this->sessionApply(function () use ($token, &$plan) {
-            $current = $_SESSION['access_review'][$this->input['chat']] ?? null;
-            if ($current && $current['owner'] === ($this->input['from'] ?? $this->input['chat']) && hash_equals($current['token'], $token)) {
-                unset($_SESSION['access_review'][$this->input['chat']]);
-                if ($current['created'] >= time() - 600) $plan = $current;
-            }
-        });
+        $plan = $this->takeAdminReview('access_review', $token);
         $stale = $this->t('Предварительный просмотр устарел. Откройте новый.', 'The preview has expired. Open a new one.');
         $back = '/menu';
         try {
             if (!$plan) throw new InvalidArgumentException($stale);
             ['scope' => $scope, 'id' => $id, 'value' => $value, 'field' => $field] = $plan;
-            $back = $scope === 'xr' ? '/menu xray' : $this->accessBack($scope, $id);
+            $back = $scope === 'xr' ? '/xray' : $this->accessBack($scope, $id);
             $check = function ($record) use ($plan, $scope, $field, $value, $stale) {
                 if (!$record || !hash_equals($plan['before'], $this->accessPreviewFingerprint($record, $scope))
                     || ($field === 'quota_schedule' && $value !== null && $value['next'] <= time())) throw new InvalidArgumentException($stale);
