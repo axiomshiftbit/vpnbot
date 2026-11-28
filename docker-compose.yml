@@ -591,6 +591,7 @@ services:
             - ./config/xray.json:/xray.json:ro
             - ./scripts/start_xray.sh:/start_xray.sh
             - ./scripts/xray_hot_apply.py:/xray_hot_apply.py:ro
+            - ./scripts/exit_failover.py:/exit_failover.py:ro
             - ./scripts/node_warp_probe.py:/node_warp_probe.py:ro
             - ./scripts/node_awg_client.py:/node-carrier/node_awg_client.py:ro
             - ./scripts/node_awg.py:/node-carrier/node_awg.py:ro

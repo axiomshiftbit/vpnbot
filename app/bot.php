@@ -1086,6 +1086,12 @@ class Bot
             case preg_match('~^/exitMove ([a-f0-9]{8}) (up|down) ([a-f0-9]{16})$~', $this->input['callback'], $m):
                 $this->exitMove($m[1], $m[2], $m[3]);
                 break;
+            case preg_match('~^/exitStandby ([a-f0-9]{8}) (main|[a-f0-9]{8})$~D', $this->input['callback'], $m):
+                $this->exitStandby($m[1], $m[2], null);
+                break;
+            case preg_match('~^/exitDelay ([a-f0-9]{8}) (30|60|120|300)$~D', $this->input['callback'], $m):
+                $this->exitStandby($m[1], null, (int) $m[2]);
+                break;
             case preg_match('~^/exitPolicy ([a-f0-9]{8}) (block|direct)$~', $this->input['callback'], $m):
                 $this->exitFallback($m[1], $m[2]);
                 break;
@@ -2448,6 +2454,13 @@ class Bot
                 break;
             case preg_match('~^/warpReg(Yes)?$~D', $this->input['callback'], $m):
                 $this->warpReregister(($m[1] ?? '') === 'Yes');
+                break;
+            case preg_match('~^/xrayRefresh(?: (\d+))?$~D', $this->input['callback'], $m):
+                $this->xrayCoreProbe(true);
+                if (($this->getPacConf()['transport'] ?? '') === 'Reality') $this->realityMaskCheck(true);
+                $this->time_xray_stats = 0;
+                $this->xrayStatsUser();
+                $this->xray((int) ($m[1] ?? 0));
                 break;
             case preg_match('~^/xray(?: (\d+))?$~', $this->input['callback'], $m):
                 $this->xray(($m[1] ?? '') ?: 0);
@@ -9312,11 +9325,7 @@ NFT;
             if (array_key_exists('hwid', $json)) {
                 $out[] = 'update hwid devices';
                 $this->update($this->input['chat'], $this->input['message_id'], implode("\n", $out));
-                $data = is_array($json['hwid']) ? $json['hwid'] : [];
-                $restored = $this->store()
-                    ? $this->setHwidStorage($data)
-                    : $this->writePrivateKey($this->hwid, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
-                if (!$restored) throw new RuntimeException($this->t('Не удалось восстановить HWID', 'Could not restore HWID'));
+                if (!$this->setHwidStorage($json['hwid'])) throw new RuntimeException($this->t('Не удалось восстановить HWID', 'Could not restore HWID'));
             }
             // xray
             if (!empty($json['xray'])) {
@@ -23941,6 +23950,18 @@ DNS-over-HTTPS with IP:
         return $info;
     }
 
+    private static function normalizeHwidStorage(array $storage): array
+    {
+        foreach ($storage as $uid => $devices) {
+            if (!is_array($devices)) throw new InvalidArgumentException('Invalid HWID device list');
+            foreach ($devices as $hwid => $info) {
+                if (!is_array($info)) throw new InvalidArgumentException('Invalid HWID device record');
+                $storage[$uid][$hwid] = self::subscriptionHwidInfo($info);
+            }
+        }
+        return $storage;
+    }
+
     public function getHwidStorage()
     {
         if ($this->store()) {
@@ -23952,13 +23973,7 @@ DNS-over-HTTPS with IP:
         $raw = @file_get_contents($this->hwid);
         $data = $raw === false ? null : json_decode($raw, true);
         if (!is_array($data)) throw new RuntimeException('HWID storage unavailable');
-        foreach ($data as $uid => $devices) {
-            if (!is_array($devices)) continue;
-            foreach ($devices as $hwid => $info) {
-                if (is_array($info)) $data[$uid][$hwid] = self::subscriptionHwidInfo($info);
-            }
-        }
-        return $data;
+        return self::normalizeHwidStorage($data);
     }
 
     // Атомарная запись — как setOnlineState()/setPacConf(). Файл читается на
@@ -23973,19 +23988,13 @@ DNS-over-HTTPS with IP:
             $this->storeTransaction(fn() => $this->storeHwidReplace($storage));
             return true;
         }
-        $json = json_encode($storage, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $json = json_encode(self::normalizeHwidStorage($storage), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         if ($json === false) {
             error_log('setHwidStorage: not written — ' . json_last_error_msg());
 
             return false;
         }
-        $tmp = $this->hwid . '.' . getmypid() . '.' . uniqid();
-        if (file_put_contents($tmp, $json) === false) {
-            @unlink($tmp);
-
-            return false;
-        }
-        return rename($tmp, $this->hwid);
+        return $this->writePrivateKey($this->hwid, $json);
     }
 
     /**
@@ -24167,6 +24176,7 @@ DNS-over-HTTPS with IP:
     // публичным endpoint'ом, и наоборот.
     public function setHwidDevice($uid, $hwid, array $info)
     {
+        $info = self::subscriptionHwidInfo($info);
         if ($this->store()) {
             $this->storeTransaction(fn(PDO $pdo) => $pdo->prepare('INSERT INTO hwid (uid, hwid, info) VALUES (?, ?, ?) ON CONFLICT (uid, hwid) DO UPDATE SET info = excluded.info')
                 ->execute([(string) $uid, (string) $hwid, json_encode($info, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE)]));
@@ -30787,6 +30797,10 @@ DNS-over-HTTPS with IP:
             [
                 'text'          => '👥 ' . $this->i18n('online') . ($onlineCount ? " ($onlineCount)" : ''),
                 'callback_data' => "/onlines",
+            ],
+            [
+                'text'          => $this->t('🔄 Обновить', '🔄 Refresh'),
+                'callback_data' => '/xrayRefresh ' . (int) $page,
             ],
         ];
         $data[] = $this->menuHelpButton('xray');

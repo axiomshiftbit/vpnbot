@@ -73,6 +73,8 @@ try {
     $b->setHwidDevice('legacy-user', 'existing-device', ['time' => 8, 'user_agent' => 'Happ/4.8.3 (+https://fixture.example/private)', 'device_model' => 'https://fixture.example/private']);
     $legacy = ['time' => 8, 'user_agent' => 'Happ/4.8.3', 'device_model' => ''];
     stCheck($b->getHwidStorage()['legacy-user']['existing-device'] === $legacy && $b->getHwidDevicesByUser('legacy-user')['existing-device'] === $legacy, 'старые метаданные скрыты в карточке и экспорте HWID');
+    $saved = $b->store()->query("SELECT info FROM hwid WHERE uid = 'legacy-user'")->fetchColumn();
+    stCheck(json_decode($saved, true) === $legacy, 'SQLite сохраняет только очищенные поля устройства');
     $b->deleteHwidDevice('legacy-user', 'existing-device');
     stCheck(json_decode(file_get_contents("$root/hwid.json"), true) === ['u9' => ['devZ' => []]], 'JSON-файл не удаляется (откат на образ без SQLite)');
 } finally {
@@ -81,11 +83,23 @@ try {
 
 // ── 2. HWID: те же операции через JSON и SQLite ─────────────────────────────
 $results = [];
+$deviceInfo = ['user_agent' => 'Happ/4.8.3 (+https://docs.example.test/client)', 'time' => 1];
 foreach (['json', 'sqlite'] as $mode) {
     $root = stRoot();
     try {
         $b = new StoreBot($root);
         $b->json = $mode === 'json';
+        $mask = umask(0022);
+        try { stCheck($b->setHwidStorage(['fixture' => ['device' => $deviceInfo]]), 'запись HWID'); }
+        finally { umask($mask); }
+        if ($b->json) {
+            stCheck((fileperms($b->hwid) & 0777) === 0600, 'файл HWID доступен только владельцу');
+            $saved = json_decode(file_get_contents($b->hwid), true)['fixture']['device'];
+        } else {
+            $saved = json_decode($b->store()->query("SELECT info FROM hwid WHERE uid = 'fixture'")->fetchColumn(), true);
+        }
+        stCheck($saved === ['user_agent' => 'Happ/4.8.3', 'time' => 1], 'восстановленные метаданные очищены на диске');
+        $b->setHwidStorage([]);
         $log = [];
         $log[] = $b->hwidRegister('u1', 'devA', 1, ['time' => 1]);
         $log[] = $b->hwidRegister('u1', 'devB', 1, ['time' => 2]);

@@ -498,7 +498,24 @@ def firewall(options, host):
               ' chain syn4 { counter accept; }',
               ' chain syn6 { counter accept; }',
               ' chain forward { type filter hook forward priority -20; policy drop; }',
-              ' chain output { type filter hook output priority -20; policy accept;',
+              # Recheck original WAN connections after the host profile. The active
+              # sets are authoritative for VPN-only peers, SSH and the ACME window.
+              ' chain service_guard { type filter hook input priority 10; policy accept;',
+              f'  iifname != "{interface}" return',
+              '  ct direction != original return',
+              '  meta l4proto != { tcp, udp } return']
+    for version, proto in ((4, 'ip'), (6, 'ip6')):
+        lines += [f'  ct status & dnat == 0 tcp dport {{ {ports} }} {proto} saddr @admins{version} return',
+                  f'  ct status & dnat == 0 tcp dport {{ {ports} }} {proto} saddr @ssh_asn{version} return',
+                  f'  ct status dnat {proto} saddr @my_server{version} tcp dport 8443 ct original proto-dst 443 return']
+        for name, module in (('wireguard', node_wg), ('amnezia', node_awg)):
+            if options.get(name, {}).get('enabled'):
+                lines.append(f'  ct status dnat {proto} saddr @my_server{version} udp dport {module.LISTEN_PORT} ct original proto-dst {module.PORT} return')
+    lines += ['  ct status dnat tcp dport 8080 ct original proto-dst @acme_http return',
+              '  counter drop', ' }',
+              ' chain output { type filter hook output priority -20; policy accept; jump service_egress; }',
+              ' chain output_guard { type filter hook output priority 10; policy accept; jump service_egress; }',
+              ' chain service_egress {',
               '  ct state invalid drop', f'  meta skuid {uid} jump core_egress']
     if options.get('warp_mode', 'off') != 'off':
         marker = lines.index(f'  meta skuid {uid} jump core_egress')

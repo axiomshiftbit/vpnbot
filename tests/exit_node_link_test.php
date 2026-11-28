@@ -57,6 +57,11 @@ exitLinkCheck($r['outbound']['streamSettings']['grpcSettings'] === ['serviceName
 exitLinkCheck(ExitNodeLink::parse("  vless://$uuid@fi.example.org:443?security=tls&type=ws&path=%2F&sni=fi.example.org\n")['port'] === 443, 'края обрезаются');
 
 // Отказы: небезопасные и чужие форматы.
+foreach (['tcp', 'raw'] as $network) {
+    $plain = ExitNodeLink::parse("vless://$uuid@node.example.test:443?security=tls&type=$network&sni=node.example.test&flow=xtls-rprx-vision");
+    if ($plain['outbound']['streamSettings']['network'] !== 'tcp'
+        || $plain['outbound']['settings']['vnext'][0]['users'][0]['flow'] !== 'xtls-rprx-vision') throw new RuntimeException('TLS Vision raw/TCP import');
+}
 $ok = "vless://$uuid@fi.example.org:443?security=reality&sni=a.example.com&fp=chrome&pbk=$pbk&sid=ab&type=tcp&flow=xtls-rprx-vision";
 foreach ([
     'без защиты' => "vless://$uuid@fi.example.org:443?security=none&type=tcp",

@@ -7,7 +7,7 @@ require_once __DIR__ . '/Lang.php';
  *
  * Узел — другой сервер с vpnbot; его «Профиль для узла» выдаёт обычную ссылку
  * пользователя (Bot::linkXray). Принимаются ровно её форматы: VLESS с REALITY,
- * TLS + WebSocket, XHTTP или gRPC (с VLESS Encryption или без) и Trojan с TLS +
+ * TLS + TCP, WebSocket, XHTTP или gRPC (с VLESS Encryption или без) и Trojan с TLS +
  * gRPC. Соединение без проверки сервера (security=none, allowInsecure) не
  * принимается: узел получает весь трафик выбранных доменов пользователей.
  *
@@ -43,6 +43,10 @@ final class ExitNodeLink
         $q = self::query($query);
         $security = $q['security'] ?? '';
         $type = $q['type'] ?? 'tcp';
+        if ($type === 'raw') $type = 'tcp';
+        if ($type === 'tcp' && ($q['headerType'] ?? 'none') !== 'none') {
+            throw new InvalidArgumentException(Lang::t('неподдерживаемый заголовок TCP', 'unsupported TCP header'));
+        }
         foreach (['allowInsecure', 'insecure', 'allow_insecure'] as $unsafe) {
             if (isset($q[$unsafe]) && $q[$unsafe] !== '0' && $q[$unsafe] !== 'false') throw new InvalidArgumentException(Lang::t('ссылка без проверки сертификата не принимается', 'a link without certificate verification is not accepted'));
         }
@@ -78,6 +82,8 @@ final class ExitNodeLink
             }
             $stream['tlsSettings'] = $tls;
             switch ($type) {
+                case 'tcp':
+                    break;
                 case 'ws':
                     $stream['wsSettings'] = ['path' => self::path($q['path'] ?? '/')] + self::hostField($q);
                     break;
@@ -120,7 +126,7 @@ final class ExitNodeLink
             }
             $flow = $q['flow'] ?? '';
             if (!in_array($flow, ['', 'xtls-rprx-vision'], true)) throw new InvalidArgumentException(Lang::t('неизвестный flow', 'unknown flow'));
-            if ($flow !== '' && $security !== 'reality' && $encryption === 'none') throw new InvalidArgumentException(Lang::t('flow Vision без REALITY не поддерживается', 'flow Vision without REALITY is not supported'));
+            if ($flow !== '' && $type !== 'tcp' && $encryption === 'none') throw new InvalidArgumentException(Lang::t('для Vision требуется TCP или VLESS Encryption', 'Vision requires TCP or VLESS Encryption'));
             $user = ['id' => strtolower($credential), 'encryption' => $encryption];
             if ($flow !== '') $user['flow'] = $flow;
             $outbound = ['protocol' => 'vless', 'settings' => ['vnext' => [['address' => $host, 'port' => $port, 'users' => [$user]]]]];

@@ -114,12 +114,13 @@ trait BotStore
 
     private function storeHwidReplace(array $storage): void
     {
+        $storage = self::normalizeHwidStorage($storage);
         $pdo = $this->store();
         $pdo->exec('DELETE FROM hwid');
         $insert = $pdo->prepare('INSERT INTO hwid (uid, hwid, info) VALUES (?, ?, ?)');
         foreach ($storage as $uid => $devices) {
-            foreach (is_array($devices) ? $devices : [] as $hwid => $info) {
-                $insert->execute([(string) $uid, (string) $hwid, json_encode(is_array($info) ? $info : [], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE)]);
+            foreach ($devices as $hwid => $info) {
+                $insert->execute([(string) $uid, (string) $hwid, json_encode($info, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE)]);
             }
         }
     }
@@ -127,6 +128,7 @@ trait BotStore
     // Проверка лимита и запись устройства одной транзакцией.
     public function hwidRegister(string $uid, string $hwid, int $limit, array $info): bool
     {
+        $info = self::subscriptionHwidInfo($info);
         if (!$this->store()) {
             return $this->hwidUpdate(function (array &$storage) use ($uid, $hwid, $limit, $info) {
                 $devices = $storage[$uid] ?? [];

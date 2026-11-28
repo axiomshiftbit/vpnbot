@@ -77,13 +77,18 @@ with tempfile.TemporaryDirectory() as temp:
         r=run(['openssl','req','-x509','-newkey','ec','-pkeyopt','ec_paramgen_curve:P-256','-nodes','-days','1',
                '-subj','/CN='+SNI,'-addext','subjectAltName='+names,'-keyout',root/(name+'.key'),'-out',root/(name+'.pem')]);r.check_returncode()
     (root/'empty-ca').mkdir()
-    for transport in ('ws','xhttp','grpc'):
+    for transport in ('tcp','ws','xhttp','grpc'):
         scheme='trojan' if transport=='grpc' else 'vless'
         p=port();q={'security':'tls','type':transport,'sni':SNI,'fp':'chrome'}
         extra={'wsSettings':{'path':'/node'}} if transport=='ws' else {'xhttpSettings':{'path':'/node','mode':'auto'}} if transport=='xhttp' else {'grpcSettings':{'serviceName':'node'}}
+        if transport=='tcp':
+            extra={}
+            q['flow']='xtls-rprx-vision'
         q.update({'serviceName':'node'} if transport=='grpc' else {'path':'/node'})
         stream={'network':transport,'security':'tls','tlsSettings':{'certificates':[{'certificateFile':str(root/'cert.pem'),'keyFile':str(root/'cert.key')}]},**extra}
-        server=start(CORE,'server',server_config(p,stream,scheme))
+        conf=server_config(p,stream,scheme)
+        if transport=='tcp': conf['inbounds'][0]['settings']['clients'][0]['flow']='xtls-rprx-vision'
+        server=start(CORE,'server',conf)
         try:
             if not ready(p,server):raise RuntimeError('TLS fixture server did not start')
             out=parsed(q,p,scheme,PASSWORD if scheme=='trojan' else UUID)

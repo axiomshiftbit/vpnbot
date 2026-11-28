@@ -14,6 +14,13 @@ foreach (['hwid', 'connlog'] as $part) {
         $failed = false;
         try { $bot->store(); } catch (RuntimeException $e) { $failed = true; }
         if (!$failed) throw new RuntimeException("Повреждённый $part ошибочно отмечен как импортированный");
+        if ($part === 'hwid') {
+            file_put_contents("$root/hwid.json", json_encode(['retained' => ['device' => []], 'broken' => 'invalid']));
+            $failed = false;
+            try { $bot->store(); } catch (RuntimeException $e) { $failed = true; }
+            if (!$failed) throw new RuntimeException('Частичный перенос HWID ошибочно подтверждён');
+            $checks++;
+        }
         $valid = $part === 'hwid' ? ['u' => ['dev' => ['time' => 1]]] :
             ['u' => ['last' => time(), 'ips' => ['192.0.2.1' => ['first' => time(), 'last' => time(), 'count' => 1, 'dst' => []]]]];
         file_put_contents("$root/$part.json", json_encode($valid));

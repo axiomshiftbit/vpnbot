@@ -31,6 +31,7 @@ trait BotExitNodes
     public const EXIT_UNAVAILABLE = 'vpnbot:exit:unavailable:';
     public const EXIT_PROBE_PORT = 10870;
     public const EXIT_MAX = 8;
+    public const EXIT_STANDBY_DELAYS = [30, 60, 120, 300];
     public const EXIT_IPV6_SOURCE = 'fd42:7662:6::9';
     public const EXIT_IPV6_TAG = 'vpnbot-exit-local-ipv6';
     public const EXIT_PROBE_URL = 'https://www.gstatic.com/generate_204';
@@ -78,7 +79,7 @@ trait BotExitNodes
 
     public static function exitNodeDefaults(): array
     {
-        return ['name' => '', 'link' => '', 'kind' => 'remote', 'fallback' => 'direct', 'enabled' => 1, 'quic' => 'block', 'routes' => [], 'rulesets' => [],
+        return ['name' => '', 'link' => '', 'kind' => 'remote', 'fallback' => 'direct', 'standby' => '', 'standby_delay' => 60, 'enabled' => 1, 'quic' => 'block', 'routes' => [], 'rulesets' => [],
             'auto' => 0, 'created' => 0, 'status' => [], 'sub' => '', 'sub_time' => 0, 'sub_error' => '', 'members' => [], 'choice' => 'auto'];
     }
 
@@ -108,6 +109,13 @@ trait BotExitNodes
             // Отсутствующее поле получает legacy direct через defaults выше;
             // неизвестное значение из импорта не должно ослаблять запрет.
             $node['fallback'] = $node['kind'] === 'ipv6' || $node['fallback'] !== 'direct' ? 'block' : 'direct';
+            if ($node['standby'] !== '') {
+                $node['fallback'] = 'block';
+                if ($node['kind'] !== 'remote' || !is_string($node['standby']) || $node['standby'] === $id
+                    || !preg_match('~^(?:main|[a-f0-9]{8})$~D', $node['standby'])
+                    || !in_array($node['standby_delay'], self::EXIT_STANDBY_DELAYS, true)) $node['standby'] = '';
+            }
+            if (!in_array($node['standby_delay'], self::EXIT_STANDBY_DELAYS, true)) $node['standby_delay'] = 60;
             $node['enabled'] = empty($node['enabled']) ? 0 : 1;
             $node['quic'] = $node['quic'] === 'pass' ? 'pass' : 'block';
             $node['auto'] = empty($node['auto']) ? 0 : 1;
@@ -268,21 +276,72 @@ trait BotExitNodes
         $node = $this->exitNodes()[$id] ?? null;
         if ($node === null || $node['kind'] === 'ipv6') { $this->exitNodeMenu($id); return; }
         if (!in_array($choice, ['block', 'direct'], true)) {
-            $this->update($this->input['chat'], $this->input['message_id'], $this->t('При отказе: ', 'On failure: ') . $this->exitName($id, $node) . "\n\n"
-                . $this->t('Блокировать — выбранные назначения недоступны, пока узел не восстановится. Напрямую — они могут выйти с адреса этого сервера, в том числе сразу после запуска до первых успешных проб. Для ручного выбора участника группы отказ всегда блокирует маршрут.', 'Block: selected destinations stay unavailable until the node recovers. Direct: they may leave from this server, including just after startup before successful probes. A manually selected group member always blocks the route on failure.'), [
-                    [['text' => ($node['fallback'] === 'block' ? '✅ ' : '') . $this->t('Блокировать', 'Block'), 'callback_data' => "/exitPolicy $id block"]],
-                    [['text' => ($node['fallback'] === 'direct' ? '✅ ' : '') . $this->t('Разрешить прямой запасной выход', 'Allow direct fallback'), 'callback_data' => "/exitPolicy $id direct"]],
-                    $this->menuHelpButton('exitnodes', "settings_$id"),
-                    [['text' => $this->i18n('back'), 'callback_data' => "/exitSettings $id"]],
-                ]);
+            $data = [
+                [['text' => ($node['standby'] === '' && $node['fallback'] === 'block' ? '✅ ' : '') . $this->t('Блокировать', 'Block'), 'callback_data' => "/exitPolicy $id block"]],
+                [['text' => ($node['fallback'] === 'direct' ? '✅ ' : '') . $this->t('Разрешить прямой запасной выход', 'Allow direct fallback'), 'callback_data' => "/exitPolicy $id direct"]],
+            ];
+            $text = $this->t('При отказе: ', 'On failure: ') . $this->exitName($id, $node) . "\n\n"
+                . $this->t('Прямой запасной выход по спискам возможен сразу после запуска. Полный выход и ручной выбор участника группы при отказе блокируются.', 'Direct fallback for list routes can apply at startup. A full exit or a manually selected group member stays closed on failure.');
+            if ($node['kind'] === 'remote') {
+                $text .= "\n\n" . $this->t('Резерв с задержкой применяется и к спискам, и к полному выходу. Новые соединения переключаются после подтверждённой недоступности. При восстановлении основной узел снова получает трафик. Если запасная нода тоже недоступна, соединение закрывается.', 'Timed standby applies to list and full routes. New connections switch after a confirmed outage and return when the primary recovers. If the standby node also fails, the connection fails closed.');
+                $targets = ['main' => $this->t('Основной сервер', 'Main server')];
+                foreach ($this->exitNodes() as $key => $candidate) {
+                    if ((string) $key !== $id && $candidate['kind'] === 'remote' && $candidate['enabled'])
+                        $targets[$key] = $candidate['name'] ?: (string) $key;
+                }
+                foreach ($targets as $key => $label) $data[] = [[
+                    'text' => ($node['standby'] === (string) $key ? '✅ ' : '') . $this->t('Резерв: ', 'Standby: ') . $label,
+                    'callback_data' => "/exitStandby $id $key",
+                ]];
+                if ($node['standby'] !== '') {
+                    $text .= "\n" . $this->exitStandbyLabel($node);
+                    $row = [];
+                    foreach (self::EXIT_STANDBY_DELAYS as $seconds) $row[] = [
+                        'text' => ($node['standby_delay'] === $seconds ? '✅ ' : '') . $seconds . $this->t(' с', ' s'),
+                        'callback_data' => "/exitDelay $id $seconds",
+                    ];
+                    $data[] = $row;
+                }
+            }
+            $data[] = $this->menuHelpButton('exitnodes', "settings_$id");
+            $data[] = [['text' => $this->i18n('back'), 'callback_data' => "/exitSettings $id"]];
+            $this->update($this->input['chat'], $this->input['message_id'], $text, $data);
             return;
         }
         $error = $this->exitEditNode($id, static function (array &$node) use ($choice) {
             if ($node['kind'] === 'ipv6') return 'exit stale';
             $node['fallback'] = $choice;
+            $node['standby'] = '';
             return '';
         });
         $this->exitSettingsMenu($id, $error === '' ? '' : $this->exitError($error));
+    }
+
+    private function exitStandbyLabel(array $node): string
+    {
+        $id = $node['standby'];
+        $name = $id === 'main' ? $this->t('основной сервер', 'main server') : $this->exitName($id, $this->exitNodes()[$id] ?? ['name' => '']);
+        return $this->t('Резерв после ', 'Standby after ') . $node['standby_delay'] . $this->t(' с: ', ' s: ') . $name;
+    }
+
+    public function exitStandby(string $id, ?string $target, ?int $delay): void
+    {
+        $error = $this->exitEditNode($id, function (array &$node, array $pac) use ($id, $target, $delay) {
+            if ($node['kind'] !== 'remote') return 'exit stale';
+            if ($delay !== null) {
+                if ($node['standby'] === '' || !in_array($delay, self::EXIT_STANDBY_DELAYS, true)) return 'exit stale';
+                $node['standby_delay'] = $delay;
+            } else {
+                $backup = $this->exitNodes($pac)[$target] ?? [];
+                if ($target !== 'main' && ($target === $id || ($backup['kind'] ?? '') !== 'remote'
+                    || empty($backup['enabled']) || $this->exitNodeOutbound($backup) === null)) return 'exit stale';
+                $node['standby'] = $target;
+                $node['fallback'] = 'block';
+            }
+            return '';
+        });
+        if ($error === '') $this->exitFallback($id);
+        else $this->exitSettingsMenu($id, $this->exitError($error));
     }
 
     // Отпечаток учётки в кнопке: номер строки сдвигается при удалении
@@ -708,11 +767,37 @@ trait BotExitNodes
                     $groupTarget = ['outboundTag' => $selected === 'direct' ? $fallback : $selected];
                 }
             }
+            $timedTarget = null;
+            if ($node['standby'] !== '' && !$broken && $outbound['protocol'] !== 'blackhole') {
+                $backup = $node['standby'];
+                $next = 'direct';
+                $guard = [$id];
+                if ($backup !== 'main') {
+                    $candidate = $nodes[$backup] ?? [];
+                    $next = ($candidate['kind'] ?? '') === 'remote' && !empty($candidate['enabled'])
+                        && !$closed($backup) && $this->exitNodeOutbound($candidate) !== null ? self::EXIT_TAG . $backup : 'block';
+                    $guard[] = $backup;
+                }
+                if ($next !== 'block') $next = $this->exitGuardedFallback($c, $probe, $id, $nodes, $guard, $index - 1, $next, true);
+                $balancer = self::EXIT_TAG . "timed-$id-$backup-" . $node['standby_delay'] . '-' . $next;
+                $primary = $tag;
+                if (isset($fullUsers[$id]) && $blockedIps && !$delegate) {
+                    // Select the exit while the requested domain is still available. Each
+                    // path then checks the resolved IP and its own domain restrictions.
+                    $primary = $groupMembers[$tag] ??= $this->exitGroupMemberHop($c, $fullRules, $tag, $index - 1);
+                }
+                // Stay on the primary until the worker observes the configured outage window.
+                $c['routing']['balancers'][] = ['tag' => $balancer, 'selector' => [$primary], 'strategy' => ['type' => 'leastPing'], 'fallbackTag' => $primary];
+                $balanced[] = $primary;
+                $timedTarget = ['balancerTag' => $balancer];
+                $this->ensureBlockOutbound($c);
+                $this->ensureDirectOutbound($c);
+            }
             $probe[] = ['type' => 'field', 'ruleTag' => self::EXIT_RULE . $id . ':probe',
                 'inboundTag' => [self::EXIT_PROBE_TAG . $id]] + ($groupProbe ?? ['outboundTag' => $probeTarget]);
             if (isset($fullUsers[$id])) {
-                $target = $groupProbe ?? ['outboundTag' => $tag];
-                $resolve = !$delegate && (bool) $blockedIps;
+                $target = $timedTarget ?? $groupProbe ?? ['outboundTag' => $tag];
+                $resolve = $timedTarget === null && !$delegate && (bool) $blockedIps;
                 if ($resolve && $node['kind'] === 'group' && $members) {
                     // Members enforcing the confirmed controller list check the final IP
                     // after their own DNS. Other members need a controller-side lookup
@@ -761,8 +846,8 @@ trait BotExitNodes
             }
             $x = $this->listToXrayRules($entries);
             if (!$x['domain'] && !$x['ip']) continue;
-            $target = $groupTarget ?? ['outboundTag' => $tag];
-            if ($node['kind'] === 'remote' && ($broken || $outbound['protocol'] !== 'blackhole')) {
+            $target = $timedTarget ?? $groupTarget ?? ['outboundTag' => $tag];
+            if ($timedTarget === null && $node['kind'] === 'remote' && ($broken || $outbound['protocol'] !== 'blackhole')) {
                 $fallback = $node['fallback'] === 'direct' ? $this->exitGuardedFallback($c, $probe, $id, $nodes, [$id], $index - 1) : 'block';
                 if ($broken) {
                     $target = ['outboundTag' => $fallback];
@@ -916,18 +1001,21 @@ trait BotExitNodes
             'settings' => ['servers' => [['address' => '127.0.0.1', 'port' => $port, 'password' => $login]]]];
     }
 
-    /** Apply only the selected exits' confirmed blocks to traffic using the direct fallback. */
-    private function exitGuardedFallback(array &$c, array &$rules, string $id, array $nodes, array $members, int $slot): string
+    /** Preserve the selected exits' confirmed blocks before sending traffic through a fallback. */
+    private function exitGuardedFallback(array &$c, array &$rules, string $id, array $nodes, array $members, int $slot, string $egress = 'direct', bool $guardController = false): string
     {
         $domains = $ips = [];
         $managed = false;
+        $blockQuic = $guardController && str_starts_with($egress, self::EXIT_TAG)
+            && ($nodes[substr($egress, strlen(self::EXIT_TAG))]['quic'] ?? '') === 'block';
         foreach ($members as $member) {
             $policy = $nodes[$member]['policy'] ?? [];
             if (!$policy) continue;
             $managed = true;
             $routes = $policy['routes'] ?? $this->applyingNodeRoutes[$member] ?? null;
-            if (isset($policy['routes_digest'])) {
-                if ($policy['routes_digest'] === self::nodeRoutesDigest([])) continue;
+            if (($policy['routes_digest'] ?? null) === self::nodeRoutesDigest([])) {
+                $routes = [];
+            } elseif (isset($policy['routes_digest'])) {
                 if ($routes === null) {
                     try { $routes = $this->managedNodeTransport((string) $member, 'saved-routes')['routes'] ?? null; }
                     catch (Throwable $error) { return 'block'; }
@@ -943,26 +1031,30 @@ trait BotExitNodes
                 foreach ($block['ip'] ?? [] as $ip) $ips[$ip] = true;
             }
         }
-        if ($managed) foreach ($c['routing']['rules'] as $rule) {
-            if (($rule['ruleTag'] ?? '') === 'vpnbot:routes:block:ip') foreach ($rule['ip'] as $ip) $ips[$ip] = true;
+        if ($managed || $guardController) foreach ($c['routing']['rules'] as $rule) {
+            if (($rule['ruleTag'] ?? '') !== 'vpnbot:routes:block:ip') continue;
+            if ($guardController && !empty($rule['ip'])) $ips[self::DOCKER_NET] = true;
+            foreach ($rule['ip'] as $ip) $ips[$ip] = true;
         }
-        if (!$domains && !$ips) return 'direct';
+        $inspectRequest = $domains || $blockQuic;
+        if (!$inspectRequest && !$ips) return $egress;
         $name = 'fallback-' . $id;
         $tag = self::EXIT_TAG . $name;
-        if ($domains && $ips) {
+        if ($inspectRequest && $ips) {
             // ForceIP needs an inbound connection. A second bare loopback loses it in Xray.
             $this->exitLocalTrojanHop($c, $tag, self::EXIT_PROBE_PORT + 3 * self::EXIT_MAX + $slot, 'vpnbot/fallback/' . $id);
-        } elseif ($domains) {
+        } elseif ($inspectRequest) {
             $c['outbounds'][] = ['tag' => $tag, 'protocol' => 'loopback', 'settings' => ['inboundTag' => $tag]];
         }
         $source = ['type' => 'field', 'inboundTag' => [$tag]];
+        if ($blockQuic) $rules[] = $source + ['ruleTag' => self::EXIT_RULE . "$name:quic", 'network' => 'udp', 'port' => '443', 'outboundTag' => 'block'];
         if ($domains) $rules[] = $source + ['ruleTag' => self::EXIT_RULE . "$name:domain", 'domain' => array_map('strval', array_keys($domains)), 'outboundTag' => 'block'];
-        $target = 'direct';
+        $target = $egress;
         if ($ips) {
             $rules[] = ['type' => 'field', 'ruleTag' => self::EXIT_RULE . "$name:ip", 'inboundTag' => [self::EXIT_RESOLVE_TAG . $name],
                 'ip' => array_keys($ips), 'outboundTag' => 'block'];
-            $target = $this->exitResolvedHop($c, $rules, $name, ['outboundTag' => 'direct']);
-            if (!$domains) return $target;
+            $target = $this->exitResolvedHop($c, $rules, $name, ['outboundTag' => $egress]);
+            if (!$inspectRequest) return $target;
         }
         $rules[] = $source + ['ruleTag' => self::EXIT_RULE . "$name:allow", 'outboundTag' => $target];
         return $tag;
@@ -1603,8 +1695,8 @@ trait BotExitNodes
             }
             if ($before && !empty($before['ok']) !== !empty($now['ok'])) {
                 $this->notifyAdmins((!empty($now['ok']) ? $this->t('🟢 Узел выхода снова работает: ', '🟢 Exit node is working again: ')
-                    : (!self::exitDirectFallback($node) ? $this->t('🔴 Узел выхода не отвечает, его назначения блокируются (запасного выхода нет): ', '🔴 Exit node is not responding; its destinations are blocked (no fallback): ')
-                        : $this->t('🔴 Узел выхода не отвечает. Маршруты по спискам идут напрямую, полный выход блокируется: ', '🔴 Exit node is not responding. List-based routes go direct, full exits are blocked: ')))
+                    : ($node['standby'] !== '' ? '🔴 ' . $this->exitStandbyLabel($node) . ' · ' : (!self::exitDirectFallback($node) ? $this->t('🔴 Узел выхода не отвечает, его назначения блокируются (запасного выхода нет): ', '🔴 Exit node is not responding; its destinations are blocked (no fallback): ')
+                        : $this->t('🔴 Узел выхода не отвечает. Маршруты по спискам идут напрямую, полный выход блокируется: ', '🔴 Exit node is not responding. List-based routes go direct, full exits are blocked: '))))
                     . $name);
             }
             // Страна, которую видит YouTube, сменилась: видео и рекомендации
@@ -1789,7 +1881,7 @@ trait BotExitNodes
             $this->t("Маршрутов: $routes · наборов правил: $sets · пользователей: $users", "Routes: $routes · rule sets: $sets · users: $users"),
             $node['kind'] === 'group' ? $this->t('Трафик группы учитывается у её узлов.', 'Group traffic is counted at its member nodes.') : $this->exitTrafficLine($id),
             $this->t('QUIC к доменам узла: ', 'QUIC to node domains: ') . ($node['quic'] === 'block' ? $this->t('блокируется (браузер сразу идёт по TCP через узел)', 'blocked (the browser goes over TCP through the node right away)') : $this->t('пропускается', 'allowed')),
-            !self::exitDirectFallback($node) ? $this->t('При отказе: блокировать, без запасного выхода', 'On failure: block, no fallback') : $this->t('При отказе узла маршруты по спискам идут напрямую с этого сервера. Подтверждённая «Блокировка» сохраняется.', 'If the node fails, list-based routes go direct from this server. Confirmed Block rules still apply.'),
+            $node['standby'] !== '' ? $this->exitStandbyLabel($node) : (!self::exitDirectFallback($node) ? $this->t('При отказе: блокировать, без запасного выхода', 'On failure: block, no fallback') : $this->t('При отказе узла маршруты по спискам идут напрямую с этого сервера. Подтверждённая «Блокировка» сохраняется.', 'If the node fails, list-based routes go direct from this server. Confirmed Block rules still apply.')),
             $this->t('Новым пользователям: ', 'For new users: ') . ($node['auto'] ? $this->t('включается сразу', 'enabled at once') : $this->t('не включается', 'not enabled')));
         if ($node['kind'] === 'remote' && !isset($this->managedNodes()[$id])) $text[] = $this->exitSubLine($node);
         if ($node['kind'] === 'group') $text[] = $this->t('Выбор: ', 'Selection: ') . self::esc($this->exitChoiceLabel($node, $this->exitNodes()));
@@ -1814,13 +1906,13 @@ trait BotExitNodes
         if ($node === null) { $this->exitNodesMenu($this->t('Узел не найден', 'Node not found')); return; }
         $text = [$this->t('<b>⚙️ Настройки: ', '<b>⚙️ Settings: ') . $this->exitName($id, $node) . '</b>',
             $this->t('Тип: ', 'Type: ') . $this->exitKindLabel($node),
-            self::exitDirectFallback($node) ? $this->t('При отказе: напрямую с этого сервера', 'On failure: direct from this server') : $this->t('При отказе: блокировать, без запасного выхода', 'On failure: block, no fallback'),
+            $node['standby'] !== '' ? $this->exitStandbyLabel($node) : (self::exitDirectFallback($node) ? $this->t('При отказе: напрямую с этого сервера', 'On failure: direct from this server') : $this->t('При отказе: блокировать, без запасного выхода', 'On failure: block, no fallback')),
             $this->t('QUIC: ', 'QUIC: ') . ($node['quic'] === 'block' ? $this->t('блокировать UDP/443 к назначениям узла; браузер может перейти на TCP', 'block UDP/443 to node destinations; browsers may switch to TCP') : $this->t('разрешить', 'allow')),
             $this->t('Новым пользователям: ', 'New users: ') . ($node['auto'] ? $this->t('назначать этот выход', 'assign this exit') : $this->t('не назначать', 'do not assign'))];
         if ($node['kind'] === 'remote') $text[] = $this->exitSubLine($node);
         if ($notice !== '') $text[] = self::esc($notice);
         $data = [[['text' => $this->t('✏️ Имя', '✏️ Name'), 'callback_data' => "/exitName $id"]]];
-        if ($node['kind'] !== 'ipv6') $data[] = [['text' => $this->t('🛡 При отказе: ', '🛡 On failure: ') . ($node['fallback'] === 'block' ? $this->t('блокировать', 'block') : $this->t('напрямую', 'direct')), 'callback_data' => "/exitFallback $id"]];
+        if ($node['kind'] !== 'ipv6') $data[] = [['text' => $this->t('🛡 При отказе: ', '🛡 On failure: ') . ($node['standby'] !== '' ? $this->t('резерв с задержкой', 'timed standby') : ($node['fallback'] === 'block' ? $this->t('блокировать', 'block') : $this->t('напрямую', 'direct'))), 'callback_data' => "/exitFallback $id"]];
         $data[] = [['text' => 'QUIC: ' . ($node['quic'] === 'block' ? $this->t('блок', 'block') : $this->t('пропуск', 'allow')), 'callback_data' => "/exitQuic $id"]];
         $data[] = [['text' => $this->t('🆕 Новым пользователям: ', '🆕 New users: ') . ($node['auto'] ? $this->t('да', 'yes') : $this->t('нет', 'no')), 'callback_data' => "/exitAuto $id"]];
         if ($node['kind'] === 'remote' && !isset($this->managedNodes()[$id])) {
@@ -1985,7 +2077,7 @@ trait BotExitNodes
             if (!isset($this->exitNodes($p)[$id])) return 'exit not found';
             $node = $was = $this->exitNodes($p)[$id];
             $before = $this->exitStrictProblems($node);
-            $error = $edit($node);
+            $error = $edit($node, $p);
             if (is_string($error) && $error !== '') return $error;
             // Неготовая запись строгого узла закрыла бы его пользователям весь
             // трафик: такую правку не сохраняем. Прежние сбои (кэш пропал сам)
@@ -2990,8 +3082,8 @@ trait BotExitNodes
 
     private function exitFullHint(): string
     {
-        return $this->t('Слева — назначение маршрутов узла. «Весь трафик» направляет все внешние соединения пользователя Xray через один выбранный выход. При отказе доступ блокируется. Снятие отметки справа возвращает маршруты по спискам.',
-            'The left button assigns node routes. “All traffic” sends all external connections of this Xray user through one selected exit. Connections are blocked on failure. Clearing the right checkbox restores list-based routes.');
+        return $this->t('Слева — назначение маршрутов узла. «Весь трафик» направляет все внешние соединения пользователя Xray через выбранный выход. При отказе доступ блокируется, если для узла не задан резерв с задержкой. Снятие отметки справа возвращает маршруты по спискам.',
+            'The left button assigns node routes. “All traffic” sends all external connections of this Xray user through the selected exit. Connections are blocked on failure unless timed standby is configured. Clearing the right checkbox restores list-based routes.');
     }
 
     public static function exitFullKey(array $client): string
@@ -3287,9 +3379,15 @@ trait BotExitNodes
             $node = $this->exitNodes($p)[$id] ?? null;
             if ($node) return ($to === 'block' ? $this->t('🚫 Блокировка', '🚫 Blocked') : $this->t('🌍 Через выход ', '🌍 Through exit ') . $this->exitName($id, $node))
                 . ($to === self::EXIT_RESOLVE_TAG . $id ? $this->t(' (после проверки IP по блок-листу)', ' (subject to the IP block list)') : '')
-                . $this->t(' · весь трафик, при отказе блокируется', ' · all traffic, blocked on failure');
+                . ($node['standby'] !== '' && $to !== 'block'
+                    ? $this->t(' · весь трафик · ', ' · all traffic · ') . $this->exitStandbyLabel($node)
+                    : $this->t(' · весь трафик, при отказе блокируется', ' · all traffic, blocked on failure'));
         }
-        $text = $this->exitTraceOutbound($to);
+        if (preg_match('~^vpnbot-exit-timed-([a-f0-9]{8})-~', $to, $match) && ($node = $this->exitNodes($p)[$match[1]] ?? null)) {
+            $text = $this->t('🌍 Через выход ', '🌍 Through exit ') . $this->exitName($match[1], $node) . ' · ' . $this->exitStandbyLabel($node);
+        } else {
+            $text = $this->exitTraceOutbound($to);
+        }
         $entries = null;
         if (preg_match('~^vpnbot:routes:(block|warp):~', $tag, $m)) {
             $text .= "\n   " . ($m[1] === 'block' ? $this->t('правило: блок-лист (Vless → routes)', 'rule: block list (Vless → routes)') : $this->t('правило: список WARP (Vless → routes)', 'rule: WARP list (Vless → routes)'));

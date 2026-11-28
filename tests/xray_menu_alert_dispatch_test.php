@@ -16,6 +16,7 @@ require "$dir/i18n.php";
 
 class XrayMenuAlertFixture extends Bot
 {
+    public array $probes = [];
     public array $settings;
     public array $buttons = [];
     public array $sent = [];
@@ -35,7 +36,9 @@ class XrayMenuAlertFixture extends Bot
     public function getXrayVersion() { return 'test'; }
     public function getXrayStats() { return []; }
     public function onlineClients(int $window = 60): array { return []; }
-    public function xrayCoreProbe(bool $fresh = false): array { return ['ok' => true, 'active' => 'origin', 'running' => 'origin']; }
+    public function xrayCoreProbe(bool $fresh = false): array { if ($fresh) $this->probes[] = 'core'; return ['ok' => true, 'active' => 'origin', 'running' => 'origin']; }
+    public function realityMaskCheck(bool $fresh = false): ?array { if ($fresh) $this->probes[] = 'mask'; return null; }
+    public function xrayStatsUser() { $this->probes[] = 'stats'; }
     public function realityRequiresMlkem(): bool { return false; }
     public function getWgMsg() { return null; }
     public function ssh($cmd, $service = 'wg', $wait = true, $log = '/dev/null') { throw new RuntimeException('Unexpected remote call'); }
@@ -62,6 +65,11 @@ foreach (['ru', 'en'] as $language) {
         if ($transport === 'Reality' && !in_array('/selfFakeDomain', array_column($relay[0], 'callback_data'), true)) {
             throw new RuntimeException('Own cover must share the relay row');
         }
+        $row = array_values(array_filter($bot->buttons, static fn($r) => in_array('/onlines', array_column($r, 'callback_data'), true)));
+        if (count($row) !== 1 || array_column($row[0], 'callback_data') !== ['/onlines','/xrayRefresh 0']) throw new RuntimeException('refresh not beside Online');
+        $bot->input['callback'] = $row[0][1]['callback_data'];
+        $bot->action();
+        if ($bot->probes !== ($transport === 'Reality' ? ['core','mask','stats'] : ['core','stats'])) throw new RuntimeException('refresh omitted live status');
         $checks++;
     }
     $bot = new XrayMenuAlertFixture($i, $dir);

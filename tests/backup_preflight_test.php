@@ -42,6 +42,7 @@ try {
         'wg interface'=>['wg'=>['server'=>['interface'=>'invalid'],'clients'=>[]]],
         'wg clients'=>['wg'=>['server'=>[],'clients'=>'invalid']],
         'null pac'=>['pac'=>null], 'false hwid'=>['hwid'=>false],
+        'invalid device list'=>['hwid'=>['user'=>'invalid']], 'invalid device record'=>['hwid'=>['user'=>['device'=>null]]],
         'ovpn wrong key'=>['ovpn'=>array_map('base64_encode',array_replace($pki,['pki/private/server.key'=>$pair['ca_key']]))],
         'ovpn invalid certificate'=>['ovpn'=>array_map('base64_encode',array_replace($pki,['pki/issued/alice.crt'=>'corrupted PEM']))],
         'ipsec wrong key'=>['ipsec'=>array_map('base64_encode',['pki/ca.crt'=>$pair['ca'],'pki/server.crt'=>$pair['server'],'pki/server.key'=>$pair['ca_key']])],

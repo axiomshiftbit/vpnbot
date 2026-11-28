@@ -24,7 +24,7 @@ class ExitNodeSecurityCoreTest(unittest.TestCase):
         )
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         summary = json.loads(result.stdout.splitlines()[-1])
-        self.assertEqual(26 if len(cores) == 2 else 20, summary['total'])
+        self.assertEqual(30 if len(cores) == 2 else 24, summary['total'])
         self.assertEqual(summary['total'], summary['passed'], summary['results'])
 
 

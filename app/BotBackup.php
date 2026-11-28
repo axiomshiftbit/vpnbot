@@ -454,6 +454,7 @@ trait BotBackup
             'xraystats', 'managed_protocols', 'extra_files', 'telemt_quota'] as $key) {
             if (array_key_exists($key, $json) && !is_array($json[$key])) throw new InvalidArgumentException($this->t('Неверный раздел: ', 'Invalid section: ') . $key);
         }
+        if (isset($json['hwid'])) self::normalizeHwidStorage($json['hwid']);
         if (array_key_exists('xraystats', $json)) self::normalizeXrayStats($json['xraystats']);
         foreach (['ssl', 'dnstt', 'cloak', 'ckusers', 'ovpn', 'ipsec'] as $key) {
             if (isset($json[$key]) && $json[$key] !== false && !is_array($json[$key])) throw new InvalidArgumentException($this->t('Неверный раздел: ', 'Invalid section: ') . $key);
