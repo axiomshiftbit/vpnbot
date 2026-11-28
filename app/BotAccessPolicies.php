@@ -59,17 +59,17 @@ trait BotAccessPolicies
         if (!$this->admin) return;
         try {
             $text = trim($text);
-            if ($action === 'schedule') $value = AccessPolicy::schedule($text, time());
+            if ($action === 'schedule') {
+                $this->accessEditPreview($scope, $id, 'quota_schedule', AccessPolicy::schedule($text, time())); return;
+            }
             elseif ($action === 'alerts' && preg_match('/\A([0-9]{1,3}) ([0-9]{1,3})\z/D', $text, $m)) {
                 $value = ['percent' => (int) $m[1], 'days' => (int) $m[2]];
                 AccessPolicy::validate(['alerts' => $value]);
             } else throw new InvalidArgumentException($this->t('Неверное значение', 'Invalid value'));
-            $this->accessStore($scope)->change(static function (&$state) use ($id, $action, $value) {
+            $this->accessStore($scope)->change(static function (&$state) use ($id, $value) {
                 if (!isset($state['users'][$id])) throw new InvalidArgumentException(Lang::t('Пользователь удалён', 'User deleted'));
                 if (isset($state['users'][$id]['xray_source'])) throw new InvalidArgumentException(Lang::t('Этот доступ использует общий лимит VLESS', 'This access uses the shared VLESS limit'));
-                $field = $action === 'schedule' ? 'quota_schedule' : 'alerts';
-                if ($value === null) unset($state['users'][$id][$field]);
-                else $state['users'][$id][$field] = $value;
+                $state['users'][$id]['alerts'] = $value;
             });
             $this->accessPolicyMenu($scope, $id);
         } catch (RuntimeException | InvalidArgumentException $e) { $this->protocolError($e->getMessage(), $this->accessBack($scope, $id)); }
@@ -94,6 +94,7 @@ trait BotAccessPolicies
     public function checkAccessPolicies(?int $now = null): void
     {
         $now ??= time();
+        $this->captureAccessGroupUsage();
         $this->withLock('access-policies', function () use ($now) {
             $file = dirname($this->protocolModulesFile) . '/access-alerts.json';
             $seen = is_file($file) ? ManagedProtocol::readJson($file) : [];

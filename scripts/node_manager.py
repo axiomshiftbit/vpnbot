@@ -11,6 +11,7 @@ import re
 import secrets
 import shutil
 import signal
+import subprocess
 import sys
 import time
 import uuid
@@ -210,6 +211,8 @@ class Manager:
             bundle = matching_bundle(self.store, value['images'])
         generation = self.store.create(value, bundle)
         self.runtime.validate(generation)
+        if self.store.current():
+            self.checkpoint_peer_usage()
         pending = self.store.begin(generation)
         try:
             self.runtime.apply(generation)
@@ -416,6 +419,15 @@ class Manager:
         state.atomic(self.store.root/'job.json', state.encode(job))
         (self.store.root/'request.json').unlink(missing_ok=True)
 
+    def checkpoint_peer_usage(self):
+        # The node keeps accounting while the controller is offline. An
+        # unavailable counter must not interfere with guard or core recovery.
+        if hasattr(self.runtime, 'peer_counters'):
+            try:
+                self.runtime.peer_counters()
+            except (ValueError, RuntimeError, OSError, subprocess.SubprocessError):
+                pass
+
     def watch(self):
         """15-second pass: dead worker, expired confirmation, stopped containers, lost guard."""
         failure = None
@@ -441,13 +453,14 @@ class Manager:
                 raise
         if failure is not None:
             raise failure
+        self.checkpoint_peer_usage()
 
     def rpc(self, request):
         if not isinstance(request, dict) or not isinstance(request.get('action'), str):
             raise ValueError('invalid RPC request')
         action = request['action']
         fields = {'ping': set(), 'status': set(), 'tls_probe': set(), 'backup': set(), 'profile': {'peer'},
-                  'confirm': {'nonce'}, 'submit': {'request'}, 'job': {'id'}, 'warp_info': set(), 'routes': set()}
+                  'reset_peer_counter': {'peer', 'sequence'}, 'confirm': {'nonce'}, 'submit': {'request'}, 'job': {'id'}, 'warp_info': set(), 'routes': set()}
         if action not in fields or set(request) != fields[action] | {'action'}:
             raise ValueError('unknown action or fields')
         if action == 'ping':
@@ -463,8 +476,16 @@ class Manager:
                 host |= connections(status.get('sources') or [], options.get('vpn_sources') or [])
             except Exception:
                 host = {}
+            if hasattr(self.runtime, 'peer_counters'):
+                status['peer_counter_support'] = True
+                try:
+                    status['peer_counters'] = self.runtime.peer_counters()
+                except (ValueError, RuntimeError, OSError, TimeoutError, subprocess.SubprocessError):
+                    pass  # Old core configuration, unavailable counters or a pending generation.
             return status | {'code': code, 'host': host, 'warp_egress': True, 'shared_routes': True, 'controller_ip_guard': True,
                              'policy_summary': True, 'warp_account': True}
+        if action == 'reset_peer_counter':
+            return self.runtime.peer_counters(request['peer'], request['sequence'])
         if action == 'tls_probe':
             return self.runtime.tls_probe()
         if action == 'routes':

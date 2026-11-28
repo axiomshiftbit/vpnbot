@@ -334,6 +334,25 @@ class Runtime:
             raise RuntimeError('container name belongs to another installation')
         return info
 
+    def peer_counters(self, target=None, sequence=0):
+        import node_counters
+        value = self.store.load()
+        def read():
+            # The container ID binds both the process epoch and the exec. A replaced
+            # container cannot supply bytes for the previous instance.
+            info = self.container()
+            if not info or not info['State']['Running']:
+                raise RuntimeError('node core unavailable')
+            mounts = [m.get('Source') for m in info.get('Mounts', []) if m.get('Destination') == '/node']
+            if mounts != [str(self.store.path(self.store.current()) / 'runtime/core')]:
+                raise RuntimeError('node core generation changed')
+            container = info['Id']
+            core = config.CORES[value['options']['core']]
+            result = command(['docker', 'exec', container, core, 'api', 'statsquery',
+                              '--server=unix://' + node_counters.SOCKET, '--timeout=3'], timeout=5)
+            return container + ':' + info['State']['StartedAt'], json.loads(result.stdout)
+        return node_counters.sample(self.store, value['peers'], read, target, sequence)
+
     def stop(self):
         # Check ownership of every name before removing any container.
         existing = [name for name in (CONTAINER, COVER_CONTAINER, AWG_CONTAINER, WARP_CONTAINER, LEGACY_DNS_CONTAINER) if self.container(name, strict=True) is not None]

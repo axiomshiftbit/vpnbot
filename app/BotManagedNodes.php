@@ -701,6 +701,9 @@ trait BotManagedNodes
             'Manage separate servers over SSH. The main bot controls routes, rule sets and users.')];
         $data = [];
         foreach ($this->managedNodes() as $id => $node) $data[] = [['text' => ($node['job'] ? '⏳ ' : ($node['connected'] ? '🖥 ' : '➕ ')) . $node['name'], 'callback_data' => "/node $id"]];
+        foreach ($this->managedNodes() as $node) {
+            if (!empty($node['peer_resets'])) $text[] = self::esc($node['name']) . $this->t(' · ожидают сброса: ', ' · pending resets: ') . count($node['peer_resets']);
+        }
         if (count($data) < self::EXIT_MAX) $data[] = [['text' => $this->t('➕ Добавить ноду', '➕ Add node'), 'callback_data' => '/nodeAdd']];
         $data[] = [['text' => $this->t('🌍 Узлы выхода и локальный IPv6', '🌍 Exit nodes and local IPv6'), 'callback_data' => '/exits']];
         $data[] = $this->menuHelpButton('managednodes');
@@ -963,6 +966,7 @@ trait BotManagedNodes
                 elseif (time() - (int) ($node['cert_alert'] ?? 0) >= 86400) { $node['cert_alert'] = time(); $alert = (string) $node['name']; }
             });
             if ($alert !== null) $this->notifyAdmins($this->managedNodeCertificateAlert($alert, $expires));
+            if (!empty($this->managedNodes()[$id]['peer_resets'])) $this->deliverPeerResets($id);
         } catch (Throwable $error) {
             $this->managedNodeWrite($id, static function (&$node) { $node['status_error']=true; });
             throw $error;

@@ -6,6 +6,7 @@ import re
 import uuid
 from urllib.parse import urlencode
 import node_policy
+import node_counters
 import node_xray
 import node_cover
 import node_wg
@@ -337,6 +338,8 @@ def core_config(options, host, keys, external=None, warp_outbound=None):
             {'type': 'field', 'inboundTag': ['warp-resolved'], 'ip': ['0.0.0.0/0'], 'outboundTag': 'warp'},
             {'type': 'field', 'inboundTag': ['warp-resolved'], 'outboundTag': 'block'},
             {'type': 'field', 'inboundTag': ['node'], 'user': ['vpnbot/warp'], 'outboundTag': 'warp-resolve'}])
+    if any(p.get('channel', 'vless') != 'wireguard' for p in (external or [])):
+        node_counters.enable(result)
     return result
 
 

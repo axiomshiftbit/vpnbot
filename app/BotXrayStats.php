@@ -26,7 +26,13 @@ trait BotXrayStats
     private static function normalizeXrayStats(array $stats): array
     {
         $fail = static function () { throw new XrayStatsUnavailable('Xray statistics schema is invalid'); };
-        if (array_diff_key($stats, array_flip(['_schema', 'global', 'session', 'users', 'inbounds', 'exits']))) $fail();
+        if (array_diff_key($stats, array_flip(['_schema', 'global', 'session', 'users', 'inbounds', 'exits', 'group_epochs']))) $fail();
+        if (array_key_exists('group_epochs', $stats)) {
+            if (!is_array($stats['group_epochs'])) $fail();
+            foreach ($stats['group_epochs'] as $source => $epoch) {
+                if (($source !== 'all' && !preg_match('/^[a-f0-9]{32}$/D', (string) $source)) || !is_string($epoch) || !preg_match('/^[a-f0-9]{16}$/D', $epoch)) $fail();
+            }
+        }
         $versioned = array_key_exists('_schema', $stats);
         if ($versioned && ($stats['_schema'] !== 1 || !isset($stats['global'], $stats['session'], $stats['users']))) $fail();
         $pair = static function ($value, array $keys) use ($fail): void {

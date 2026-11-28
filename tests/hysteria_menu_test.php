@@ -10,6 +10,7 @@ class HyMenuBot extends Bot {
         $this->hysteriaUsersRoot="$root/hysteria"; $this->hysteriaConf="$root/hysteria.yaml"; $this->update="$root/backup.json";
         $this->ip='2001:db8::10'; $this->admin=true; $this->input=['chat'=>1,'message_id'=>1,'callback_id'=>'test'];
     }
+    protected function sessionApply(callable $fn) { $fn(); }
     public function getPacConf() { return $this->conf; }
     public function setPacConf(array $conf) { $this->conf=$conf;return true; }
     public function getPorts() { return ['hy'=>['enable'=>true,'port'=>443]]; }
@@ -47,13 +48,14 @@ try {
     foreach($b->buttons as $row)foreach($row as $button)$check(strlen($button['callback_data'])<=64,'Callback укладывается в Telegram');
     $b->hyUserCommand($id,'quota');$check($b->prompt['callback']==='hyUserReply' && $b->prompt['args']===[$id,'quota'],'Ответ на prompt сохраняет пользователя и поле');
     foreach(['-1','1e6','1000001','NaN'] as $bad){$before=$store->read();$b->hyUserReply($bad,$id,'quota');$check($store->read()===$before,'Неверная квота не меняет состояние');}
-    $b->hyUserReply('0,5',$id,'quota');$check($store->read()['users'][$id]['quota']===536870912,'Дробная квота в GiB');
+    $b->hyUserReply('0,5',$id,'quota');$check($store->read()['users'][$id]['quota']===null,'Ввод квоты открывает предпросмотр');
+    $b->accessEditFinish($_SESSION['access_review'][1]['token'],true);$check($store->read()['users'][$id]['quota']===536870912,'Дробная квота в GiB');
     $check($b->hyPersonalLink($id)==='','Ссылка с квотой ждёт появления счётчиков');
     $user=$store->read()['users'][$id];$usage=['users'=>[$id=>['reset'=>$user['reset'],'upload'=>1024,'download'=>2048]]];
     ManagedProtocol::writeJson("$root/hysteria/runtime/usage.json",$usage);$check($b->hyPersonalLink($id)!=='','Счётчики разрешают выдачу');
     $before=$store->read();$b->hyUserReply('2027-02-30 12:00',$id,'expires');$check($store->read()===$before,'Несуществующая дата отклонена');
-    $b->hyUserReply('2000-01-01 00:00',$id,'expires');$check($b->hyPersonalLink($id)==='','Истёкший срок запрещает экспорт');
-    $b->hyUserReply('0',$id,'expires');$b->hyUserCommand($id,'toggle');$check($b->hyPersonalLink($id)==='','Отозванный доступ не экспортируется');
+    $b->hyUserReply('2000-01-01 00:00',$id,'expires');$b->accessEditFinish($_SESSION['access_review'][1]['token'],true);$check($b->hyPersonalLink($id)==='','Истёкший срок запрещает экспорт');
+    $b->hyUserReply('0',$id,'expires');$b->accessEditFinish($_SESSION['access_review'][1]['token'],true);$b->hyUserCommand($id,'toggle');$check($b->hyPersonalLink($id)==='','Отозванный доступ не экспортируется');
     $b->hyUserCommand($id,'toggle');$old=$store->read()['users'][$id]['password'];$b->hyUserCommand($id,'rotate');$check($store->read()['users'][$id]['password']!==$old,'Меню меняет реквизиты');
     $b->module=false;$check($b->hyPersonalLink($id)==='','Выключенный модуль не выдаёт ссылки');$b->module=true;
     $b->conf['domain']='';$link=$b->linkHysteria();$check(str_contains($link,'@[2001:db8::10]:443/'),'IPv6 Hysteria заключён в скобки');

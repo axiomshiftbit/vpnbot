@@ -644,6 +644,7 @@ trait BotProtocols
                 if (!isset($state['users'][$id])) throw new RuntimeException($this->t('Доступ не найден', 'Access not found'));
                 $store->user($id, ['enabled' => !$state['users'][$id]['enabled']]);
             } elseif (in_array($action, ['delete', 'rotate', 'rotate-outer', 'rotate-inner', 'reset'], true)) {
+                if ($action === 'delete' || $action === 'reset') $this->captureAccessGroupUsage();
                 $store->user($id, [], $action);
                 if ($action === 'delete') $id = '';
             } elseif ($action === 'export') {
@@ -724,14 +725,14 @@ trait BotProtocols
             if ($action === 'name') $store->user($id, ['name' => $input]);
             elseif ($action === 'quota') {
                 if (!preg_match('/\A\d+(?:\.\d{1,3})?\z/D', $input) || (float) $input > 1000000) throw new InvalidArgumentException($this->t('Неверный лимит', 'Invalid limit'));
-                $store->user($id, ['quota' => (float) $input == 0 ? null : (int) round((float) $input * 1073741824)]);
+                $this->accessEditPreview($protocol, $id, 'quota', (float) $input == 0 ? null : (int) round((float) $input * 1073741824)); return;
             } elseif ($action === 'rolling') {
                 if ($protocol !== 'mieru' || ($input !== '0' && !preg_match('/\A([0-9]{1,3}) ([0-9]{1,10})\z/D', $input, $m))) throw new InvalidArgumentException($this->t('Нужны дни и МиБ', 'Days and MiB are needed'));
                 $store->user($id, ['rolling_quota' => $input === '0' ? null : ['days' => (int) $m[1], 'megabytes' => (int) $m[2]]]);
             } elseif ($action === 'expires') {
                 $time = DateTimeImmutable::createFromFormat('!Y-m-d H:i', $input, new DateTimeZone('UTC'));
                 if ($input !== '0' && (!$time || $time->format('Y-m-d H:i') !== $input)) throw new InvalidArgumentException($this->t('Неверная дата UTC', 'Invalid UTC date'));
-                $store->user($id, ['expires' => $input === '0' ? null : $time->getTimestamp()]);
+                $this->accessEditPreview($protocol, $id, 'expires', $input === '0' ? null : $time->getTimestamp()); return;
             } elseif ($action === 'settings') {
                 $parts = preg_split('/\s+/', $input);
                 if ($protocol === 'snolc') {
@@ -859,6 +860,7 @@ trait BotProtocols
             $buttons[] = [['text' => $this->t('Relay для подписок', 'Relays for subscriptions'), 'callback_data' => "/prmanage $protocol"]];
             $legacy = array_filter($s['users'], static fn($u) => !isset($u['xray_source']));
             if ($legacy) $text[] = $this->t('Ниже — ранее созданные отдельные доступы. Их настройки и старые ссылки сохранены для действующих клиентов.', 'Below are previously created separate access entries. Their settings and old links are kept for existing clients.');
+            $buttons[] = [['text' => $this->t('Группы пользователей', 'User groups'), 'callback_data' => '/ag']];
             if ($legacy) $buttons[] = [['text' => $this->t('Групповые действия · отдельные доступы', 'Bulk actions · separate access'), 'callback_data' => "/abstart $protocol"]];
             $last = max(0, (int) ceil(count($legacy) / 20) - 1); $page = min(max(0, $page), $last);
             foreach (array_slice($legacy, $page * 20, 20, true) as $uid => $user) $buttons[] = [['text' => mb_substr($user['name'], 0, 45), 'callback_data' => "/protocol $protocol user $uid"]];

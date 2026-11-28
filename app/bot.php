@@ -9,6 +9,8 @@ require_once __DIR__ . '/BotHysteria.php';
 require_once __DIR__ . '/BotAccessPolicies.php';
 require_once __DIR__ . '/BotServiceDiagnostics.php';
 require_once __DIR__ . '/BotAccessBatch.php';
+require_once __DIR__ . '/BotAccessPreview.php';
+require_once __DIR__ . '/BotAccessGroups.php';
 require_once __DIR__ . '/BotMenuHelp.php';
 require_once __DIR__ . '/BotTelemtLimits.php';
 require_once __DIR__ . '/BotTelemtActivity.php';
@@ -35,6 +37,8 @@ class Bot
     use BotAccessPolicies;
     use BotServiceDiagnostics;
     use BotAccessBatch;
+    use BotAccessPreview;
+    use BotAccessGroups;
     use BotMenuHelp;
     use BotTelemtLimits;
     use BotTelemtActivity;
@@ -606,7 +610,7 @@ class Bot
         if (empty($r['result']['message_id'])) {
             return;
         }
-        if (in_array($state['callback'] ?? '', ['setTimerXr', 'setXrPwd', 'renXrUs', 'saveTrafficXr', 'saveHwidUserLimit', 'extAddSave', 'extRenameSave'], true)) {
+        if (in_array($state['callback'] ?? '', ['previewXrayEdit', 'setTimerXr', 'setXrPwd', 'renXrUs', 'saveTrafficXr', 'saveHwidUserLimit', 'extAddSave', 'extRenameSave'], true)) {
             $state['xray_source'] = $this->xrayActionSource ?? '';
         }
         $state['chat'] = $this->input['chat'];
@@ -797,8 +801,26 @@ class Bot
             $this->input['callback'] = $mw['cb'];
         }
         switch (true) {
-            case preg_match('~^/abstart (hy|anytls|mieru|tuic|shadowtls|snolc|masque)$~D', $this->input['callback'], $m):
-                $this->accessBatchStart($m[1]);
+            case preg_match('~^/ag(?: (list|new|show|rename|members)(?: ([a-f0-9]{10})(?: ([0-9]{1,6}))?)?)?$~D', $this->input['callback'], $m):
+                $this->accessGroupCommand($m[1] ?? 'list', $m[2] ?? '', '', (int) ($m[3] ?? 0));
+                break;
+            case preg_match('~^/agxr ([a-f0-9]{10}) ([0-9]{1,6})$~D', $this->input['callback'], $m):
+                $this->groupXrayPrompt($m[1], (int) $m[2]);
+                break;
+            case preg_match('~^/agxrapply ([a-f0-9]{16}) (yes|no)$~D', $this->input['callback'], $m):
+                $this->groupXrayFinish($m[1], $m[2] === 'yes');
+                break;
+            case preg_match('~^/agpick ((?:xr[.][a-f0-9]{32}|(?:hy|anytls|mieru|tuic|shadowtls|snolc|masque)[.][a-f0-9]{16}))$~D', $this->input['callback'], $m):
+                $this->accessGroupCommand('pick', '', $m[1]);
+                break;
+            case preg_match('~^/agmove (-|[a-f0-9]{10}) ((?:xr[.][a-f0-9]{32}|(?:hy|anytls|mieru|tuic|shadowtls|snolc|masque)[.][a-f0-9]{16}))$~D', $this->input['callback'], $m):
+                $this->accessGroupCommand('move', $m[1], $m[2]);
+                break;
+            case preg_match('~^/areview ([a-f0-9]{24}) (apply|cancel)$~D', $this->input['callback'], $m):
+                $this->accessEditFinish($m[1], $m[2] === 'apply');
+                break;
+            case preg_match('~^/abstart (hy|anytls|mieru|tuic|shadowtls|snolc|masque)(?: ([a-f0-9]{10}))?$~D', $this->input['callback'], $m):
+                $this->accessBatchStart($m[1], $m[2] ?? '');
                 break;
             case preg_match('~^/ab ([a-f0-9]{12})(?: (show|pick|page|extend|quota|disable|reset|apply|cancel))?(?: ([a-f0-9]{12}|[a-f0-9]{16}|[0-9]{1,6}))?$~D', $this->input['callback'], $m):
                 $this->accessBatch($m[1], $m[2] ?? 'show', $m[3] ?? '');
@@ -1059,7 +1081,7 @@ class Bot
             case preg_match('~^/nodePeer ([a-f0-9]{8}) ([a-f0-9]{10})$~', $this->input['callback'], $m):
                 $this->managedNodePeerMenu($m[1], $m[2]);
                 break;
-            case preg_match('~^/nodePeerDo ([a-f0-9]{8}) ([a-f0-9]{10}) (on|off|rotate|delete|vless|wireguard|amnezia)(?: (yes))?$~', $this->input['callback'], $m):
+            case preg_match('~^/nodePeerDo ([a-f0-9]{8}) ([a-f0-9]{10}) (on|off|rotate|delete|vless|wireguard|amnezia|reset)(?: (yes))?$~', $this->input['callback'], $m):
                 $this->managedNodePeerAction($m[1], $m[2], $m[3], isset($m[4]));
                 break;
             case preg_match('~^/nodePeerOut ([a-f0-9]{8}) ([a-f0-9]{10}) (link|json|sub|https)$~', $this->input['callback'], $m):
@@ -12189,7 +12211,7 @@ NFT;
             // несколько апдейтов подряд, и флаг не должен утечь в следующий.
             $this->replyMenuEdit = true;
             $previousSource = $this->xrayActionSource;
-            if (in_array($callback, ['setTimerXr', 'setXrPwd', 'renXrUs', 'saveTrafficXr', 'saveHwidUserLimit', 'extAddSave', 'extRenameSave'], true)) $this->xrayActionSource = (string) ($state['xray_source'] ?? '');
+            if (in_array($callback, ['previewXrayEdit', 'setTimerXr', 'setXrPwd', 'renXrUs', 'saveTrafficXr', 'saveHwidUserLimit', 'extAddSave', 'extRenameSave'], true)) $this->xrayActionSource = (string) ($state['xray_source'] ?? '');
             try {
                 $this->{$callback}($this->input['message'], ...$state['args']);
             } catch (Throwable $e) {
@@ -12805,8 +12827,8 @@ NFT;
         );
         $this->stashReply($r, [
             'start_message' => $this->input['message_id'],
-            'callback'      => 'setTimerXr',
-            'args'          => [$k],
+            'callback'      => 'previewXrayEdit',
+            'args'          => [$k, 'expires'],
         ]);
     }
 
@@ -28498,6 +28520,7 @@ DNS-over-HTTPS with IP:
             $r = $this->getXray();
             $client = $r['inbounds'][0]['settings']['clients'][$i] ?? null;
             if ($client === null || ($expectedSource !== null && !hash_equals($expectedSource, ManagedProtocol::xraySource($client)))) return false;
+            $this->captureAccessGroupUsage();
             $beforeClients = $r['inbounds'][0]['settings']['clients'];
             try { $before = $this->getXrayStats(); }
             catch (XrayStatsUnavailable $error) { $before = null; }
@@ -29078,9 +29101,11 @@ DNS-over-HTTPS with IP:
             $x = $this->getXray();
             $client = $only === null ? null : ($x['inbounds'][0]['settings']['clients'][$only] ?? null);
             if ($only !== null && $client === null) return false;
+            $this->captureAccessGroupUsage();
             // A user reset cannot replace an unknown shared ledger with zero.
-            $this->withXrayStatsLock(function () use ($only) {
+            $this->withXrayStatsLock(function () use ($only, $client) {
                 $stats = $only === null ? [] : $this->getXrayStats();
+                $stats['group_epochs'][$client === null ? 'all' : ManagedProtocol::xraySource($client)] = bin2hex(random_bytes(8));
                 if ($only !== null) unset($stats['users'][$only]);
                 if ($this->setXrayStats($stats) === false) throw new RuntimeException('Could not reset Xray statistics');
             });
@@ -30539,6 +30564,7 @@ DNS-over-HTTPS with IP:
         if (!empty($extra)) {
             $text[] = 'session: ' . implode('  ', $extra);
         }
+        $data[] = [['text' => $this->t('Группы пользователей', 'User groups'), 'callback_data' => '/ag']];
         $data[] = [
             [
                 'text'          => $this->i18n('reset stats'),
@@ -32568,8 +32594,8 @@ DNS-over-HTTPS with IP:
         $this->stashReply($r, [
             'start_message'  => $this->input['message_id'],
             'start_callback' => $this->input['callback_id'],
-            'callback'       => 'saveTrafficXr',
-            'args'           => [$i],
+            'callback'       => 'previewXrayEdit',
+            'args'           => [$i, 'quota'],
         ]);
     }
 
@@ -32587,16 +32613,16 @@ DNS-over-HTTPS with IP:
     private function saveTrafficXrLocked($gb, $i)
     {
         if (!$this->xrayClientMatches((int) $i)) return $this->staleXrayAction();
-        $x  = $this->getXray();
-        if (!isset($x['inbounds'][0]['settings']['clients'][$i])) {
-            $this->xray();
-            return;
-        }
-        // Accept a decimal number of GiB (matches getBytes display); 0/empty clears.
         $gb = (float) str_replace(',', '.', trim((string) $gb));
+        $this->writeTrafficXrLocked($gb > 0 ? (int) round($gb * 1024 ** 3) : null, $i);
+    }
+
+    private function writeTrafficXrLocked(?int $limit, $i): void
+    {
+        $x = $this->getXray();
+        if (!isset($x['inbounds'][0]['settings']['clients'][$i])) { $this->xray(); return; }
         $needsRestart = false;
-        if ($gb > 0) {
-            $limit = (int) round($gb * 1024 ** 3);
+        if ($limit !== null) {
             $x['inbounds'][0]['settings']['clients'][$i]['traffic'] = $limit;
             // Raising the limit above current usage lifts this client's quota ban.
             if (!empty($x['inbounds'][0]['settings']['clients'][$i]['traffic_off'])

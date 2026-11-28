@@ -48,6 +48,18 @@ trait BotManagedNodePeers
         if ($channel==='amnezia') $text[]=str_replace('VLESS',$direct,$this->t('Для 3x-ui 3.11.0 импортируйте оба outbound из JSON. Маршруты панели направляйте в первый, VLESS: он использует защищённый канал Amnezia. Обычная VLESS-ссылка этот канал не включает.',
             'For 3x-ui 3.11.0 import both JSON outbounds. Route panel traffic to the first, VLESS, which uses the Amnezia carrier. A plain VLESS link does not include this carrier.'));
         $data = [];
+        if ($channel !== 'wireguard') {
+            $node = $this->managedNodes()[$id];
+            $identity = self::managedPeerCounterId($peer);
+            $bytes = $node['status']['peer_counters'][$identity] ?? null;
+            $pending = isset($node['peer_resets'][$identity]);
+            $text[] = $this->t('Расход на ноде: ', 'Usage on node: ') . (is_array($bytes)
+                ? '↑' . $this->getBytes($bytes['uplink']) . ' ↓' . $this->getBytes($bytes['downlink'])
+                    . ' · ' . gmdate('Y-m-d H:i', $node['checked']) . ' UTC'
+                : $this->t('нет показаний', 'unavailable'));
+            if ($pending) $text[] = $this->t('Сброс ожидает подтверждения ноды.', 'Reset awaiting node acknowledgement.');
+            if (!empty($node['status']['peer_counter_support'])) $data[] = [['text' => $this->t('Сбросить расход на ноде', 'Reset usage on node'), 'callback_data' => "/nodePeerDo $id $key reset"]];
+        } else $text[] = $this->t('У этого канала WireGuard нет отдельного счётчика Xray.', 'This WireGuard channel has no individual Xray traffic counter.');
         foreach (['vless'=>$direct,'wireguard'=>'WireGuard','amnezia'=>'AmneziaWG'] as $kind=>$title) {
             $data[]=[['text'=>($channel===$kind?'✓ ':'').$title,'callback_data'=>"/nodePeerDo $id $key $kind"]];
         }
@@ -88,15 +100,29 @@ trait BotManagedNodePeers
     public function managedNodePeerAction(string $id, string $key, string $action, bool $confirmed = false): void
     {
         $peer = $this->managedNodePeer($id, $key);
-        if (!$peer || !in_array($action, ['on', 'off', 'rotate', 'delete', 'vless', 'wireguard', 'amnezia'], true)) { $this->managedNodePeersMenu($id); return; }
+        if (!$peer || !in_array($action, ['on', 'off', 'rotate', 'delete', 'vless', 'wireguard', 'amnezia', 'reset'], true)) { $this->managedNodePeersMenu($id); return; }
         if (!$confirmed) {
-            $label = $this->t(...['on' => ['включить', 'enable'], 'off' => ['отключить', 'disable'],
+            $label = $this->t(...['reset' => ['сбросить расход на ноде', 'reset usage on node'], 'on' => ['включить', 'enable'], 'off' => ['отключить', 'disable'],
                 'rotate' => ['сменить ключ', 'rotate identity'], 'delete' => ['удалить', 'delete'],
                 'vless'=>['использовать VLESS','use VLESS'], 'wireguard'=>['использовать WireGuard','use WireGuard'], 'amnezia'=>['использовать AmneziaWG','use AmneziaWG']][$action]);
             $this->update($this->input['chat'], $this->input['message_id'],
                 $this->t('Применить изменение к подключению ', 'Apply this change to connection ') . '<b>' . self::esc($peer['name']) . '</b> (' . $label . ')?',
                 [[['text' => $this->t('Применить', 'Apply'), 'callback_data' => "/nodePeerDo $id $key $action yes"]],
                  [['text' => $this->i18n('back'), 'callback_data' => "/nodePeer $id $key"]]]);
+            return;
+        }
+        if ($action === 'reset') {
+            if (!$this->admin || ($peer['channel'] ?? '') === 'wireguard') return;
+            $identity = self::managedPeerCounterId($peer);
+            $this->managedNodeWrite($id, static function (&$node) use ($identity) {
+                if (empty($node['status']['peer_counter_support'])) return false;
+                $last = max($node['counter_sequence'] ?? 0, $node['status']['peer_counters'][$identity]['sequence'] ?? 0);
+                $node['counter_sequence'] = max((int) (microtime(true) * 1000000), $last + 1);
+                $node['peer_resets'][$identity] = $node['counter_sequence'];
+            });
+            try { $this->managedNodeLocked($id, fn() => $this->deliverPeerResets($id)); }
+            catch (Throwable $error) { /* A saved reset is retried by the next status poll. */ }
+            $this->managedNodePeerMenu($id, $key);
             return;
         }
         $peers = [];
@@ -112,6 +138,28 @@ trait BotManagedNodePeers
         }
         try { $this->managedNodeSubmit($id, 'peers', $peers, (string) ($status['generation'] ?? '')); $this->managedNodeMenu($id); }
         catch (Throwable $e) { $this->managedNodePeersMenu($id, $this->t('Операция не запущена. Обновите состояние ноды и повторите.', 'Operation not started. Refresh the node status and retry.')); }
+    }
+
+    private static function managedPeerCounterId(array $peer): string
+    {
+        return substr(hash('sha256', 'peer-counter:' . $peer['id']), 0, 32);
+    }
+
+    private function deliverPeerResets(string $id): void
+    {
+        $node = $this->managedNodes()[$id] ?? [];
+        if (empty($node['status']['peer_counter_support']) || !empty($node['job'])) return;
+        foreach ($node['peer_resets'] ?? [] as $peer => $sequence) {
+            $reply = $this->managedNodeRpc($id, ['action' => 'reset_peer_counter', 'peer' => $peer, 'sequence' => $sequence]);
+            if (($reply['peer'] ?? '') !== $peer || ($reply['sequence'] ?? 0) !== $sequence
+                || !in_array($reply['result'] ?? '', ['applied', 'superseded', 'removed'], true)) continue;
+            $this->managedNodeWrite($id, static function (&$node) use ($peer, $sequence) {
+                if (($node['peer_resets'][$peer] ?? null) !== $sequence) return false;
+                unset($node['peer_resets'][$peer], $node['status']['peer_counters'][$peer]);
+                if (!$node['peer_resets']) unset($node['peer_resets']);
+                $node['status_attempt'] = 0;
+            });
+        }
     }
 
     public function managedNodePeerExport(string $id, string $key, string $format): void

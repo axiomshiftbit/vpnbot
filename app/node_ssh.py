@@ -321,7 +321,7 @@ class Client:
             path = self.directory/'endpoint.json'
             trusted(path)
             target = endpoint(decode(path.read_bytes()))
-        if not isinstance(request, dict) or request.get('action') not in ('ping', 'status', 'tls_probe', 'backup', 'profile', 'confirm', 'submit', 'job', 'warp_info', 'routes'):
+        if not isinstance(request, dict) or request.get('action') not in ('ping', 'status', 'tls_probe', 'backup', 'profile', 'confirm', 'submit', 'job', 'warp_info', 'routes', 'reset_peer_counter'):
             raise ValueError('request')
         args = self.ssh(target)
         if policy_request(request):
@@ -333,7 +333,7 @@ class Client:
         deadline = self.deadline
         # submit too: "busy" means the node refused before queueing anything, and
         # its one-second status/watch passes would otherwise fail a user's Apply.
-        attempts = 4 if request['action'] in ('ping', 'status', 'tls_probe', 'backup', 'profile', 'job', 'submit', 'warp_info', 'routes') else 1
+        attempts = 4 if request['action'] in ('ping', 'status', 'tls_probe', 'backup', 'profile', 'job', 'submit', 'warp_info', 'routes', 'reset_peer_counter') else 1
         for attempt in range(attempts):
             remaining = deadline-time.monotonic()
             if remaining <= 0:

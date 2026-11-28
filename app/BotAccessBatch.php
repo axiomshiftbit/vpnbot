@@ -22,15 +22,28 @@ trait BotAccessBatch
         return $out;
     }
 
-    public function accessBatchStart(string $scope): void
+    private function groupBatchUsers(string $scope, string $group, array $users): array
+    {
+        $state = $this->getPacConf()['access_groups'] ?? [];
+        if (!isset($state['groups'][$group])) throw new InvalidArgumentException($this->t('Группа удалена', 'Group deleted'));
+        return array_filter($users, static fn($user, $id) => !isset($user['xray_source'])
+            && ($state['members']["$scope.$id"]['group'] ?? '') === $group, ARRAY_FILTER_USE_BOTH);
+    }
+
+    public function accessBatchStart(string $scope, string $group = ''): void
     {
         if (!$this->admin) return;
         try {
-            $this->accessStore($scope)->read();
+            $users = $this->accessStore($scope)->read()['users'];
+            $selected = [];
+            if ($group !== '') {
+                $users = $this->groupBatchUsers($scope, $group, $users);
+                $selected = array_map('strval', array_slice(array_keys($users), 0, 20));
+            }
             $token = bin2hex(random_bytes(6));
-            $this->sessionApply(function () use ($scope, $token) {
+            $this->sessionApply(function () use ($scope, $token, $group, $selected) {
                 $_SESSION['access_batch'][(string) $this->input['chat']] = ['scope' => $scope, 'token' => $token,
-                    'created' => time(), 'selected' => [], 'page' => 0];
+                    'created' => time(), 'selected' => $selected, 'group' => $group, 'page' => 0];
             });
             $this->accessBatch($token);
         } catch (RuntimeException | InvalidArgumentException $e) { $this->protocolError($e->getMessage(), $this->accessBack($scope)); }
@@ -54,10 +67,22 @@ trait BotAccessBatch
                 });
                 if (!isset($pending['preview'])) throw new InvalidArgumentException($this->t('Сначала откройте предварительный просмотр', 'Open the preview first'));
                 $changed = 0;
-                $this->accessStore($scope)->change(static function (&$state) use ($pending, &$changed) {
-                    $changed = AccessBatch::apply($state['users'], $pending['preview'], time());
-                    return $changed > 0;
-                });
+                $apply = function () use ($pending, $scope, &$changed) {
+                    $this->accessStore($scope)->change(function (&$state) use ($pending, $scope, &$changed) {
+                        if (!empty($pending['group'])) {
+                            $allowed = $this->groupBatchUsers($scope, $pending['group'], $state['users']);
+                            foreach ($pending['preview']['rows'] as $row) if ($row['skip'] === '' && !isset($allowed[$row['id']])) {
+                                throw new InvalidArgumentException($this->t('Состав группы изменился', 'Group membership changed'));
+                            }
+                        }
+                        $changed = AccessBatch::apply($state['users'], $pending['preview'], time());
+                        return $changed > 0;
+                    });
+                    return true;
+                };
+                if ($pending['preview']['action'] === 'reset') $this->captureAccessGroupUsage();
+                if (empty($pending['group'])) $apply();
+                elseif (!$this->withLock('access-groups', $apply, 15)) throw new RuntimeException($this->t('Группы временно заняты', 'Groups are temporarily busy'));
                 $this->update($this->input['chat'], $this->input['message_id'], $this->t('Изменено пользователей: ', 'Users changed: ') . $changed
                     . $this->t('. Пропущено: ', '. Skipped: ') . (count($pending['preview']['rows']) - $changed) . '.', [
                     [['text' => $this->i18n('back'), 'callback_data' => $this->accessBack($scope)]],
@@ -75,6 +100,7 @@ trait BotAccessBatch
             }
             if (in_array($action, ['reset', 'disable'], true)) { $this->accessBatchReply('', $token, $action); return; }
             $users = $this->accessStore($scope)->read()['users'];
+            if (!empty($pending['group'])) $users = $this->groupBatchUsers($scope, $pending['group'], $users);
             if ($action === 'pick') {
                 if (!isset($users[$arg])) throw new InvalidArgumentException($this->t('Пользователь удалён', 'User deleted'));
                 $pending = $this->accessBatchSession($token, static function (&$s) use ($arg) {
@@ -110,10 +136,14 @@ trait BotAccessBatch
         $scope = 'hy';
         try {
             $pending = $this->accessBatchSession($token); $scope = $pending['scope'];
-            $preview = AccessBatch::preview($this->accessStore($scope)->read()['users'], $pending['selected'], $action, AccessBatch::value($action, trim($text)), time());
+            $users = $this->accessStore($scope)->read()['users'];
+            if (!empty($pending['group'])) $users = $this->groupBatchUsers($scope, $pending['group'], $users);
+            $preview = AccessBatch::preview($users, $pending['selected'], $action, AccessBatch::value($action, trim($text)), time());
             $confirmation = bin2hex(random_bytes(6));
             $this->accessBatchSession($token, static function (&$s) use ($preview, $confirmation) { $s['preview'] = $preview; $s['confirm'] = $confirmation; });
             $text = [$this->t('Предварительный просмотр', 'Preview'), $this->t('Изменится только выбранный доступ. Ручное отключение сохраняется при продлении и сбросе расхода.', 'Only the selected access changes. A manual disable is kept on extension and usage reset.')];
+            try { $usage = $this->accessStore($scope)->usage()['users'] ?? []; }
+            catch (RuntimeException $e) { $usage = []; }
             foreach ($preview['rows'] as $row) {
                 $change = $row['skip'] !== '' ? $this->t('пропуск: ', 'skip: ') . $row['skip'] : match ($action) {
                     'extend' => $this->t('срок → ', 'expiry → ') . gmdate('Y-m-d H:i', $row['after']['expires']) . ' UTC',
@@ -121,7 +151,10 @@ trait BotAccessBatch
                     'disable' => $this->t('доступ → выключен', 'access → disabled'),
                     'reset' => $this->t('расход → 0', 'usage → 0'),
                 };
-                $text[] = self::esc(mb_substr($row['name'], 0, 40) . ': ' . $change);
+                $u = $users[$row['id']] ?? null;
+                $used = $u ? AccessPolicy::bytes($u, $usage[$row['id']] ?? null) : null;
+                $text[] = self::esc(mb_substr($row['name'], 0, 40) . ': ' . $change) . $this->t(' · расход ', ' · usage ')
+                    . ($used === null ? $this->t('недоступен', 'unavailable') : $this->getBytes($used));
             }
             $buttons = [];
             if (array_filter($preview['rows'], static fn($r) => $r['skip'] === '')) $buttons[] = [['text' => $this->t('Применить изменения', 'Apply changes'), 'callback_data' => "/ab $token apply $confirmation"]];

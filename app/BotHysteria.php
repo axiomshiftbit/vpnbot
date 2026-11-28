@@ -37,6 +37,7 @@ trait BotHysteria
                 ['text' => '→', 'callback_data' => '/hyUsers ' . min($pages - 1, $page + 1)],
             ];
             $buttons[] = [['text' => $this->t('Добавить пользователя', 'Add user'), 'callback_data' => '/hyUser add']];
+            $buttons[] = [['text' => $this->t('Группы пользователей', 'User groups'), 'callback_data' => '/ag']];
             $buttons[] = [['text' => $this->t('Групповые действия', 'Bulk actions'), 'callback_data' => '/abstart hy']];
             if (!empty($this->getPacConf()['hysteria_pass'])) {
                 $buttons[] = [['text' => $this->t('Отключить общий пароль', 'Disable shared password'), 'callback_data' => '/hyUser legacy-off']];
@@ -76,6 +77,7 @@ trait BotHysteria
                 return;
             }
             if (in_array($action, ['toggle', 'rotate', 'reset', 'delete-confirm'], true)) {
+                if (in_array($action, ['reset', 'delete-confirm'], true)) $this->captureAccessGroupUsage();
                 $store->edit($id, $action === 'delete-confirm' ? 'delete' : $action);
                 if ($action === 'delete-confirm') { $this->hyUsers(); return; }
             } elseif (!in_array($action, ['show', 'file', 'qr'], true)) {
@@ -131,6 +133,7 @@ trait BotHysteria
                     if ($gib > 1000000) throw new InvalidArgumentException($this->t('Лимит слишком велик', 'The limit is too large'));
                     $value = $gib > 0 ? max(1, (int) round($gib * 1073741824)) : null;
                 } else throw new InvalidArgumentException($this->t('Неизвестное поле', 'Unknown field'));
+                if ($field !== 'name') { $this->accessEditPreview('hy', $id, $field, $value); return; }
                 $store->edit($id, $field, $value);
             }
             $this->hyUserMenu($id);
