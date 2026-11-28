@@ -79,8 +79,11 @@ if len(sys.argv) > 1 and sys.argv[1] == 'send':
     sys.exit(0)
 
 if len(sys.argv)>1 and sys.argv[1]=='echo':
-    s=socket.socket();s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);s.bind(('0.0.0.0',int(sys.argv[2]) if len(sys.argv)>2 else 443));s.listen(8)
-    c,_=s.accept()
+    ipv6 = len(sys.argv)>3 and ':' in sys.argv[3]
+    s=socket.socket(socket.AF_INET6 if ipv6 else socket.AF_INET)
+    s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);s.bind(('::' if ipv6 else '0.0.0.0',int(sys.argv[2]) if len(sys.argv)>2 else 443));s.listen(8)
+    c,peer=s.accept()
+    if len(sys.argv)>3 and peer[0]!=sys.argv[3]: sys.exit(1)
     while True:
         data=c.recv(32)
         if not data:break
@@ -88,7 +91,8 @@ if len(sys.argv)>1 and sys.argv[1]=='echo':
     sys.exit(0)
 
 if len(sys.argv)>1 and sys.argv[1]=='flow':
-    s=socket.socket();s.settimeout(1);s.bind((sys.argv[4] if len(sys.argv)>4 else '11.77.0.2',int(sys.argv[2])))
+    src=sys.argv[4] if len(sys.argv)>4 else '11.77.0.2'
+    s=socket.socket(socket.AF_INET6 if ':' in src else socket.AF_INET);s.settimeout(1);s.bind((src,int(sys.argv[2])))
     try:
         s.connect((sys.argv[3] if len(sys.argv)>3 else '11.77.0.10',int(sys.argv[5]) if len(sys.argv)>5 else 443));print('connected',flush=True)
         for line in sys.stdin:
@@ -157,6 +161,46 @@ def origin_denied():
     data=json.loads(run(['nft','-j','list','chain','bridge','vpnbot_origin','denied']))
     return sum(e['counter']['packets'] for x in data['nftables'] for e in x.get('rule',{}).get('expr',[]) if 'counter' in e)
 
+def service_counter(label):
+    table = json.loads(run(['nft','-j','list','table','ip','filter']))
+    return sum(expr['counter']['packets'] for entry in table['nftables']
+               for rule in [entry.get('rule', {})] if rule.get('comment') == 'bl2-' + label
+               for expr in rule['expr'] if 'counter' in expr)
+
+def check_published_ports(name, cases):
+    entries = json.loads(run(['nft','-j','list','chain','ip','dockernat','prerouting']))['nftables']
+    covered = set()
+    all_rules_tested = True
+    for entry in entries:
+        expr = entry.get('rule', {}).get('expr', [])
+        if not any('dnat' in item for item in expr):
+            continue
+        matching = set()
+        for item in expr:
+            match = item.get('match', {})
+            field = match.get('left', {}).get('payload', {})
+            if field.get('field') != 'dport':
+                continue
+            value = match['right']
+            bounds = value.get('range', []) if isinstance(value, dict) else [value, value]
+            if len(bounds) == 2:
+                matching.update((p, t) for p, t in cases if t == field['protocol'] and bounds[0] <= p <= bounds[1])
+        all_rules_tested = all_rules_tested and bool(matching)
+        covered.update(matching)
+    rows.append(dict(case=name, passed=all_rules_tested and covered==set(cases)))
+
+def late_mark():
+    nft('''table ip audit_late_mark {
+      chain classify { type filter hook forward priority 5; policy accept; iifname "eth0" ip saddr 11.77.0.2 ct direction original meta mark set 103; }
+      chain host { type filter hook input priority 5; policy accept; iifname "eth0" ip saddr 11.77.0.2 ct direction original meta mark set 103; }
+    }''')
+
+def marked_service(service, port, proto):
+    before = service_counter(service)
+    name = f'main-second-stage-{service}-{proto}-{port}'
+    check(name,wan,'11.77.0.2','11.77.0.10',port,proto)
+    rows.append(dict(case=name+'-counter', passed=service_counter(service)>before))
+
 def check(label, endpoint, src, dst, port=22, proto='tcp', expected=False, dmac=None, smac=None, origin_drop=None, maximum=None, **extra):
     global serial
     serial += 1
@@ -213,6 +257,7 @@ try:
     run(['nft','-c','-f','-'],input=text); nft(text); witness()
     rows.append(dict(case='main-full-profile-load',passed=True))
     ports=[(80,'tcp'),(443,'tcp'),(443,'udp'),(9443,'tcp'),(5443,'udp'),(51820,'udp'),(51821,'udp'),(2443,'tcp'),(2443,'udp'),(1194,'tcp'),(1194,'udp'),(500,'udp'),(4500,'udp'),(8388,'tcp'),(8388,'udp'),(7443,'tcp'),(3443,'tcp'),(24445,'tcp'),(24445,'udp'),(9443,'udp'),(24447,'tcp'),(24448,'tcp'),(24449,'tcp'),(24449,'udp')]
+    check_published_ports('main-all-published-dnat-ports-covered', ports)
     for tag,src,allow in [('asn','11.77.0.2',True),('own','11.77.0.3',True),('alien','11.77.0.200',False),('blacklisted-asn','11.77.0.4',False),('own-blacklist-override','11.77.0.6',True)]:
         check('main-'+tag+'-ssh',wan,src,'11.77.0.10',expected=allow)
         for port,proto in ports: check('main-'+tag+'-'+proto+'-'+str(port),wan,src,'11.77.0.10',port,proto,allow)
@@ -226,10 +271,26 @@ try:
     def chain_packets(name):
         data=json.loads(run(['nft','-j','list','chain','ip','filter',name]))
         return sum(e['counter']['packets'] for x in data['nftables'] for e in x.get('rule',{}).get('expr',[]) if 'counter' in e)
-    for name,port,proto in [('drop_fwd_ss_bl',8388,'tcp'),('drop_fwd_hysteria_bl',5443,'udp'),('drop_fwd_telemt_bl',9443,'tcp')]:
+    for name,port,proto in [('drop_fwd_ss_bl',8388,'tcp'), ('drop_fwd_ss_bl',8388,'udp'),
+                            ('drop_fwd_cloak_bl',7443,'tcp'), ('drop_fwd_stls_bl',3443,'tcp'),
+                            ('drop_fwd_hysteria_bl',5443,'udp'), ('drop_fwd_telemt_bl',9443,'tcp'),
+                            ('drop_fwd_ipsec_bl',500,'udp'), ('drop_fwd_ipsec_bl',4500,'udp'),
+                            ('drop_docker_bl',443,'tcp')]:
         before=chain_packets(name)
-        check('main-blacklist-'+name,wan,'11.77.0.4','11.77.0.10',port,proto)
-        rows.append(dict(case='main-blacklist-counted-'+name,passed=chain_packets(name)>before))
+        check('main-blacklist-'+name+'-'+str(port)+'-'+proto,wan,'11.77.0.4','11.77.0.10',port,proto)
+        rows.append(dict(case='main-blacklist-counted-'+name+'-'+str(port)+'-'+proto,passed=chain_packets(name)>before))
+    # Mark a normal, allowed fixture flow between the two forward hooks.
+    check('main-second-stage-control',wan,'11.77.0.2','11.77.0.10',443,'tcp',True)
+    late_mark()
+    check('main-second-stage-host-ssh',wan,'11.77.0.2','11.77.0.10',22)
+    services = {80:'http-acme',443:'upstream',51820:'wireguard',51821:'amneziawg',
+                1194:'openvpn',2443:'trusttunnel',5443:'hysteria',8388:'shadowsocks',
+                3443:'stls',7443:'cloak',500:'ipsec',4500:'ipsec',24445:'mieru',
+                24447:'shadowtls',24448:'snolc',24449:'masque'}
+    for port, proto in ports:
+        service = ('telemt' if proto=='tcp' else 'tuic') if port==9443 else services[port]
+        marked_service(service, port, proto)
+    nft('delete table ip audit_late_mark')
     check('main-fragments-trusted',wan,'11.77.0.2','11.77.0.10',51820,'udp',True,fragments=True)
     check('main-fragments-alien',wan,'11.77.0.200','11.77.0.10',51820,'udp',fragments=True)
     check('main-fragments-spoof',wan,'10.10.0.7','11.77.0.10',51820,'udp',fragments=True)
@@ -302,9 +363,65 @@ try:
     flow.terminate();flow.wait(timeout=3);echo.terminate();echo.wait(timeout=3)
     outgoing.terminate();outgoing.wait(timeout=3);echo_wan.terminate();echo_wan.wait(timeout=3)
     hostflow.terminate();hostflow.wait(timeout=3);echo_host.terminate();echo_host.wait(timeout=3)
+    # Verify the actual address seen by a TCP listener after OUTPUT/DNAT and POSTROUTING.
+    def tcp_round_trip(name, listener, client, dst, port, src, seen, sport, revoke=None, internal_port=None):
+        def command(endpoint):
+            return (['nsenter','-t',str(endpoint['pid']),'-n'] if endpoint else [])+['python3','-B','/probes/packets.py']
+        server=subprocess.Popen(command(listener)+['echo',str(internal_port or port),seen],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        processes.append(server)
+        time.sleep(.1)
+        client_proc=subprocess.Popen(command(client)+['flow',str(sport),dst,src,str(port)],
+            stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True)
+        processes.append(client_proc)
+        ready=client_proc.stdout.readline().strip()=='connected'
+        def probe():
+            client_proc.stdin.write('probe\n');client_proc.stdin.flush()
+            return client_proc.stdout.readline().strip()=='ok'
+        ready=ready and probe()
+        rows.append(dict(case=name,passed=ready))
+        if revoke:
+            nft(revoke)
+            rows.append(dict(case=name+'-revoked',passed=ready and not probe()))
+        client_proc.terminate();client_proc.wait(timeout=3)
+        server.terminate();server.wait(timeout=3)
+    tcp_round_trip('main-local-output-dnat',good,None,'11.77.0.10',443,'11.77.0.10','11.77.0.10',41010)
+    tcp_round_trip('main-container-postrouting-snat',wan,good,'11.77.0.2',18443,'10.10.0.10','11.77.0.10',41011)
+    Path('/proc/sys/net/ipv6/conf/all/forwarding').write_text('1')
+    run(['ip','link','add','br-vpnbot6','type','bridge'])
+    run(['ip','link','set','br-vpnbot6','up'])
+    run(['ip','-6','addr','add','fd42:7662:6::1/64','dev','br-vpnbot6','nodad'])
+    core6=peer('v-core6','br-vpnbot6')
+    for endpoint,address,gateway in [(wan,'2606:4700:77::2/64','2606:4700:77::10'),
+                                      (core6,'fd42:7662:6::9/64','fd42:7662:6::1')]:
+        prefix=['nsenter','-t',endpoint['pid'],'-n','ip','-6']
+        run(prefix+['addr','add',address,'dev',endpoint['dev'],'nodad'])
+        run(prefix+['route','add','default','via',gateway,'dev',endpoint['dev']])
+    nft('add element ip6 filter node6_sources { 2606:4700:77::2 }\n'
+        'add element ip6 filter node6_public { 2606:4700:77::10 }\n'
+        'add element ip6 filter egress6_snat { fd42:7662:6::9 : 2606:4700:77::10 }')
+    tcp_round_trip('main-ipv6-output',wan,None,'2606:4700:77::2',18443,'2606:4700:77::10','2606:4700:77::10',41012)
+    tcp_round_trip('main-ipv6-postrouting-snat',wan,core6,'2606:4700:77::2',18443,'fd42:7662:6::9','2606:4700:77::10',41013)
+    tcp_round_trip('main-ipv6-node-dnat',core6,wan,'2606:4700:77::10',443,'2606:4700:77::2','2606:4700:77::2',41014,
+                   'delete element ip6 filter node6_sources { 2606:4700:77::2 }')
+    # The origin-guard fixtures below assign this endpoint a different address.
+    run(['nsenter','-t',good['pid'],'-n','ip','addr','del','10.10.0.10/24','dev',good['dev']])
     # These are separate trust-boundary controls, before and after the real guard.
     check('main-untrusted-container-api-block',bad,'10.10.0.6','10.10.0.8',2375,dmac=good['mac'])
     check('main-php-container-api-allow',good,'10.10.0.7','10.10.0.8',2375,expected=True,dmac=bad['mac'])
+    for service,src,dst,port,proto,allowed in [
+            ('warp-allowed','10.10.0.9','10.10.0.13',1080,'tcp',True),
+            ('warp-denied','10.10.0.2','10.10.0.13',1080,'tcp',False),
+            ('warp-udp-denied','10.10.0.2','10.10.0.13',20001,'udp',False),
+            ('adguard-admin','10.10.0.6','10.10.0.5',3000,'tcp',False),
+            ('telemt-metrics','10.10.0.6','10.10.0.20',9091,'tcp',False),
+            ('telemt-dns','10.10.0.20','10.10.0.5',53,'udp',True)]:
+        check('main-container-'+service,bad,src,dst,port,proto,allowed,dmac=good['mac'])
+    for label,src,dst,port,proto,allowed in [
+            ('mask','10.10.0.20','11.77.0.2',443,'tcp',True),
+            ('public-other-port','10.10.0.20','11.77.0.2',18443,'tcp',False),
+            ('dns','10.10.0.20','1.1.1.1',53,'udp',True),
+            ('private','10.10.0.10','192.168.77.2',443,'tcp',False)]:
+        check('main-container-egress-'+label,good,src,dst,port,proto,allowed,dmac=bridge_mac)
     check('main-without-origin-spoof-control',bad,'10.10.0.7','10.10.0.8',2375,expected=True,dmac=good['mac'])
     origin=importlib.import_module('container_origin_guard')
     endpoints=[dict(bridge='br-vpnbot0',host=e['host'],index=e['index'],mac=e['mac'],ipv4=ips,ipv6=[],routed=[]) for e,ips in [(good,['10.10.0.7']),(bad,['10.10.0.6'])]]
@@ -318,18 +435,44 @@ try:
     for label,target,hop,denied in [('valid',local6,255,False),('forged-target','fe80::1234',255,True),('invalid-hop',local6,64,True)]:
         check('main-origin-ndp-'+label,bad,local6,'ff02::1',proto='icmp6',type=136,hop=hop,nd_target=target,dmac=good['mac'],origin_drop=denied)
     check('main-origin-router-advert-block',bad,local6,'ff02::1',proto='icmp6',type=134,hop=255,dmac=good['mac'],origin_drop=True)
+    # Enable the documented optional services only in this disposable namespace.
+    optional = source('nftables')
+    optional = re.sub(r'^#(?=(?:define HYSTERIA_HOP_RANGE| +(?:ip daddr|iifname).*?(?:\$DNSTT_|\$DOT_|\$HYSTERIA_HOP_RANGE)))','',optional,flags=re.M)
+    optional = re.sub(r'^#(?= +meta mark \$ASN (?:tcp dport \{ 21115|udp dport 21116))','',optional,flags=re.M)
+    nft(optional); witness()
+    extra = [('dnstt',53,'tcp'),('dnstt',53,'udp'),('adguard-dot',853,'tcp'),('hysteria',30123,'udp')]
+    check_published_ports('main-all-optional-dnat-ports-covered', ports+[(port,proto) for _,port,proto in extra])
+    for name,port,proto in extra:
+        check(f'main-optional-{name}-{proto}-{port}',wan,'11.77.0.2','11.77.0.10',port,proto,True)
+    rustdesk = [(21115,'tcp'),(21116,'tcp'),(21117,'tcp'),(21116,'udp')]
+    for port,proto in rustdesk:
+        check(f'main-rustdesk-enabled-{port}-{proto}',wan,'11.77.0.2','11.77.0.10',port,proto,True)
+    late_mark()
+    for row in extra: marked_service(*row)
+    for port,proto in rustdesk:
+        check(f'main-second-stage-rustdesk-{port}-{proto}',wan,'11.77.0.2','11.77.0.10',port,proto)
+    # Membership in RKN must suffice even when the fixture map supplies an ASN mark.
+    nft('add element ip filter rkn { 11.77.0.8 : 102 }')
+    check('main-second-stage-rkn-membership-input',wan,'11.77.0.8','11.77.0.10',22)
+    check('main-second-stage-rkn-membership-forward',wan,'11.77.0.8','11.77.0.10',443)
     text=source('noda'); run(['nft','-c','-f','-'],input=text); nft(text); witness()
     rows.append(dict(case='node-full-profile-load',passed=True))
     for tag,src,allow in [('asn','11.77.0.2',True),('own','11.77.0.3',True),('alien','11.77.0.200',False)]:
         check('node-before-install-'+tag+'-ssh',wan,src,'11.77.0.10',expected=allow)
         for port,proto in [(443,'tcp'),(80,'tcp'),(8443,'tcp'),(51820,'udp')]:
             check('node-before-install-'+tag+'-'+str(port),wan,src,'11.77.0.10',port,proto)
+    tcp_round_trip('node-ssh-active',None,wan,'11.77.0.10',22,'11.77.0.2','11.77.0.2',41015,
+                   'delete element ip filter asn { 11.77.0.2 }')
+    nft('add element ip filter asn { 11.77.0.2 : 102 }')
     node=importlib.import_module('node_config')
     host=dict(public4='11.77.0.10',public6='2606:4700:77::10',sources=['11.77.0.3','2606:4700:77::3'],admins=['11.77.0.3'],routers=[],ssh_ports=[22],ssh_networks=['11.77.0.2/32'],interface='eth0',uid=995,gid=995,cover_uid=997,awg_uid=994)
-    nft(node.firewall(dict(transport='reality',family=4,core='origin',domain='',mask='mask.example.test'),host))
+    nft(node.firewall(dict(transport='reality',family=4,core='origin',domain='',mask='mask.example.test',
+                           wireguard={'enabled': True},amnezia={'enabled': True}),host))
     for version,public,own,alien in [(4,'11.77.0.10','11.77.0.3','11.77.0.200'),(6,'2606:4700:77::10','2606:4700:77::3','2606:4700:77::200')]:
         for tag,src,allow in [('own',own,True),('alien',alien,False)]:
             check('node-guard-v'+str(version)+'-'+tag+'-vpn',wan,src,public,443,expected=allow)
+            for udp_port in (51820,51821):
+                check(f'node-guard-v{version}-{tag}-udp-{udp_port}',wan,src,public,udp_port,'udp',allow)
             for port in (80,8080,8443,8090,2375): check('node-guard-v'+str(version)+'-'+tag+'-closed-'+str(port),wan,src,public,port)
     # Node host profile: unsolicited ICMP errors dropped, NDP on-link and rate-limited.
     check('node-ipv4-unsolicited-icmp-error',wan,'11.77.0.3','11.77.0.10',proto='icmp',type=3,code=4)
@@ -337,6 +480,9 @@ try:
     check('node-ipv6-neighbor-solicit-accepted',wan,'2606:4700:77::3','2606:4700:77::10',proto='icmp6',type=135,hop=255,nd_target='2606:4700:77::10',expected=True)
     check('node-ipv6-neighbor-solicit-offlink',wan,'2606:4700:77::3','2606:4700:77::10',proto='icmp6',type=135,hop=64,nd_target='2606:4700:77::10')
     check('node-ipv6-neighbor-solicit-flood-limited',wan,'2606:4700:77::3','2606:4700:77::10',proto='icmp6',type=135,hop=255,nd_target='2606:4700:77::10',expected=True,count=1000,maximum=400)
+    nft('add element inet vpnbot_node acme_http { 80 timeout 30s }')
+    tcp_round_trip('node-acme-active',None,wan,'11.77.0.10',80,'11.77.0.2','11.77.0.2',41016,
+                   'delete element inet vpnbot_node acme_http { 80 }',internal_port=8080)
     nft('add element inet vpnbot_node acme_http { 80 timeout 2s }')
     check('node-acme-window-open',wan,'11.77.0.200','11.77.0.10',80,expected=True)
     time.sleep(2.1)
