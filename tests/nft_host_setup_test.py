@@ -84,10 +84,21 @@ class HostFirewallTest(unittest.TestCase):
     def test_management_binding_does_not_move_legacy_asn_port(self):
         prepared = nft.render(NODE, HOST, 'node')
         prepared = 'define SERVER_SSH_PORTS = { 2222 }\n'+prepared
+        for family, version in [('ip', 4), ('ip6', 6)]:
+            table = f'table {family} filter {{'
+            prepared = prepared.replace(table, table + f'''
+ set asn {{ type ipv{version}_addr; flags interval; }}
+ chain ssh_source_guard {{
+    tcp dport $NODE_SSH_PORTS {family} saddr @node{version}_ssh return
+    tcp dport $NODE_SSH_PORTS {family} saddr @asn return
+ }}''')
         out = nft.render(prepared, HOST | {'ssh_ports': [7384]}, 'node')
         self.assertIn('define NODE_SSH_PORTS = { 2222 }', out)
         self.assertIn('define SERVER_SSH_PORTS = { 7384 }', out)
         for version in (4, 6):
+            family = 'ip' if version == 4 else 'ip6'
+            self.assertIn(f'tcp dport $SERVER_SSH_PORTS {family} saddr @node{version}_ssh return', out)
+            self.assertIn(f'tcp dport $NODE_SSH_PORTS {family} saddr @asn return', out)
             for name in ('admins', 'ssh'):
                 self.assertIn('@node'+str(version)+'_'+name+' tcp dport $SERVER_SSH_PORTS', out)
         self.assertEqual(out, nft.render(out, HOST | {'ssh_ports': [7384]}, 'node'))

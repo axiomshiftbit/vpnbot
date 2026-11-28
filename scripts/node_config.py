@@ -506,6 +506,10 @@ def firewall(options, host):
               ' chain service_guard { type filter hook input priority 10; policy accept;',
               f'  iifname != "{interface}" return',
               '  ct direction != original return',
+              # A loopback-only node still probes its own listeners. Published
+              # ports redirected by NAT must continue through the source ACL.
+              '  iifname "lo" ct status & dnat == 0 ip saddr 127.0.0.0/8 ip daddr 127.0.0.0/8 return',
+              '  iifname "lo" ct status & dnat == 0 ip6 saddr ::1 ip6 daddr ::1 return',
               '  meta l4proto != { tcp, udp } return']
     for version, proto in ((4, 'ip'), (6, 'ip6')):
         lines += [f'  ct status & dnat == 0 tcp dport {{ {ports} }} {proto} saddr @admins{version} return',

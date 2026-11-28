@@ -182,6 +182,10 @@ def render(text, host, mode):
         if binding == 'SERVER_SSH_PORTS':
             text = re.sub(r'(@node[46]_(?:admins|ssh) tcp dport )\$NODE_SSH_PORTS',
                           r'\1$SERVER_SSH_PORTS', text)
+            # The later source guard must enforce the same explicit installer
+            # ACL on the selected management port. Keep the ASN port separate.
+            text = re.sub(r'tcp dport \$NODE_SSH_PORTS (ip6? saddr @node[46]_(?:admins|ssh) return)',
+                          r'tcp dport $SERVER_SSH_PORTS \1', text)
     return text
 
 

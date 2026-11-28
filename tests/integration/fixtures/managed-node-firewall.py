@@ -164,6 +164,9 @@ try:
         base = Path(os.environ['NODE_BASE_FIREWALL']).read_text().replace('ens3', 'eth0')
         base = re.sub(r'define PUBLIC_IP = \S+', 'define PUBLIC_IP = 11.77.0.4', base)
         base = base.replace('tcp dport 22 ', 'tcp dport 2222 ')
+        if not os.environ.get('NODE_BASE_AUTO'):
+            # The hand-configured fixture listens on one port for both roles.
+            base = re.sub(r'(?m)^(define (?:NODE|SERVER)_SSH_PORTS\s*=).*$', r'\1 { 2222 }', base)
         for name, define, number, elements in (
                 ('asn_nft', 'ASN', 25098, '11.77.0.201 : $ASN'),
                 ('my_server', 'MY_SERVER', 25099, '11.77.0.2 : $MY_SERVER, 11.77.0.3 : $MY_SERVER')):
@@ -282,6 +285,18 @@ try:
                 check(label+'-ssh-denied', not connect(address,2222,source,remote=True))
                 check(label+'-reserve', connect(address,port,source,remote=True,udp=True) == enabled)
                 check(label+'-backend-denied', not connect(address,backend,source,remote=True,udp=True))
+    # Cold bootstrap uses lo before the node receives its external interface.
+    run(['nft', '-f', '-'], input='delete table inet vpnbot_node\n'
+        + node.firewall(options, host | {'interface': 'lo'}), check=True)
+    run(['nft', '-f', '-'], input='''table inet node_loopback_test {
+        chain redirect_local {
+            type nat hook output priority dstnat; policy accept;
+            oifname "lo" tcp dport 28443 redirect to :8443
+        }
+    }''', check=True)
+    for family, address in ((4, '127.0.0.1'), (6, '::1')):
+        check(f'loopback-{family}-direct-readiness', connect(address, 8443))
+        check(f'loopback-{family}-unlisted-dnat-denied', not connect(address, 28443))
 finally:
     for process in reversed(processes):
         process.terminate()
