@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import sys
 import zipfile
-from snolc_config import CLIENT_PACKAGES, PATCHED, archive_name
+from snolc_config import CLIENT_PACKAGES, PATCH_VERSION, PATCHED, archive_name
 
 
 def build(built, destination):
@@ -17,7 +17,7 @@ def build(built, destination):
         if hashlib.sha256(data).hexdigest() != releases[name]["sha256"]:
             raise ValueError("invalid_release_digest")
         files["archives/" + filename] = data
-    manifest = {"version": "0.0.4+vpnbot.7",
+    manifest = {"version": PATCH_VERSION,
                 "sha256": {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}}
     with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("manifest.json", json.dumps(manifest))

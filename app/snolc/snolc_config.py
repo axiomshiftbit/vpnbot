@@ -11,6 +11,7 @@ import uuid
 import zipfile
 
 VERSION = "0.0.4"
+PATCH_VERSION = VERSION + "+vpnbot.7"
 TARGET = "x86_64-unknown-linux-gnu"
 CLIENT_PACKAGES = ("snolc", "adapter-socks5", "carrier-ssh", "protection-noise", "policy-local")
 # Файлы клиента, собранные из закреплённых исходников (client-patches.zip):
@@ -130,7 +131,7 @@ def install_patches(root, bundle, install_base=False):
         if any(info.file_size > 8 * 1024 * 1024 for info in archive.infolist()):
             raise ValueError("oversized_patch_bundle")
         manifest = json.loads(archive.read("manifest.json"))
-        if manifest["version"] != "0.0.4+vpnbot.7" or set(manifest["sha256"]) != names | release_names:
+        if manifest["version"] != PATCH_VERSION or set(manifest["sha256"]) != names | release_names:
             raise ValueError("invalid_patch_version")
         files = {name: archive.read(name) for name in names | release_names}
     if any(hashlib.sha256(data).hexdigest() != manifest["sha256"][name] for name, data in files.items()):

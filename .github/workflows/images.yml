@@ -351,10 +351,11 @@ jobs:
           set -euo pipefail
           image="ghcr.io/${GITHUB_REPOSITORY,,}-snolc:candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           sh scripts/ci_retry.sh docker pull "$image"
+          expected=$(PYTHONPATH=app/snolc python3 -c 'from snolc_config import PATCH_VERSION; print(PATCH_VERSION)')
           # Сервер — Alpine, ядро и модули собраны под musl из закреплённых исходников.
-          docker run --rm --network=none --entrypoint sh "$image" -ec '
+          docker run --rm --network=none -e SNOLC_EXPECTED="$expected" --entrypoint sh "$image" -ec '
             grep -Ex "3\\.24\\.[0-9]+" /etc/alpine-release
-            test "$(/opt/snolc/runtime/bin/snolc --version)" = "snolc 0.0.4+vpnbot.6 wire 1"
+            test "$(/opt/snolc/runtime/bin/snolc --version)" = "snolc $SNOLC_EXPECTED wire 1"
             for module in adapter-direct carrier-ssh protection-noise policy-local; do
               grep -qx "\"target\" = \"x86_64-unknown-linux-musl\"" "/opt/snolc/runtime/packages/locks/owenewans/$module/0.0.4.toml"
             done
@@ -368,11 +369,11 @@ jobs:
           container=$(docker create --network=none "$image")
           docker cp "$container:/opt/snolc/client-patches.zip" "$RUNNER_TEMP/snolc-client.zip"
           docker rm "$container"
-          python3 - "$RUNNER_TEMP/snolc-client.zip" "$RUNNER_TEMP/snolc-client" <<'PY'
+          python3 - "$RUNNER_TEMP/snolc-client.zip" "$RUNNER_TEMP/snolc-client" "$expected" <<'PY'
           import hashlib, json, os, subprocess, sys, zipfile
           with zipfile.ZipFile(sys.argv[1]) as bundle:
               manifest = json.loads(bundle.read('manifest.json'))
-              assert manifest['version'] == '0.0.4+vpnbot.6'
+              assert manifest['version'] == sys.argv[3]
               for name, digest in manifest['sha256'].items():
                   assert hashlib.sha256(bundle.read(name)).hexdigest() == digest, name
               # Ядро и все модули клиента — из исходников, под glibc.
@@ -386,7 +387,7 @@ jobs:
               stream.write(core)
           os.chmod(sys.argv[2], 0o700)
           version = subprocess.run([sys.argv[2], '--version'], capture_output=True, check=True, timeout=10).stdout.strip()
-          assert version == b'snolc 0.0.4+vpnbot.6 wire 1', version
+          assert version == f'snolc {sys.argv[3]} wire 1'.encode(), version
           print('snolc client:', version.decode())
           PY
 

@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time
 
-from snolc_config import install_patches, write_config, write_private
+from snolc_config import PATCH_VERSION, install_patches, write_config, write_private
 
 
 def prepare(profile, root, packages=None, socks_port=1080):
@@ -104,7 +104,7 @@ def main():
         if not binary.is_file():
             raise RuntimeError("Сначала выполните python3 client.py --install --prepare")
         version = subprocess.run([str(binary), "--version"], capture_output=True, timeout=5, check=True)
-        if version.stdout.strip() != b"snolc 0.0.4+vpnbot.7 wire 1":
+        if version.stdout.strip() != f"snolc {PATCH_VERSION} wire 1".encode():
             raise RuntimeError("Установите исправленный клиент из нового ZIP.")
         checked = subprocess.run([str(binary), "validate", str(path)], capture_output=True, timeout=15)
         if checked.returncode:
