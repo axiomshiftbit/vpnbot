@@ -26,7 +26,8 @@ RUN sh /build-tools/go-source.sh caddyserver/caddy "$CADDY_VERSION" /caddy \
         patch -p1 --fuzz=0 < /forwardproxy/caddy-read-idle-timeout.patch; \
        fi \
     && sh /build-tools/go-security.sh \
-    && sh /build-tools/go-retry.sh go get golang.org/x/crypto@v0.59.0 go.opentelemetry.io/otel/sdk/log@v1.47.0
+    && sh /build-tools/go-retry.sh go get golang.org/x/crypto@v0.59.0 go.opentelemetry.io/otel/sdk/log@v1.47.0 \
+        github.com/smallstep/certificates@v0.30.3-0.20261105204752-cddde30af36e go.step.sm/crypto@v0.92.1
 
 # Caddy 2.11.9 already contains the idle override API; the shared tests below
 # verify the same CONNECT contract without reapplying its 2.11.7 backport.
@@ -46,7 +47,10 @@ RUN sh /build-tools/go-retry.sh go install github.com/caddyserver/xcaddy/cmd/xca
         --with github.com/caddyserver/forwardproxy=/forwardproxy \
         --replace golang.org/x/net=golang.org/x/net@v0.62.0 \
     && ./caddy version | grep -q "${CADDY_VERSION}" \
-    && ./caddy list-modules | grep -qx http.handlers.forward_proxy
+    && ./caddy list-modules | grep -qx http.handlers.forward_proxy \
+    && go version -m ./caddy > /tmp/caddy-modules \
+    && grep -Fq 'github.com/go-jose/go-jose/v4' /tmp/caddy-modules \
+    && ! grep -Fq 'github.com/go-jose/go-jose/v3' /tmp/caddy-modules
 
 FROM $image
 COPY --from=go /go/caddy /usr/local/bin/

@@ -17,7 +17,7 @@ FROM rust:${RUST_VERSION}-alpine AS build
 ARG TT_REF
 ARG RUST_VERSION
 ARG CARGO_AUDITABLE_VERSION
-RUN apk add --no-cache build-base cmake git clang-dev linux-headers perl pkgconf
+RUN apk add --no-cache build-base cmake git patch clang-dev linux-headers perl pkgconf
 # RUSTUP_TOOLCHAIN: компилятор уже в образе; без переменной rustup по
 # rust-toolchain.toml апстрима скачал бы тот же канал заново.
 # -crt-static: сборочным скриптам (bindgen) нужна динамическая загрузка
@@ -28,6 +28,7 @@ ENV CARGO_NET_GIT_FETCH_WITH_CLI=true \
     RUSTFLAGS="-C target-feature=-crt-static"
 RUN cargo install --locked cargo-auditable --version "=${CARGO_AUDITABLE_VERSION}"
 COPY sources.sha256 /sources.sha256
+COPY rustls-0.23.46.patch /tmp/rustls.patch
 WORKDIR /src
 # Фетчим ровно нужный ref, а не клонируем ветку: `clone --depth 50` + checkout
 # работал только пока пин лежал в последних 50 коммитах master, а с пином на
@@ -50,7 +51,8 @@ RUN git init -q . \
     # версии. Пин на полный коммит проверяет сам себя.
     && pinned=$(awk -v key="trusttunnel/${TT_REF}" '$2 == key {print $1}' /sources.sha256) \
     && test "$(git rev-parse HEAD)" = "${pinned:-$TT_REF}" \
-    && test -s Cargo.lock && sha256sum Cargo.lock > /tmp/cargo-lock.sha256
+    && patch -p1 --fuzz=0 < /tmp/rustls.patch \
+    && sha256sum Cargo.lock > /tmp/cargo-lock.sha256
 # Внутренний HTTP/1 обработчик метрик паникует, если публичный HTTP/1
 # выключен. Оставляем публичную политику прежней; исправляем только default.
 COPY trusttunnel-metrics.patch /trusttunnel-metrics.patch

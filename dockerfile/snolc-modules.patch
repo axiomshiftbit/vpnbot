@@ -187,7 +187,7 @@
 +++ b/Cargo.toml
 @@ -34 +34 @@
 -russh = { version = "=0.63.3", default-features = false, features = ["ring"] }
-+russh = { version = "=0.65.0", default-features = false, features = ["ring"] }
++russh = { version = "=0.65.4", default-features = false, features = ["ring"] }
 @@ -39,2 +39,2 @@
 -snolc = { version = "=0.0.4", git = "https://github.com/owenewans/snolc.git", rev = "1acd4bbffe2da418f95ce8188f5e9bd7793c145b" }
 -snolc-sdk = { version = "=0.0.4", git = "https://github.com/owenewans/snolc.git", rev = "1acd4bbffe2da418f95ce8188f5e9bd7793c145b" }
@@ -195,18 +195,56 @@
 +snolc-sdk = { version = "=0.0.4", path = "../build/crates/snolc-sdk" }
 --- a/Cargo.lock
 +++ b/Cargo.lock
-@@ -1676 +1676 @@
+@@ -12 +12 @@
+- "generic-array 0.14.7",
++ "generic-array",
+@@ -210 +210 @@
+- "generic-array 0.14.7",
++ "generic-array",
+@@ -468 +468 @@
+- "generic-array 0.14.7",
++ "generic-array",
+@@ -503 +503 @@
+-version = "0.4.2"
++version = "0.4.8"
+@@ -505 +505 @@
+-checksum = "7d5515a3834141de9eafb9717ad39eea8247b5674e6066c404e8c4b365d2a29e"
++checksum = "261af4dc7a06ea8a527a8717d8cbba3417530d6ea14e1edb3de6b67806be474f"
+@@ -893,11 +892,0 @@
+-name = "generic-array"
+-version = "1.4.5"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "337d46834ee672ab3e48caca2cb0c78cc174fb12b3a68d0d88f99a0519a5e36e"
+-dependencies = [
+- "generic-array 0.14.7",
+- "rustversion",
+- "typenum",
+-]
+-
+-[[package]]
+@@ -1107 +1096 @@
+- "generic-array 0.14.7",
++ "generic-array",
+@@ -1676 +1665 @@
 -version = "0.63.3"
-+version = "0.65.0"
-@@ -1678 +1678 @@
++version = "0.65.4"
+@@ -1678 +1667 @@
 -checksum = "036204edbd199552a5b3832f63c60dcdf395dc44c7f06b4af1c0e8139cc11bce"
-+checksum = "3bb77a4b259312b2abbc541bca1c13cb4e9b61c560a7fd894068c3b92e0c9dc3"
-@@ -1990 +1989,0 @@
++checksum = "569d8c45e20c123af2fc5ecb4803fde0a98572449ba4c24ed97741d7b02fedf7"
+@@ -1699 +1687,0 @@
+- "generic-array 1.4.5",
+@@ -1990 +1977,0 @@
 -source = "git+https://github.com/owenewans/snolc.git?rev=1acd4bbffe2da418f95ce8188f5e9bd7793c145b#1acd4bbffe2da418f95ce8188f5e9bd7793c145b"
-@@ -2011 +2009,0 @@
+@@ -2011 +1997,0 @@
 -source = "git+https://github.com/owenewans/snolc.git?rev=1acd4bbffe2da418f95ce8188f5e9bd7793c145b#1acd4bbffe2da418f95ce8188f5e9bd7793c145b"
-@@ -2139 +2136,0 @@
+@@ -2139 +2124,0 @@
 -source = "git+https://github.com/owenewans/snolc.git?rev=1acd4bbffe2da418f95ce8188f5e9bd7793c145b#1acd4bbffe2da418f95ce8188f5e9bd7793c145b"
+@@ -2231 +2216 @@
+-version = "0.7.0-rc.11"
++version = "0.7.0-rc.12"
+@@ -2233 +2218 @@
+-checksum = "f9a32fae177b74a22aa9c5b01bf7e68b33545be32d9e381e248058d2adc15ce3"
++checksum = "0701b552e6bd8f13a6e07bde25307c32d7daad80a79b65832d110c0416e7b638"
 --- a/modules/carrier-ssh/src/lib.rs
 +++ b/modules/carrier-ssh/src/lib.rs
 @@ -988 +988 @@

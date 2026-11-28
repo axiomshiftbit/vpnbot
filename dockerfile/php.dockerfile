@@ -2,9 +2,9 @@ ARG image=alpine:3.24
 ARG PROTOCOL_GO_VERSION=1.27.4
 FROM golang:${PROTOCOL_GO_VERSION}-alpine AS helpers
 ARG DNSLOOKUP_VERSION=v1.12.0
-ARG SINGBOX_VERSION=v1.14.5
+ARG SINGBOX_VERSION=v1.14.6
 ARG MIHOMO_VERSION=v1.19.34
-ARG SINGBOX_SOURCE_SHA256=d7d5a6f64c213958cb2a11b82cfaa6c7acc0a877a28033193c8b3949a45c3646
+ARG SINGBOX_SOURCE_SHA256=46ba93259c6e3301f85a7b492aa9c061157ed215da52f1b7d73b0f4cdf9c809d
 ARG MIHOMO_SOURCE_SHA256=e3284a44f1052f1c454c90d418faa244516c2470bf232b455ea18fc4f5fa6028
 RUN apk add --no-cache ca-certificates curl git
 COPY dockerfile/go-*.sh dockerfile/download-file.sh dockerfile/go-sources.sha256 /build-tools/
@@ -20,8 +20,13 @@ RUN sh /build-tools/go-source.sh MetaCubeX/mihomo "$MIHOMO_VERSION" /mihomo "$MI
     && CGO_ENABLED=0 sh /build-tools/go-retry.sh go build -trimpath -tags with_gvisor \
        -ldflags "-s -w -X github.com/metacubex/mihomo/constant.Version=$MIHOMO_VERSION" -o /out/mihomo .
 
+FROM $image AS freeunit_apk
+ARG FREEUNIT_VERSION=1.37.3
+COPY dockerfile/download-file.sh dockerfile/build-backport.sh /build-tools/
+RUN --mount=type=tmpfs,target=/home/build sh /build-tools/build-backport.sh freeunit "$FREEUNIT_VERSION"
+
 FROM $image
-ARG SINGBOX_VERSION=v1.14.5
+ARG SINGBOX_VERSION=v1.14.6
 ARG MIHOMO_VERSION=v1.19.34
 LABEL io.vpnbot.sing-box.version=$SINGBOX_VERSION io.vpnbot.mihomo.version=$MIHOMO_VERSION
 COPY --from=helpers /out/ /usr/bin/
@@ -32,7 +37,9 @@ COPY --from=helpers /out/ /usr/bin/
 # и «show QR» молча не работал: qrencode не находился, png не создавался,
 # sendPhoto уходил с несуществующим путём. Пакет лежит в репозитории community,
 # он включён в /etc/apk/repositories базового образа.
-RUN apk upgrade --no-cache \
+RUN --mount=type=bind,from=freeunit_apk,source=/out,target=/backport \
+    cp /backport/*.pub /etc/apk/keys/ \
+    && apk upgrade --no-cache \
     && apk add --no-cache --update 'php85>=8.5.13' \
     php85-mbstring \
     php85-session \
@@ -47,8 +54,7 @@ RUN apk upgrade --no-cache \
     # Хранилище SQLite (app/BotStore.php): устройства HWID и журнал подключений.
     php85-pdo \
     php85-pdo_sqlite \
-    freeunit \
-    freeunit-php85 \
+    /backport/*.apk \
     xxd \
     certbot \
     libqrencode-tools \
@@ -58,6 +64,7 @@ RUN apk upgrade --no-cache \
     git \
     py3-qt5 \
     # Скрипты бота вызывают php; обновляем ссылку и при её наличии в APK.
+    && for key in /backport/*.pub; do rm "/etc/apk/keys/${key##*/}"; done \
     && ln -sf /usr/bin/php85 /usr/bin/php \
     # OPcache встроен в PHP 8.5, отдельного php85-opcache в Alpine нет.
     && php -r 'foreach (["mbstring", "session", "phar", "zip", "curl", "openssl", "iconv", "intl", "ssh2", "yaml", "pdo_sqlite", "Zend OPcache"] as $module) { if (!extension_loaded($module)) { fwrite(STDERR, "Missing PHP module: $module\n"); exit(1); } }' \

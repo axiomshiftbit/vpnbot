@@ -104,7 +104,7 @@ def main():
         if not binary.is_file():
             raise RuntimeError("Сначала выполните python3 client.py --install --prepare")
         version = subprocess.run([str(binary), "--version"], capture_output=True, timeout=5, check=True)
-        if version.stdout.strip() != b"snolc 0.0.4+vpnbot.6 wire 1":
+        if version.stdout.strip() != b"snolc 0.0.4+vpnbot.7 wire 1":
             raise RuntimeError("Установите исправленный клиент из нового ZIP.")
         checked = subprocess.run([str(binary), "validate", str(path)], capture_output=True, timeout=15)
         if checked.returncode:

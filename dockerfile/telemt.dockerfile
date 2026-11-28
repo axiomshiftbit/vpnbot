@@ -20,9 +20,10 @@ ARG RUST_VERSION
 ARG CARGO_AUDITABLE_VERSION
 ENV RUSTUP_TOOLCHAIN=${RUST_VERSION} CARGO_NET_RETRY=5 CARGO_BUILD_JOBS=2 \
     RUSTFLAGS="-C target-feature=+crt-static -C panic=abort"
-RUN apk add --no-cache build-base cmake perl pkgconf linux-headers curl binutils \
+RUN apk add --no-cache build-base cmake perl pkgconf linux-headers curl binutils patch \
     && RUSTFLAGS="-C target-feature=-crt-static" cargo install --locked cargo-auditable --version "=${CARGO_AUDITABLE_VERSION}"
 COPY dockerfile/sources.sha256 /sources.sha256
+COPY dockerfile/rustls-0.23.46.patch /tmp/rustls.patch
 COPY dockerfile/download-file.sh /build-tools/download-file.sh
 WORKDIR /rust-source
 RUN ref=$(awk -v key="telemt-commit/${TELEMT_VERSION}" '$2 == key {print $1}' /sources.sha256) \
@@ -30,6 +31,7 @@ RUN ref=$(awk -v key="telemt-commit/${TELEMT_VERSION}" '$2 == key {print $1}' /s
     && sh /build-tools/download-file.sh "https://codeload.github.com/telemt/telemt/tar.gz/$ref" source.tar.gz \
     && awk -v key="telemt-source/${TELEMT_VERSION}" '$2 == key {print $1 "  source.tar.gz"}' /sources.sha256 | sha256sum -c - \
     && tar -xzf source.tar.gz --strip-components=1 && rm source.tar.gz \
+    && patch -p1 --fuzz=0 < /tmp/rustls.patch \
     && sha256sum Cargo.lock > /tmp/cargo-lock.sha256 \
     && cargo auditable build --locked --release --target x86_64-unknown-linux-musl --bin telemt \
     && sha256sum -c /tmp/cargo-lock.sha256 \

@@ -1,4 +1,4 @@
-VPNBot snolc 0.0.4+vpnbot.6 — SSH + Noise
+VPNBot snolc 0.0.4+vpnbot.7 — SSH + Noise
 
 Нативный клиент: Linux x86_64 с glibc и Python 3.11 или новее.
 Распакуйте архив в отдельную личную папку. Профиль содержит секрет доступа.
@@ -76,3 +76,5 @@ ZIP и повторите python3 client.py --install --prepare.
 (wire 1), клиенты vpnbot.5 совместимы с новым сервером; для исправления на
 стороне клиента скачайте новый ZIP и повторите
 python3 client.py --install --prepare.
+
+Версия 0.0.4+vpnbot.7 обновляет SSH-библиотеку russh до 0.65.4 в серверном и клиентском модулях. Версия протокола остаётся wire 1.

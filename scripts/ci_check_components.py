@@ -56,6 +56,8 @@ BLOCKING = {'HIGH', 'CRITICAL'}
 COMPONENTS = [
     dict(name='nginx', pin='NGINX_VERSION', cpe='f5:nginx', nginx=True, fresh='nginx/nginx', tag_prefix='release-', branch=True),
     dict(name='strongSwan', pin='dockerfile/ipsec.dockerfile:STRONGSWAN_VERSION', cpe='strongswan:strongswan', repo='strongswan/strongswan'),
+    dict(name='FreeUnit', pin='dockerfile/php.dockerfile:FREEUNIT_VERSION', repo='freeunitorg/freeunit'),
+    dict(name='xl2tpd', pin='dockerfile/ipsec.dockerfile:XL2TPD_VERSION', cpe='xelerance:xl2tpd', repo='xelerance/xl2tpd'),
     dict(name='pppd', pin='dockerfile/ipsec.dockerfile:PPP_VERSION', cpe='samba:ppp', repo='ppp-project/ppp'),
     dict(name='OpenVPN', pin='OPENVPN_VERSION', cpe='openvpn:openvpn', repo='OpenVPN/openvpn'),
     dict(name='Easy-RSA', pin='EASYRSA_VERSION', cpe='openvpn:easy-rsa', repo='OpenVPN/easy-rsa'),

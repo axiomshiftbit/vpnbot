@@ -10,9 +10,11 @@ RUN apk add --no-cache ca-certificates curl git
 COPY dockerfile/go-*.sh dockerfile/download-file.sh dockerfile/go-sources.sha256 /build-tools/
 RUN sh /build-tools/go-source.sh teddysun/v2ray-plugin "$V2RAY_PLUGIN_VERSION" /v2ray-plugin \
     && cd /v2ray-plugin && sh /build-tools/go-security.sh \
+    && sh /build-tools/go-retry.sh go get github.com/quic-go/quic-go@v0.59.1 \
     && CGO_ENABLED=0 sh /build-tools/go-retry.sh go build -trimpath -ldflags '-s -w' -o /out/v2ray-plugin .
 RUN sh /build-tools/go-source.sh cbeuw/Cloak "$CLOAK_VERSION" /cloak \
     && cd /cloak && sh /build-tools/go-security.sh \
+    && sh /build-tools/go-retry.sh go get github.com/refraction-networking/utls@v1.8.1 \
     && CGO_ENABLED=0 sh /build-tools/go-retry.sh go build -trimpath -ldflags "-s -w -X main.version=${CLOAK_VERSION#v}" -o /out/ck-server ./cmd/ck-server \
     && CGO_ENABLED=0 sh /build-tools/go-retry.sh go build -trimpath -ldflags "-s -w -X main.version=${CLOAK_VERSION#v}" -o /out/ck-client ./cmd/ck-client
 RUN sh /build-tools/go-source.sh IrineSistiana/simple-tls "$SIMPLE_TLS_VERSION" /simple-tls \
@@ -25,9 +27,10 @@ ARG RUST_VERSION
 ARG CARGO_AUDITABLE_VERSION
 ENV RUSTUP_TOOLCHAIN=${RUST_VERSION} CARGO_NET_RETRY=5 CARGO_BUILD_JOBS=2 \
     RUSTFLAGS="-C target-feature=+crt-static -C panic=abort"
-RUN apk add --no-cache build-base cmake perl pkgconf linux-headers curl binutils \
+RUN apk add --no-cache build-base cmake perl pkgconf linux-headers curl binutils patch \
     && RUSTFLAGS="-C target-feature=-crt-static" cargo install --locked cargo-auditable --version "=${CARGO_AUDITABLE_VERSION}"
 COPY dockerfile/sources.sha256 /sources.sha256
+COPY dockerfile/rustls-0.23.46.patch /tmp/rustls.patch
 COPY dockerfile/download-file.sh /build-tools/download-file.sh
 WORKDIR /rust-source
 RUN ref=$(awk -v key="shadowsocks-rust-commit/${SS_RUST_VERSION}" '$2 == key {print $1}' /sources.sha256) \
@@ -42,6 +45,7 @@ RUN ref=$(awk -v key="shadowsocks-rust-commit/${SS_RUST_VERSION}" '$2 == key {pr
     # SS_RUST_VERSION строку пересмотреть: лишний подъём даст другую сумму.
     && for crate in hickory-proto hickory-net hickory-resolver; do cargo update -p $crate --precise 0.26.2; done \
     && awk -v key="shadowsocks-rust-lock/${SS_RUST_VERSION}" '$2 == key {print $1 "  Cargo.lock"}' /sources.sha256 | sha256sum -c - \
+    && patch -p1 --fuzz=0 < /tmp/rustls.patch \
     && sha256sum Cargo.lock > /tmp/cargo-lock.sha256 \
     && cargo auditable build --locked --release --target x86_64-unknown-linux-musl --features full --bins \
     && sha256sum -c /tmp/cargo-lock.sha256 \

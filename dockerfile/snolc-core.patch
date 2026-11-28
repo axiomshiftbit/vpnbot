@@ -937,7 +937,7 @@
              println!(
                  "snolc {} wire {}",
 -                env!("CARGO_PKG_VERSION"),
-+                concat!(env!("CARGO_PKG_VERSION"), "+vpnbot.6"),
++                concat!(env!("CARGO_PKG_VERSION"), "+vpnbot.7"),
                  snolc::WIRE_VERSION
              );
              Ok(())

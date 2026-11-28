@@ -100,7 +100,7 @@ RUN cargo auditable build --locked --release -p snolc-adapter-socks5 -p snolc-po
 
 FROM $image
 ARG SNOLC_VERSION
-LABEL io.vpnbot.snolc.version="${SNOLC_VERSION}+vpnbot.6"
+LABEL io.vpnbot.snolc.version="${SNOLC_VERSION}+vpnbot.7"
 # libgcc: размотка стека Rust при динамической сборке на musl.
 RUN apk upgrade --no-cache --available \
     && apk add --no-cache libgcc python3 py3-cryptography
@@ -113,7 +113,7 @@ RUN --mount=type=bind,from=server,source=/out,target=/mnt/server \
     && python3 /snolc/build_patches.py /mnt/client /opt/snolc/client-patches.zip \
     && PYTHONPATH=/snolc python3 -c 'from snolc_config import install; install("/opt/snolc/runtime", server=True, built="/mnt/server")' \
     && install -D -m 0555 /mnt/server/vpnbot-snolc-modules /opt/snolc/sbom/vpnbot-snolc-modules \
-    && test "$(/opt/snolc/runtime/bin/snolc --version)" = "snolc 0.0.4+vpnbot.6 wire 1"
+    && test "$(/opt/snolc/runtime/bin/snolc --version)" = "snolc 0.0.4+vpnbot.7 wire 1"
 COPY scripts/protocol_service.py scripts/snolc_service.py /
 ENV PYTHONPATH=/snolc
 HEALTHCHECK --interval=15s --timeout=3s --start-period=30s --retries=3 \

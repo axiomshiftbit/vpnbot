@@ -1,4 +1,9 @@
 ARG image=alpine:3.24
+FROM $image AS xl2tpd_apk
+ARG XL2TPD_VERSION=1.3.21
+COPY dockerfile/download-file.sh dockerfile/build-backport.sh /build-tools/
+RUN --mount=type=tmpfs,target=/home/build sh /build-tools/build-backport.sh xl2tpd "$XL2TPD_VERSION"
+
 FROM $image
 
 # Инвалидация кеша apk-слоя: передайте новое значение, чтобы пересборка
@@ -16,7 +21,8 @@ COPY scripts/ipsec_credentials.py /ipsec_credentials.py
 # Собираем проверенный upstream; IKEv1 с 6.1 нужно включать явно для L2TP.
 # procps-ng сохраняет pgrep -x по имени charon при запуске по полному пути:
 # BusyBox стабильной Alpine иначе даёт ложный отказ проверки backup/restore.
-RUN set -eux; \
+RUN --mount=type=bind,from=xl2tpd_apk,source=/out,target=/backport \
+    set -eux; cp /backport/*.pub /etc/apk/keys/; \
     echo "apk refresh token: $APK_REFRESH"; \
     apk update; \
     apk upgrade --no-cache --available; \
@@ -25,13 +31,14 @@ RUN set -eux; \
         bash \
         python3 \
         procps-ng \
-        xl2tpd \
+        /backport/*.apk \
         ppp \
         iptables \
         iproute2 \
         openssl \
         netcat-openbsd \
         libcurl; \
+    for key in /backport/*.pub; do rm "/etc/apk/keys/${key##*/}"; done; \
     apk add --no-cache --virtual .build-deps \
         build-base linux-headers openssl-dev curl-dev curl bzip2; \
     sh /build-tools/download-file.sh "https://download.strongswan.org/strongswan-${STRONGSWAN_VERSION}.tar.bz2" /tmp/strongswan.tar.bz2; \
